@@ -529,6 +529,7 @@ cache-key oracle relies on."
 ### Task 2: Library modules utils, core, lib
 
 **Files:**
+- Modify: `gradle/libs.versions.toml` (`commons-lang3 = "3.14.0"` → `"3.18.0"`: Task 1 landed before the CVE-2025-48924 finding; this task is the first to consume the entry)
 - Modify: `settings.gradle.kts` (add `include("utils", "core", "lib")`)
 - Create: `utils/build.gradle.kts`, `utils/src/main/java/io/joeyang/tracer/utils/Formatter.java`
 - Create: `core/build.gradle.kts`, `core/src/main/java/io/joeyang/tracer/core/Greeter.java`
@@ -538,12 +539,13 @@ cache-key oracle relies on."
 
 The exact source lines matter: `tools/scenarios.sh` (Task 15) edits them by exact string match. Keep the marked lines verbatim.
 
-- [ ] **Step 1: Register the modules**
+- [ ] **Step 1: Register the modules and fix the catalog version**
 
 Append to `settings.gradle.kts`:
 ```kotlin
 include("utils", "core", "lib")
 ```
+In `gradle/libs.versions.toml` change `commons-lang3 = "3.14.0"` to `commons-lang3 = "3.18.0"` (3.14.0–3.17.x carry CVE-2025-48924; the entry was unused until this task).
 
 - [ ] **Step 2: Build files**
 
@@ -753,7 +755,7 @@ Then: `./gradlew build` → `BUILD SUCCESSFUL`.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add settings.gradle.kts utils core lib
+git add settings.gradle.kts gradle/libs.versions.toml utils core lib
 git commit -m "feat(libs): add utils, core and lib modules with tests
 
 Three small libraries whose dependency edges are chosen deliberately:
