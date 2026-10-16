@@ -591,6 +591,7 @@ package io.joeyang.tracer.utils;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Test;
 
 class FormatterTest {
@@ -598,14 +599,38 @@ class FormatterTest {
     @Test void moneyPadsSingleDigitCents() { assertEquals("$0.05", Formatter.money(5)); }
     @Test void moneyZero() { assertEquals("$0.00", Formatter.money(0)); }
     @Test void moneyNegativeKeepsSignInFront() { assertEquals("-$7.50", Formatter.money(-750)); }
-    @Test void moneyRejectsLongMinValue() { assertThrows(ArithmeticException.class, () -> Formatter.money(Long.MIN_VALUE)); }
+    @Test void moneyNegativeSingleDigitCents() { assertEquals("-$0.05", Formatter.money(-5)); }
+    @Test void moneyLongMaxValue() { assertEquals("$92233720368547758.07", Formatter.money(Long.MAX_VALUE)); }
+
+    @Test void moneyRejectsLongMinValue() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> Formatter.money(Long.MIN_VALUE));
+        assertEquals("cents must be greater than Long.MIN_VALUE", ex.getMessage());
+    }
+
+    @Test void moneyIsLocaleIndependent() {
+        Locale previous = Locale.getDefault(Locale.Category.FORMAT);
+        Locale.setDefault(Locale.Category.FORMAT, Locale.forLanguageTag("ar-EG"));
+        try {
+            assertEquals("$0.05", Formatter.money(5));
+        } finally {
+            Locale.setDefault(Locale.Category.FORMAT, previous);
+        }
+    }
 
     @Test void padAddsSpacesToWidth() { assertEquals("ab   ", Formatter.pad("ab", 5)); }
     @Test void padLeavesEqualWidthAlone() { assertEquals("abcde", Formatter.pad("abcde", 5)); }
     @Test void padLeavesLongerTextAlone() { assertEquals("abcdef", Formatter.pad("abcdef", 5)); }
     @Test void padZeroWidth() { assertEquals("", Formatter.pad("", 0)); }
-    @Test void padRejectsNull() { assertThrows(IllegalArgumentException.class, () -> Formatter.pad(null, 3)); }
-    @Test void padRejectsNegativeWidth() { assertThrows(IllegalArgumentException.class, () -> Formatter.pad("a", -1)); }
+
+    @Test void padRejectsNull() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> Formatter.pad(null, 3));
+        assertEquals("text must not be null", ex.getMessage());
+    }
+
+    @Test void padRejectsNegativeWidth() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> Formatter.pad("a", -1));
+        assertEquals("width must be >= 0, got -1", ex.getMessage());
+    }
 }
 ```
 
@@ -660,15 +685,25 @@ Expected: FAIL at `compileTestJava` with `cannot find symbol` for `Formatter`, `
 ```java
 package io.joeyang.tracer.utils;
 
+import java.util.Locale;
+
 /** Small text helpers shared by every module. */
 public final class Formatter {
     private Formatter() {}
 
-    /** Formats cents as dollars: 1234 → "$12.34". The sign goes in front: -750 → "-$7.50". */
+    /**
+     * Formats cents as dollars: 1234 → "$12.34". The sign goes in front: -750 → "-$7.50".
+     *
+     * @throws IllegalArgumentException if {@code cents} is {@code Long.MIN_VALUE}, which has no
+     *     representable absolute value
+     */
     public static String money(long cents) {
-        long abs = Math.absExact(cents);
+        if (cents == Long.MIN_VALUE) {
+            throw new IllegalArgumentException("cents must be greater than Long.MIN_VALUE");
+        }
+        long abs = Math.abs(cents);
         String sign = cents < 0 ? "-" : "";
-        return sign + "$" + (abs / 100) + "." + String.format("%02d", abs % 100);
+        return sign + "$" + (abs / 100) + "." + String.format(Locale.ROOT, "%02d", abs % 100);
     }
 
     /** Right-pads {@code text} with spaces to {@code width}; longer text is returned unchanged. */
@@ -746,7 +781,7 @@ public final class Service {
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `./gradlew :utils:test :core:test :lib:test`
-Expected: `BUILD SUCCESSFUL`, 20 tests.
+Expected: `BUILD SUCCESSFUL`, 24 tests.
 
 - [ ] **Step 7: Write the lockfiles**
 
