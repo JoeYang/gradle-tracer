@@ -810,6 +810,7 @@ edge kind changes (or does not change) an app's compile inputs."
 
 **Files:**
 - Modify: `settings.gradle.kts` (add `include("app:appA", "app:appB", "app:appC")`)
+- Modify: `docs/gradle-build.md` (add the three apps to the Modules table; test count 24 → 33)
 - Create: `app/appA/build.gradle.kts`, `app/appA/src/main/java/io/joeyang/tracer/app/a/AppA.java`
 - Create: `app/appB/build.gradle.kts`, `app/appB/src/main/java/io/joeyang/tracer/app/b/AppB.java`
 - Create: `app/appC/build.gradle.kts`, `app/appC/src/main/java/io/joeyang/tracer/app/c/AppC.java`
@@ -1035,10 +1036,30 @@ Expected: `BUILD SUCCESSFUL`, 9 tests.
 ```
 Expected: three new lockfiles; `BUILD SUCCESSFUL`; the last command prints `{"amount":"$2.50","label":"total   "}`.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 8: Document the apps**
+
+In `docs/gradle-build.md`, add three rows to the Modules table:
+
+```markdown
+| `app:appA` | `tracer.java-application` | `implementation(project(":lib"))` |
+| `app:appB` | `tracer.java-application` | `implementation(project(":core"))` |
+| `app:appC` | `tracer.java-application` | `implementation(project(":utils"))`, `implementation(libs.gson)` |
+```
+
+Then replace the section's last paragraph (the one ending "arrive in the next commit.") with:
+
+```markdown
+Each app depends on its libraries with `implementation`: nothing consumes an app, so no app type
+needs to be visible further up the graph. `appA` reaches `core` only through `lib`'s `api` edge,
+`appB` depends on `core` directly, and `appC` never touches `core` or `lib`.
+
+`./gradlew build` runs every module's tests (33 today).
+```
+
+- [ ] **Step 9: Commit**
 
 ```bash
-git add settings.gradle.kts app
+git add settings.gradle.kts app docs/gradle-build.md
 git commit -m "feat(app): add appA, appB and appC applications with tests
 
 Three thin applications that each exercise a different path through the
