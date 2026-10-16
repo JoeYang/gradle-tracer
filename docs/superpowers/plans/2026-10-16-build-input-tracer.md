@@ -825,7 +825,7 @@ edge kind changes (or does not change) an app's compile inputs."
 
 **Files:**
 - Modify: `settings.gradle.kts` (add `include("app:appA", "app:appB", "app:appC")`)
-- Modify: `docs/gradle-build.md` (add the three apps to the Modules table; test count 24 → 33)
+- Modify: `docs/gradle-build.md` (add the three apps to the Modules table; test count 24 → 46)
 - Create: `app/appA/build.gradle.kts`, `app/appA/src/main/java/io/joeyang/tracer/app/a/AppA.java`
 - Create: `app/appB/build.gradle.kts`, `app/appB/src/main/java/io/joeyang/tracer/app/b/AppB.java`
 - Create: `app/appC/build.gradle.kts`, `app/appC/src/main/java/io/joeyang/tracer/app/c/AppC.java`
