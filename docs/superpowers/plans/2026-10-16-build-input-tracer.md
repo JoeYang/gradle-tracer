@@ -2125,13 +2125,13 @@ public interface ImpactProvider {
 }
 ```
 
-`tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java` (skeleton; Task 12 completes it):
+`tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java` (skeleton; Tasks 12 and 13 complete it):
 ```java
 package io.joeyang.tracer.cli;
 
 import java.io.PrintStream;
 
-/** Entry point. Only usage handling exists until Task 12. */
+/** Entry point. Only usage handling exists until Tasks 12 and 13. */
 public final class Cli {
     public static final int EXIT_OK = 0;
     public static final int EXIT_USAGE = 1;
@@ -2181,7 +2181,7 @@ Expected: `BUILD SUCCESSFUL`, 13 tests.
 ```markdown
 # tracer
 
-`tools/tracer` is a Java CLI. `./trace` (Task 12) builds it with `installDist` and runs the launcher.
+`tools/tracer` is a Java CLI. `./trace` (Task 14) builds it with `installDist` and runs the launcher.
 
 ## Vocabulary (`io.joeyang.tracer.cli`)
 | type | meaning |
