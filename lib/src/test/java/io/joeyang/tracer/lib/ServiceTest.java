@@ -9,8 +9,14 @@ import org.junit.jupiter.api.Test;
 class ServiceTest {
     @Test void describeCapitalisesAndTrims() { assertEquals("Hello,  Grace!", new Service().describe("  grace ")); }
     @Test void describeStripsUnicodeWhitespace() { assertEquals("Hello,  Grace!", new Service().describe("　grace  ")); }
-    @Test void describeRejectsNull() { assertThrows(IllegalArgumentException.class, () -> new Service().describe(null)); }
-    @Test void describeRejectsBlank() { assertThrows(IllegalArgumentException.class, () -> new Service().describe(" ")); }
+    @Test void describeRejectsNull() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> new Service().describe(null));
+        assertEquals("name must not be null", ex.getMessage());
+    }
+    @Test void describeRejectsBlank() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> new Service().describe(" "));
+        assertEquals("name must not be blank", ex.getMessage());
+    }
     @Test void greeterIsExposedAndStable() {
         Service s = new Service();
         assertSame(s.greeter(), s.greeter());
