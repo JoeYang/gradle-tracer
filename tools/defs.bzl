@@ -4,6 +4,7 @@ load("@rules_java//java:java_binary.bzl", "java_binary")
 load("@rules_java//java:java_library.bzl", "java_library")
 load("@rules_java//java:java_test.bzl", "java_test")
 
+# The repo forbids deprecated APIs; Gradle has no equivalent flag here, so this is what surfaces them under Bazel.
 # SCENARIO S6 appends "-Xlint:all" here (and to the Gradle convention plugin) in the same commit.
 JAVACOPTS = ["-Xlint:deprecation"]
 
@@ -42,6 +43,7 @@ def junit5_test_suite(name, srcs, deps = [], runtime_deps = [], resources = [], 
     for src in tests:
         class_name = src.removeprefix("src/test/java/").removesuffix(".java").replace("/", ".")
         target = class_name.rsplit(".", 1)[-1]
+        kwargs.setdefault("size", "small")
         java_test(
             name = target,
             srcs = [src],

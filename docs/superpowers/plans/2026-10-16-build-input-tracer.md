@@ -1300,6 +1300,7 @@ load("@rules_java//java:java_binary.bzl", "java_binary")
 load("@rules_java//java:java_library.bzl", "java_library")
 load("@rules_java//java:java_test.bzl", "java_test")
 
+# The repo forbids deprecated APIs; Gradle has no equivalent flag here, so this is what surfaces them under Bazel.
 # SCENARIO S6 appends "-Xlint:all" here (and to the Gradle convention plugin) in the same commit.
 JAVACOPTS = ["-Xlint:deprecation"]
 
@@ -1338,6 +1339,7 @@ def junit5_test_suite(name, srcs, deps = [], runtime_deps = [], resources = [], 
     for src in tests:
         class_name = src.removeprefix("src/test/java/").removesuffix(".java").replace("/", ".")
         target = class_name.rsplit(".", 1)[-1]
+        kwargs.setdefault("size", "small")
         java_test(
             name = target,
             srcs = [src],
@@ -1362,7 +1364,7 @@ load("//tools:defs.bzl", "junit5_test_suite", "tracer_java_library")
 tracer_java_library(
     name = "utils",
     srcs = glob(["src/main/java/**/*.java"]),
-    visibility = ["//visibility:public"],
+    visibility = ["//:__subpackages__"],
 )
 
 junit5_test_suite(
@@ -1380,7 +1382,7 @@ tracer_java_library(
     name = "core",
     srcs = glob(["src/main/java/**/*.java"]),
     deps = ["//utils"],  # implementation: not exported
-    visibility = ["//visibility:public"],
+    visibility = ["//:__subpackages__"],
 )
 
 junit5_test_suite(
@@ -1402,7 +1404,7 @@ tracer_java_library(
         "@maven//:org_apache_commons_commons_lang3",  # implementation
     ],
     exports = ["//core"],  # api: Service returns core.Greeter, so consumers compile against core
-    visibility = ["//visibility:public"],
+    visibility = ["//:__subpackages__"],
 )
 
 junit5_test_suite(
@@ -1426,7 +1428,6 @@ tracer_java_binary(
     name = "appA",
     main_class = "io.joeyang.tracer.app.a.AppA",
     runtime_deps = [":appA_lib"],
-    visibility = ["//visibility:public"],
 )
 
 junit5_test_suite(
@@ -1480,6 +1481,15 @@ The same `src/main/java` and `src/test/java` trees as Gradle. Outputs go to `baz
 | `api(project(":x"))` | `deps = ["//x"], exports = ["//x"]` |
 | `implementation(libs.foo)` | `deps = ["@maven//:group_artifact"]` |
 | `application { mainClass }` | `java_binary(main_class, runtime_deps = [":app_lib"])` |
+
+## Conventions
+- Only files named `*Test.java` under `src/test/java` become test targets (one `java_test` each, run through
+  `junit5_test_suite`). Everything else there — fakes, helpers, resources — compiles into the `<name>_support`
+  library and never runs on its own, unlike Gradle, which runs anything JUnit discovers on the test classpath.
+- `MODULE.bazel`'s `known_contributing_modules = ["protobuf"]` lets protobuf's own Maven artifacts (guava,
+  checker-qual, error_prone_annotations) into `maven_install.json` and version resolution, even though nothing
+  in this repo depends on them — it is rules_jvm_external quieting a multi-module contribution warning, not a
+  new dependency edge.
 
 ## Not under Bazel
 `build-logic` (Gradle plugins, TestKit tests) and the tracer's `e2eTest` suite are Gradle-only by nature.

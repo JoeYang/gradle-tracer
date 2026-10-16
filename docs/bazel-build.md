@@ -19,6 +19,15 @@ The same `src/main/java` and `src/test/java` trees as Gradle. Outputs go to `baz
 | `implementation(libs.foo)` | `deps = ["@maven//:group_artifact"]` |
 | `application { mainClass }` | `java_binary(main_class, runtime_deps = [":app_lib"])` |
 
+## Conventions
+- Only files named `*Test.java` under `src/test/java` become test targets (one `java_test` each, run through
+  `junit5_test_suite`). Everything else there — fakes, helpers, resources — compiles into the `<name>_support`
+  library and never runs on its own, unlike Gradle, which runs anything JUnit discovers on the test classpath.
+- `MODULE.bazel`'s `known_contributing_modules = ["protobuf"]` lets protobuf's own Maven artifacts (guava,
+  checker-qual, error_prone_annotations) into `maven_install.json` and version resolution, even though nothing
+  in this repo depends on them — it is rules_jvm_external quieting a multi-module contribution warning, not a
+  new dependency edge.
+
 ## Not under Bazel
 `build-logic` (Gradle plugins, TestKit tests) and the tracer's `e2eTest` suite are Gradle-only by nature.
 

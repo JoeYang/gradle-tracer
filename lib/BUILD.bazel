@@ -8,7 +8,7 @@ tracer_java_library(
         "@maven//:org_apache_commons_commons_lang3",  # implementation
     ],
     exports = ["//core"],  # api: Service returns core.Greeter, so consumers compile against core
-    visibility = ["//visibility:public"],
+    visibility = ["//:__subpackages__"],
 )
 
 junit5_test_suite(

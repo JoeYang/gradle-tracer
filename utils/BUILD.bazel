@@ -3,7 +3,7 @@ load("//tools:defs.bzl", "junit5_test_suite", "tracer_java_library")
 tracer_java_library(
     name = "utils",
     srcs = glob(["src/main/java/**/*.java"]),
-    visibility = ["//visibility:public"],
+    visibility = ["//:__subpackages__"],
 )
 
 junit5_test_suite(
