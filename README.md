@@ -5,8 +5,9 @@ commits changed an application's build inputs. Design: `docs/superpowers/specs/2
 
 ## Layout
 
-See `docs/gradle-build.md` (Gradle side) and `docs/bazel-build.md` (Bazel side, added later).
+See `docs/gradle-build.md` (Gradle side) and `docs/bazel-build.md` (Bazel side).
 
 ## Build
 
     ./gradlew build        # all modules, tests included
+    bazel test //...       # the same modules and tests under Bazel

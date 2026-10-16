@@ -1246,6 +1246,7 @@ behaviour is unit-tested without capturing stdout."
 - Create: `utils/BUILD.bazel`, `core/BUILD.bazel`, `lib/BUILD.bazel`, `app/appA/BUILD.bazel`, `app/appB/BUILD.bazel`, `app/appC/BUILD.bazel`
 - Create: `docs/bazel-build.md`
 - Modify: `.gitignore` (`bazel-*` → `/bazel-*`; the unanchored pattern also ignored `docs/bazel-build.md`)
+- Modify: `README.md` (drop "added later" from the Layout line; add `bazel test //...` to the Build section)
 - Generated: `maven_install.json`, `MODULE.bazel.lock`
 
 Verified on this machine (spike, 2026-10-16): Bazel 9.1.0 resolves rules_java ≥ 9.3 fine; rules_jvm_external 7.2 with `lock_file` + `bazel run @maven//:pin` works; without the `--tool_java_runtime_version` flag the build fails with `UnsupportedClassVersionError ... class file version 65.0 ... only recognizes up to 55.0` from rules_jvm_external's jar stamper, because the default tool runtime is Java 11. The flags below fix it.
@@ -1489,7 +1490,7 @@ The same `src/main/java` and `src/test/java` trees as Gradle. Outputs go to `baz
 - [ ] **Step 5: Commit**
 
 ```bash
-git add .gitignore MODULE.bazel MODULE.bazel.lock maven_install.json .bazelrc BUILD.bazel tools/BUILD.bazel tools/defs.bzl \
+git add .gitignore README.md MODULE.bazel MODULE.bazel.lock maven_install.json .bazelrc BUILD.bazel tools/BUILD.bazel tools/defs.bzl \
         utils/BUILD.bazel core/BUILD.bazel lib/BUILD.bazel app/appA/BUILD.bazel app/appB/BUILD.bazel app/appC/BUILD.bazel docs/bazel-build.md
 git commit -m "feat(bazel): build and test the same modules with Bazel
 
