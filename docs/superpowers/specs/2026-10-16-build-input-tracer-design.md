@@ -93,7 +93,7 @@ commit   subject                              gradle key  bazel-diff  verdict   
 a1b2c3d  baseline                             3f9c…e1     -           base
 b2c3d4e  utils: body-only edit                3f9c…e1     impacted    clean     bazel≠gradle
 c3d4e5f  core: add Greeter.shout()            2bb4…77     impacted    CHANGED   core classes
-d4e5f6a  deps: commons-lang3 3.14.0 -> 3.17.0 2bb4…77     impacted    clean     bazel≠gradle
+d4e5f6a  deps: commons-lang3 3.18.0 -> 3.20.0 2bb4…77     impacted    clean     bazel≠gradle
 e5f6a7b  deps: gson 2.10.1 -> 2.11.0          2bb4…77     clean       clean
 f6a7b8c  core: comment-only edit              2bb4…77     impacted    clean     bazel≠gradle
 
@@ -136,7 +136,7 @@ Semantics:
    └─▶ BazelDiffProvider: bazel-diff generate-hashes -w <wt> --fineGrainedHashExternalRepos=@maven ─▶ hashes-<sha>.json
    │
    ▼
- Comparator: adjacent pairs ─▶ Verdict{ changed?, culprit set }   +   bazel-diff get-impacted-targets(prev, cur) ∋ //app/appA ?
+ KeyComparator: adjacent pairs ─▶ Verdict{ changed?, culprit set }   +   bazel-diff get-impacted-targets(prev, cur) ∋ //app/appA ?
    │
    ▼
  TableRenderer ─▶ stdout, exit code
@@ -153,7 +153,7 @@ Components, each with one job and a seam for tests:
 | `WorktreePool` | create one worktree per commit under the scratch dir; prune stale ones at start; remove on exit incl. Ctrl-C | `ProcessRunner` (git) |
 | `GradleKeyProvider` + `CacheDebugLog` | run the task with cache debug; parse key, per-file fingerprints, implementation hash | `ProcessRunner` |
 | `BazelDiffProvider` | `generate-hashes` per worktree, `get-impacted-targets` per adjacent pair | `ProcessRunner` (bazel) |
-| `Comparator` | adjacent-commit diff → verdict + culprits; merges bazel column | pure |
+| `KeyComparator` | adjacent-commit diff → verdict + culprits; merges bazel column | pure |
 | `TableRenderer` | fixed-width table, truncation, totals line | pure |
 | `Cli` | args, wiring, exit codes | all of the above |
 
@@ -257,7 +257,7 @@ bazel-diff column. `C` = changed/impacted, `-` = clean.
 | S0 | baseline | base | base | base | |
 | S1 | utils: body-only edit | - / C / C | - / C / C | - / C / C | ABI unchanged ⇒ no recompiles anywhere; runtime bytes differ |
 | S2 | core: add public method | C / C / C | C / C / C | - / - / - | ABI change reaches appA through `api`; appC untouched |
-| S3 | lib: commons-lang3 3.14.0 → 3.17.0 | - / C / C | - / - / - | - / - / - | `implementation` dep: runtime-only input for appA |
+| S3 | lib: commons-lang3 3.18.0 → 3.20.0 | - / C / C | - / - / - | - / - / - | `implementation` dep: runtime-only input for appA |
 | S4 | appC: gson 2.10.1 → 2.11.0 | - / - / - | - / - / - | C / C / C | direct dep with ABI difference (verified: the bump changed `compileJava`'s key in the spike) |
 | S5 | core: comment-only edit, same line count | - / - / C | - / - / C | - / - / - | bazel-diff hashes sources; Gradle hashes bytecode |
 | S6 | build logic: `-Xlint:all` in both builds | C / C / C | C / C / C | C / C / C | build definition is an input; the build-logic jar is part of every Gradle task's implementation hash, so even `fingerprint` changes (verified in the spike) |
@@ -292,7 +292,7 @@ TDD throughout: tests first, then the implementation that makes them pass.
   be resolved.
 - **Tracer unit tests** with a fake `ProcessRunner`: `CacheDebugLog` parser on captured
   fixtures (happy path, truncated log, interleaved daemon noise, no key line, two tasks in
-  one log); `Comparator` culprit derivation for jar, source, input-value and implementation
+  one log); `KeyComparator` culprit derivation for jar, source, input-value and implementation
   changes; `RevisionRange` on bad revs and empty ranges; `WorktreePool` cleanup on exception;
   `GradleKeyProvider`/`BazelDiffProvider` on non-zero exit, timeout, empty output, missing
   binary; `TableRenderer` truncation; `Cli` exit codes.
@@ -326,7 +326,7 @@ excluded from the count; each commit leaves the repo building and testing under 
    interfaces) plus both build files for `tools/tracer`.
 8. `feat(tracer)`: `CacheDebugLog` + `GradleKeyProvider` + tests.
 9. `feat(tracer)`: `BazelDiffProvider` + tests.
-10. `feat(tracer)`: `RevisionRange`, `WorktreePool`, `Comparator` + tests.
+10. `feat(tracer)`: `RevisionRange`, `WorktreePool`, `KeyComparator` + tests.
 11. `feat(tracer)`: `TableRenderer`, `Cli`, `./trace` wrapper, e2e test.
 12. `feat(demo)`: `tools/scenarios.sh`, `docs/scenarios.md`, README final.
 
@@ -395,3 +395,23 @@ Design changes resulting from the review and from current versions:
 | B12 | ask the user about the Gradle version | asked via the plan review page (A2), plan approved | plan |
 | — | `@Classpath` ignores order only inside jars | wording corrected | plan Task 5 |
 | — | UP-TO-DATE prints the key without input lines | parser copes; fresh worktrees never hit it | plan Task 7 |
+
+### Plan review findings (second reviewer, 2026-10-16), triaged
+
+| id | finding | decision | where |
+|---|---|---|---|
+| F1 | `platform(Object)` chosen over `platform(Provider)` because the helper returned Object | fixed before dispatch (`addProvider` + typed provider) | plan Task 1 |
+| F2 | locking assertion could never pass (no lockfile without `--write-locks`) | fixed: dedicated test runs `dependencies --write-locks` | plan Task 1 |
+| F3 | TestKit `copyTo` rewrote settings and dropped `include("dep")` | fixed: non-writing constructor | plan Task 5 |
+| F4 | `FakeProcessRunner` defined in Task 9 but used in Tasks 7–8 | fixed: moved to Task 6 | plan Task 6 |
+| F5 | `finally bazel clean` unscripted in two fake-runner tests | fixed | plan Task 8 |
+| F6 | test-to-test constant reference does not compile under the Bazel one-target-per-test macro | fixed: `CacheDebugFixtures` helper | plan Task 7 |
+| F7 | empty resources glob is an error in Bazel 9 | fixed: `allow_empty = True` | plan Task 6 |
+| F8 | `--nofetch` fails on a fresh output base | fixed: `--repository_disable_download` | plan Task 8 |
+| F9 | commons-lang3 3.14.0–3.17.x carry CVE-2025-48924 | fixed: 3.18.0 → 3.20.0 everywhere | §5, §8, plan |
+| F10 | Cli task over the 400-line limit | fixed: split into options (12) and wiring (13); 15 tasks | plan |
+| F11 | per-pid scratch root never pruned; hash files never deleted | fixed: fixed root, stale sweep at start, cleanup at end | plan Tasks 9, 13 |
+| F12 | 42 bazel-diff analyses in the scenario script | fixed: Bazel column only on the compileJava pass (21) | plan Task 15 |
+| F13 | no test for a runtime dependency version bump | fixed: added to the FingerprintTask tests | plan Task 5 |
+| F14 | `/src/` in a scratch path could fool culprit names | fixed: last occurrence wins | plan Task 10 |
+| F15 | stale version in the tech stack line; `Comparator` shadows `java.util.Comparator`; direct `java_binary` instead of the macro; `jarsAreReproducible` cannot fail first | fixed (renamed to `KeyComparator`, macro used, versions aligned); the reproducibility test stays as a regression guard; a deprecation check (`--warning-mode=all`) is a verification step | plan |

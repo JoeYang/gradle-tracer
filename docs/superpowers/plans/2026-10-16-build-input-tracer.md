@@ -6,9 +6,9 @@
 
 **Architecture:** One source tree, two build descriptions. `build-logic/` (Gradle included build, Java plugins) holds the conventions and a cacheable `fingerprint` task. `tools/tracer/` is a Java CLI that materialises each commit in a throwaway git worktree, runs `gradlew <task> -Dorg.gradle.caching.debug=true` to read the task's cache key and per-input fingerprints, runs `bazel-diff` for the Bazel column, and compares adjacent commits. `tools/scenarios.sh` replays seven teaching commits and asserts the expected verdicts.
 
-**Tech Stack:** Java 21 bytecode on JDK 25, Gradle 9.8.1 (wrapper), Bazel 9.1.0 with rules_java 9.9.0 and rules_jvm_external 7.2, JUnit Jupiter 6.1.3, Gradle TestKit, bazel-diff 49.3.0, commons-lang3 3.14.0, gson 2.10.1.
+**Tech Stack:** Java 21 bytecode on JDK 25, Gradle 9.8.1 (wrapper), Bazel 9.1.0 with rules_java 9.9.0 and rules_jvm_external 7.2, JUnit Jupiter 6.1.3, Gradle TestKit, bazel-diff v60.0.0 (prebuilt binary), commons-lang3 3.18.0 (3.14.0–3.17.x carry CVE-2025-48924), gson 2.10.1.
 
-**Spec:** `docs/superpowers/specs/2026-10-16-build-input-tracer-design.md`. Read sections 4 (module graph), 5 (CLI), 8 (scenario table) and 14 (verified facts and amendments) before starting. Fourteen tasks, one commit each.
+**Spec:** `docs/superpowers/specs/2026-10-16-build-input-tracer-design.md`. Read sections 4 (module graph), 5 (CLI), 8 (scenario table) and 14 (verified facts and amendments) before starting. Fifteen tasks, one commit each.
 
 **Conventions for every task:** work on branch `feature/level1-input-tracer`; tests first; run the task's test command before committing; one logical change per commit, ≤ 400 hand-written lines (generated files — `gradlew`, `gradle/wrapper/*`, `*.lockfile`, `maven_install.json` — do not count); docs for a component land in the same commit as the component; no `Co-Authored-By` trailers; commit body says *why*.
 
@@ -41,8 +41,8 @@ tools/tracer/src/main/java/io/joeyang/tracer/cli/
   Commit.java  TaskKey.java  Verdict.java  Status.java  BazelStatus.java
   KeyProvider.java  ImpactProvider.java  ProviderException.java
   CacheDebugLog.java  GradleKeyProvider.java  BazelDiffProvider.java
-  RevisionRange.java  WorktreePool.java  Comparator.java  TableRenderer.java  Cli.java
-tools/tracer/src/test/java/io/joeyang/tracer/cli/   one test class per class above + FakeProcessRunner
+  RevisionRange.java  WorktreePool.java  KeyComparator.java  TableRenderer.java  Cli.java
+tools/tracer/src/test/java/io/joeyang/tracer/cli/   one test class per class above + FakeProcessRunner (Task 6) + CacheDebugFixtures (Task 7)
 tools/tracer/src/test/resources/cache-debug/        captured gradle logs (fixtures)
 tools/tracer/src/e2eTest/java/io/joeyang/tracer/cli/EndToEndTest.java
 trace                               bash wrapper: installDist then exec the launcher
@@ -107,7 +107,7 @@ org.gradle.jvmargs=-Xmx1g -Dfile.encoding=UTF-8
 ```toml
 [versions]
 junit = "6.1.3"
-commons-lang3 = "3.14.0"
+commons-lang3 = "3.18.0"
 gson = "2.10.1"
 
 [libraries]
@@ -291,8 +291,16 @@ class ConventionPluginsFunctionalTest {
         byte[] cls = Files.readAllBytes(tmp.resolve("build/classes/java/main/sample/Hello.class"));
         int major = ((cls[6] & 0xff) << 8) | (cls[7] & 0xff);
         assertEquals(65, major, "class file major version must be Java 21 (65)");
-        assertTrue(Files.exists(tmp.resolve("gradle.lockfile")) || result.getOutput().contains("lock"),
-                "dependency locking should be active");
+    }
+
+    @Test
+    void locksAllConfigurationsWhenAskedToWriteLocks() throws IOException {
+        project.write("build.gradle.kts", "plugins { id(\"tracer.java-library\") }\n");
+
+        project.run("dependencies", "--write-locks");
+
+        String lock = Files.readString(tmp.resolve("gradle.lockfile"));
+        assertTrue(lock.contains("org.junit.jupiter:junit-jupiter:6.1.3="), lock);
     }
 
     @Test
@@ -331,8 +339,6 @@ class ConventionPluginsFunctionalTest {
     }
 }
 ```
-Note on the locking assertion: `lockAllConfigurations()` only writes a lockfile when run with `--write-locks`; the test accepts either the file or the lock-related output. The authoritative locking check is `./gradlew dependencies --write-locks` in Step 8.
-
 - [ ] **Step 5: Run the tests to verify they fail**
 
 Run: `./gradlew -p build-logic test`
@@ -440,7 +446,7 @@ public final class JavaApplicationConventionPlugin implements Plugin<Project> {
 - [ ] **Step 7: Run the tests to verify they pass**
 
 Run: `./gradlew -p build-logic test`
-Expected: `BUILD SUCCESSFUL`, four tests passed. If `failsClearlyWithoutTheVersionCatalog` fails because Gradle itself errors earlier with a different message, loosen the assertion to the text Gradle prints and record the exact text in `docs/gradle-build.md`.
+Expected: `BUILD SUCCESSFUL`, five tests passed. Then run `./gradlew -p build-logic test --rerun-tasks --warning-mode=all 2>&1 | grep -i deprecat` and expect no output (no deprecated API in use). If `failsClearlyWithoutTheVersionCatalog` fails because Gradle itself errors earlier with a different message, loosen the assertion to the text Gradle prints and record the exact text in `docs/gradle-build.md`.
 
 - [ ] **Step 8: Root build sanity check**
 
@@ -517,7 +523,7 @@ cache-key oracle relies on."
 - Test: `utils/src/test/java/io/joeyang/tracer/utils/FormatterTest.java`, `core/src/test/java/io/joeyang/tracer/core/GreeterTest.java`, `lib/src/test/java/io/joeyang/tracer/lib/ServiceTest.java`
 - Generated: `utils/gradle.lockfile`, `core/gradle.lockfile`, `lib/gradle.lockfile`
 
-The exact source lines matter: `tools/scenarios.sh` (Task 14) edits them by exact string match. Keep the marked lines verbatim.
+The exact source lines matter: `tools/scenarios.sh` (Task 15) edits them by exact string match. Keep the marked lines verbatim.
 
 - [ ] **Step 1: Register the modules**
 
@@ -727,7 +733,7 @@ Expected: `BUILD SUCCESSFUL`, 20 tests.
 - [ ] **Step 7: Write the lockfiles**
 
 Run: `./gradlew :utils:dependencies :core:dependencies :lib:dependencies --write-locks`
-Expected: `utils/gradle.lockfile`, `core/gradle.lockfile`, `lib/gradle.lockfile` created; `lib/gradle.lockfile` contains `org.apache.commons:commons-lang3:3.14.0=compileClasspath,runtimeClasspath,...`.
+Expected: `utils/gradle.lockfile`, `core/gradle.lockfile`, `lib/gradle.lockfile` created; `lib/gradle.lockfile` contains `org.apache.commons:commons-lang3:3.18.0=compileClasspath,runtimeClasspath,...`.
 
 Then: `./gradlew build` → `BUILD SUCCESSFUL`.
 
@@ -1013,7 +1019,7 @@ bazel_dep(name = "rules_jvm_external", version = "7.2")
 maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
 maven.install(
     artifacts = [
-        "org.apache.commons:commons-lang3:3.14.0",
+        "org.apache.commons:commons-lang3:3.18.0",
         "com.google.code.gson:gson:2.10.1",
         "org.junit.jupiter:junit-jupiter-api:6.1.3",
         "org.junit.platform:junit-platform-console-standalone:6.1.3",
@@ -1289,9 +1295,17 @@ final class GradleProject {
 
     /** @param cacheDir shared local build cache; pass the same dir to two projects to test FROM-CACHE across locations */
     GradleProject(Path dir, Path cacheDir) throws IOException {
+        this(dir, cacheDir, true);
+    }
+
+    /** @param writeScaffold false wraps an existing directory (see {@link #copyTo}) without overwriting its files */
+    private GradleProject(Path dir, Path cacheDir, boolean writeScaffold) throws IOException {
         this.dir = dir;
         this.cacheDir = cacheDir;
         Files.createDirectories(dir);
+        if (!writeScaffold) {
+            return;
+        }
         write("settings.gradle.kts", """
                 dependencyResolutionManagement {
                     repositories { mavenCentral() }
@@ -1334,7 +1348,7 @@ final class GradleProject {
                 }
             }
         }
-        return new GradleProject(other, cacheDir);
+        return new GradleProject(other, cacheDir, false);
     }
 
     BuildResult run(String... args) {
@@ -1390,8 +1404,7 @@ class FingerprintTaskFunctionalTest {
     @BeforeEach
     void setUp() throws IOException {
         project = new GradleProject(tmp.resolve("a"), tmp.resolve("cache"));
-        project.write("settings.gradle.kts", project.dir.resolve("settings.gradle.kts").toFile().exists()
-                ? Files.readString(project.dir.resolve("settings.gradle.kts")) + "include(\"dep\")\n" : "");
+        project.write("settings.gradle.kts", Files.readString(project.dir.resolve("settings.gradle.kts")) + "include(\"dep\")\n");
         project.write("dep/build.gradle.kts", "plugins { id(\"tracer.java-library\") }\n");
         project.write("dep/src/main/java/dep/Dep.java", DEP_SOURCE);
         project.write("build.gradle.kts", """
@@ -1464,6 +1477,25 @@ class FingerprintTaskFunctionalTest {
 
         Pattern key = Pattern.compile("Build cache key for task ':fingerprint' is [0-9a-f]{32}");
         assertTrue(key.matcher(result.getOutput()).find(), result.getOutput());
+    }
+
+    @Test
+    void keyChangesWhenAnExternalDependencyVersionChanges() throws IOException {
+        String withGson = """
+                plugins { id("tracer.java-application") }
+                dependencies {
+                    implementation(project(":dep"))
+                    implementation("com.google.code.gson:gson:%s")
+                }
+                application { mainClass.set("app.Main") }
+                """;
+        project.write("build.gradle.kts", withGson.formatted("2.10.1"));
+        project.run(":fingerprint");
+        project.write("build.gradle.kts", withGson.formatted("2.11.0"));
+
+        BuildResult result = project.run(":fingerprint");
+
+        assertEquals(TaskOutcome.SUCCESS, result.task(":fingerprint").getOutcome(), "a different gson jar is a different runtime input");
     }
 
     @Test
@@ -1569,7 +1601,7 @@ with the new method:
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew -p build-logic test`
-Expected: `BUILD SUCCESSFUL`; 11 tests. If `cacheDebugOutputNamesTheKey` fails on the hash length, read the actual line from the output, fix the regex here and in Task 7's parser, and note the real format in `docs/tracer.md`.
+Expected: `BUILD SUCCESSFUL`; 13 tests. If `cacheDebugOutputNamesTheKey` fails on the hash length, read the actual line from the output, fix the regex here and in Task 7's parser, and note the real format in `docs/tracer.md`.
 
 - [ ] **Step 6: Check it on the real modules**
 
@@ -1621,7 +1653,7 @@ edits, no change on comment-only edits."
 - Modify: `settings.gradle.kts` (add `include("tools:tracer")`)
 - Create: `tools/tracer/build.gradle.kts`, `tools/tracer/BUILD.bazel`
 - Create: `tools/tracer/src/main/java/io/joeyang/tracer/cli/{ProcessRunner,ProcessException,ProviderException,UsageException,Commit,TaskKey,Status,BazelStatus,Verdict,KeyProvider,ImpactProvider,Cli}.java`
-- Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/{CommitTest,TaskKeyTest,ProcessRunnerResultTest,CliUsageTest}.java`
+- Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/{CommitTest,TaskKeyTest,ProcessRunnerResultTest,CliUsageTest}.java`, plus the test helper `FakeProcessRunner.java` used from Task 7 on
 - Create: `docs/tracer.md` (component table, to be extended)
 - Generated: `tools/tracer/gradle.lockfile`
 
@@ -1646,10 +1678,9 @@ application {
 }
 ```
 
-`tools/tracer/BUILD.bazel` (macros come from Task 4's `tools/defs.bzl`):
+`tools/tracer/BUILD.bazel` (macros come from Task 4's `tools/defs.bzl`; the resources glob is empty until Task 7 adds fixtures, and Bazel 9 rejects an empty glob unless told otherwise):
 ```python
-load("@rules_java//java:defs.bzl", "java_binary")
-load("//tools:defs.bzl", "junit5_test_suite", "tracer_java_library")
+load("//tools:defs.bzl", "junit5_test_suite", "tracer_java_binary", "tracer_java_library")
 
 tracer_java_library(
     name = "tracer_lib",
@@ -1657,7 +1688,7 @@ tracer_java_library(
     visibility = ["//visibility:public"],
 )
 
-java_binary(
+tracer_java_binary(
     name = "tracer",
     main_class = "io.joeyang.tracer.cli.Cli",
     runtime_deps = [":tracer_lib"],
@@ -1666,13 +1697,62 @@ java_binary(
 junit5_test_suite(
     name = "tests",
     srcs = glob(["src/test/java/**/*.java"]),
-    resources = glob(["src/test/resources/**"]),
+    resources = glob(["src/test/resources/**"], allow_empty = True),
     resource_strip_prefix = "tools/tracer/src/test/resources",
     deps = [":tracer_lib"],
 )
 ```
 
-- [ ] **Step 2: Write the failing tests**
+- [ ] **Step 2: Write the failing tests and the scripted fake runner**
+
+`tools/tracer/src/test/java/io/joeyang/tracer/cli/FakeProcessRunner.java`:
+```java
+package io.joeyang.tracer.cli;
+
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/** Scripted ProcessRunner: match commands by prefix of their space-joined form, in registration order. */
+final class FakeProcessRunner implements ProcessRunner {
+    private final Map<String, Object> scripted = new LinkedHashMap<>(); // prefix → Result | ProcessException
+    final List<List<String>> calls = new ArrayList<>();
+    final List<Path> cwds = new ArrayList<>();
+
+    FakeProcessRunner on(String commandPrefix, int exit, String stdout, String stderr) {
+        scripted.put(commandPrefix, new Result(exit, stdout, stderr));
+        return this;
+    }
+
+    FakeProcessRunner failWith(String commandPrefix, ProcessException e) {
+        scripted.put(commandPrefix, e);
+        return this;
+    }
+
+    @Override
+    public Result run(Path cwd, Duration timeout, List<String> command) throws ProcessException {
+        calls.add(command);
+        cwds.add(cwd);
+        String joined = String.join(" ", command);
+        for (Map.Entry<String, Object> e : scripted.entrySet()) {
+            if (joined.startsWith(e.getKey())) {
+                if (e.getValue() instanceof ProcessException pe) {
+                    throw pe;
+                }
+                return (Result) e.getValue();
+            }
+        }
+        throw new AssertionError("unexpected command: " + joined);
+    }
+
+    boolean ran(String commandPrefix) {
+        return calls.stream().anyMatch(c -> String.join(" ", c).startsWith(commandPrefix));
+    }
+}
+```
 
 `tools/tracer/src/test/java/io/joeyang/tracer/cli/CommitTest.java`:
 ```java
@@ -2137,7 +2217,7 @@ under both build systems from the first commit."
 
 **Files:**
 - Create: `tools/tracer/src/main/java/io/joeyang/tracer/cli/CacheDebugLog.java`, `tools/tracer/src/main/java/io/joeyang/tracer/cli/GradleKeyProvider.java`
-- Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/{CacheDebugLogTest,GradleKeyProviderTest}.java`
+- Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/{CacheDebugFixtures,CacheDebugLogTest,GradleKeyProviderTest}.java`
 - Test fixtures: `tools/tracer/src/test/resources/cache-debug/appA-compileJava.log`, `tools/tracer/src/test/resources/cache-debug/appA-fingerprint.log`
 - Modify: `docs/tracer.md`
 
@@ -2170,24 +2250,15 @@ Expected: both files contain several `Build cache key` lines (one per executed t
 
 - [ ] **Step 2: Write the failing tests**
 
-`tools/tracer/src/test/java/io/joeyang/tracer/cli/CacheDebugLogTest.java`:
+`tools/tracer/src/test/java/io/joeyang/tracer/cli/CacheDebugFixtures.java` (a helper, not a test: under Bazel each `*Test.java` is its own target, so shared text lives in the support library):
 ```java
 package io.joeyang.tracer.cli;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+/** Hand-written cache-debug output in the exact shape Gradle prints, shared by the parser and provider tests. */
+final class CacheDebugFixtures {
+    private CacheDebugFixtures() {}
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.Map;
-import java.util.Optional;
-import org.junit.jupiter.api.Test;
-
-class CacheDebugLogTest {
-    static final String TASK = ":app:appA:compileJava";
-    static final String FIXTURE = """
+    static final String COMPILE_JAVA_LOG = """
             Downloading https://services.gradle.org/distributions/gradle-9.8.1-bin.zip
             > Task :core:compileJava
             Appending implementation to build cache key: org.gradle.api.tasks.compile.JavaCompile_Decorated@aaaa
@@ -2212,6 +2283,27 @@ class CacheDebugLogTest {
 
             BUILD SUCCESSFUL in 2s
             """;
+}
+```
+
+`tools/tracer/src/test/java/io/joeyang/tracer/cli/CacheDebugLogTest.java`:
+```java
+package io.joeyang.tracer.cli;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.Optional;
+import org.junit.jupiter.api.Test;
+
+class CacheDebugLogTest {
+    static final String TASK = ":app:appA:compileJava";
+    static final String FIXTURE = CacheDebugFixtures.COMPILE_JAVA_LOG;
 
     @Test void parsesOnlyTheRequestedTask() {
         TaskKey key = CacheDebugLog.parse(FIXTURE, TASK).orElseThrow();
@@ -2274,7 +2366,7 @@ class CacheDebugLogTest {
     @Test void realFingerprintFixtureParses() throws IOException {
         TaskKey key = CacheDebugLog.parse(resource("/cache-debug/appA-fingerprint.log"), ":app:appA:fingerprint").orElseThrow();
         assertTrue(key.fileFingerprints().get("runtimeClasspath").keySet().stream().anyMatch(p -> p.endsWith("/core.jar")));
-        assertTrue(key.fileFingerprints().get("runtimeClasspath").keySet().stream().anyMatch(p -> p.contains("commons-lang3-3.14.0.jar")));
+        assertTrue(key.fileFingerprints().get("runtimeClasspath").keySet().stream().anyMatch(p -> p.contains("commons-lang3-3.18.0.jar")));
         assertTrue(key.implementation().contains("FingerprintTask"), key.implementation());
     }
 
@@ -2333,7 +2425,7 @@ class GradleKeyProviderTest {
     }
 
     @Test void runsGradlewWithDebugFlagsInTheWorktree() throws Exception {
-        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 0, CacheDebugLogTest.FIXTURE, "");
+        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 0, CacheDebugFixtures.COMPILE_JAVA_LOG, "");
 
         TaskKey key = new GradleKeyProvider(runner, false, Duration.ofMinutes(1)).keyFor(worktree, TASK);
 
@@ -2343,7 +2435,7 @@ class GradleKeyProviderTest {
     }
 
     @Test void offlineAppendsTheFlag() throws Exception {
-        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 0, CacheDebugLogTest.FIXTURE, "");
+        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 0, CacheDebugFixtures.COMPILE_JAVA_LOG, "");
         new GradleKeyProvider(runner, true, Duration.ofMinutes(1)).keyFor(worktree, TASK);
         assertTrue(runner.calls.get(0).contains("--offline"));
     }
@@ -2381,7 +2473,7 @@ class GradleKeyProviderTest {
     }
 
     @Test void nonCacheableTaskIsExplainedNotMisreported() {
-        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 0, CacheDebugLogTest.FIXTURE, "");
+        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 0, CacheDebugFixtures.COMPILE_JAVA_LOG, "");
         ProviderException e = assertThrows(ProviderException.class,
                 () -> new GradleKeyProvider(runner, false, Duration.ofMinutes(1)).keyFor(worktree, ":core:jar"));
         assertTrue(e.getMessage().contains("not cacheable"), e.getMessage());
@@ -2667,11 +2759,11 @@ class BazelDiffProviderTest {
         assertEquals(worktree, runner.cwds.get(1));
     }
 
-    @Test void offlineAsksBazelNotToFetch() throws Exception {
+    @Test void offlineForbidsRepositoryDownloads() throws Exception {
         FakeProcessRunner runner = new FakeProcessRunner().on(binary.toString(), 0, "", "").on("bazel clean", 0, "", "");
         Files.writeString(out, "{}");
         provider(runner, true).hashes(worktree, out);
-        assertTrue(runner.calls.get(0).contains("--bazelCommandOptions=--nofetch"), runner.calls.get(0).toString());
+        assertTrue(runner.calls.get(0).contains("--bazelCommandOptions=--repository_disable_download"), runner.calls.get(0).toString());
     }
 
     @Test void missingOutputIsAProviderError() {
@@ -2681,14 +2773,15 @@ class BazelDiffProviderTest {
     }
 
     @Test void nonZeroExitCarriesTheFirstErrorLine() {
-        FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 1, "", "ERROR: no such package '@maven//'\n");
+        FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 1, "", "ERROR: no such package '@maven//'\n").on("bazel clean", 0, "", "");
         ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, false).hashes(worktree, out));
         assertTrue(e.getMessage().contains("no such package"), e.getMessage());
     }
 
     @Test void missingBinaryIsAProviderError() {
         FakeProcessRunner runner = new FakeProcessRunner()
-                .failWith(binary.toString(), ProcessException.cannotStart(List.of(binary.toString()), new IOException("No such file")));
+                .failWith(binary.toString(), ProcessException.cannotStart(List.of(binary.toString()), new IOException("No such file")))
+                .on("bazel clean", 0, "", "");
         ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, false).hashes(worktree, out));
         assertTrue(e.getMessage().contains("cannot start"), e.getMessage());
         assertTrue(e.getMessage().contains("fetch-bazel-diff"), "must tell the user how to get it: " + e.getMessage());
@@ -2797,7 +2890,7 @@ public final class BazelDiffProvider implements ImpactProvider {
         List<String> command = new ArrayList<>(List.of(binary.toString(), "generate-hashes", "-w", worktree.toString(),
                 "-b", "bazel", "--fineGrainedHashExternalRepos=" + FINE_GRAINED_REPOS));
         if (offline) {
-            command.add("--bazelCommandOptions=--nofetch");
+            command.add("--bazelCommandOptions=--repository_disable_download");
         }
         command.add(output.toString());
         try {
@@ -2897,59 +2990,12 @@ runs do not fill the disk."
 
 **Files:**
 - Create: `tools/tracer/src/main/java/io/joeyang/tracer/cli/RevisionRange.java`, `tools/tracer/src/main/java/io/joeyang/tracer/cli/WorktreePool.java`
-- Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/{FakeProcessRunner,RevisionRangeTest,WorktreePoolTest}.java`
+- Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/{RevisionRangeTest,WorktreePoolTest}.java`
 - Modify: `docs/tracer.md`
 
-- [ ] **Step 1: Write the fake runner and the failing tests**
+- [ ] **Step 1: Write the failing tests**
 
-`tools/tracer/src/test/java/io/joeyang/tracer/cli/FakeProcessRunner.java`:
-```java
-package io.joeyang.tracer.cli;
-
-import java.nio.file.Path;
-import java.time.Duration;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-
-/** Scripted ProcessRunner: match commands by prefix of their space-joined form, in registration order. */
-final class FakeProcessRunner implements ProcessRunner {
-    private final Map<String, Object> scripted = new LinkedHashMap<>(); // prefix → Result | ProcessException
-    final List<List<String>> calls = new ArrayList<>();
-    final List<Path> cwds = new ArrayList<>();
-
-    FakeProcessRunner on(String commandPrefix, int exit, String stdout, String stderr) {
-        scripted.put(commandPrefix, new Result(exit, stdout, stderr));
-        return this;
-    }
-
-    FakeProcessRunner failWith(String commandPrefix, ProcessException e) {
-        scripted.put(commandPrefix, e);
-        return this;
-    }
-
-    @Override
-    public Result run(Path cwd, Duration timeout, List<String> command) throws ProcessException {
-        calls.add(command);
-        cwds.add(cwd);
-        String joined = String.join(" ", command);
-        for (Map.Entry<String, Object> e : scripted.entrySet()) {
-            if (joined.startsWith(e.getKey())) {
-                if (e.getValue() instanceof ProcessException pe) {
-                    throw pe;
-                }
-                return (Result) e.getValue();
-            }
-        }
-        throw new AssertionError("unexpected command: " + joined);
-    }
-
-    boolean ran(String commandPrefix) {
-        return calls.stream().anyMatch(c -> String.join(" ", c).startsWith(commandPrefix));
-    }
-}
-```
+(`FakeProcessRunner` already exists from Task 6.)
 
 `tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java`:
 ```java
@@ -3071,6 +3117,15 @@ class WorktreePoolTest {
         try (WorktreePool pool = new WorktreePool(git, repo, tmp.resolve("wts"), false)) {
             pool.checkout(C1);
             assertFalse(Files.exists(stale.resolve("leftover.txt")));
+        }
+    }
+
+    @Test void staleWorktreeDirsFromKilledRunsAreSweptAtStart() throws Exception {
+        Path stale = tmp.resolve("wts").resolve("wt-0000000");
+        Files.createDirectories(stale);
+        Files.writeString(stale.resolve("leftover.txt"), "x");
+        try (WorktreePool pool = new WorktreePool(happyGit(), repo, tmp.resolve("wts"), false)) {
+            assertFalse(Files.exists(stale));
         }
     }
 
@@ -3198,12 +3253,29 @@ public final class WorktreePool implements AutoCloseable {
         this.root = root;
         this.keep = keep;
         run("git", "worktree", "prune");
+        sweepStaleDirectories();
         try {
             Files.createDirectories(root);
         } catch (IOException e) {
             throw new ProviderException("cannot create worktree root " + root + ": " + e.getMessage(), e);
         }
         Runtime.getRuntime().addShutdownHook(shutdownHook);
+    }
+
+    /** A killed run leaves {@code wt-*} directories behind; git has already forgotten them (prune), so delete them. */
+    private void sweepStaleDirectories() {
+        if (!Files.isDirectory(root)) {
+            return;
+        }
+        try (Stream<Path> entries = Files.list(root)) {
+            List<Path> stale = entries.filter(d -> d.getFileName().toString().startsWith("wt-")).toList();
+            stale.forEach(WorktreePool::deleteRecursively);
+            if (!stale.isEmpty()) {
+                System.err.println("trace: removed " + stale.size() + " stale worktree dir(s) under " + root);
+            }
+        } catch (IOException ignored) {
+            // best effort; checkout() deletes a same-named leftover anyway
+        }
     }
 
     public Path checkout(Commit commit) throws ProviderException {
@@ -3280,7 +3352,7 @@ public final class WorktreePool implements AutoCloseable {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 49 tests at this point in the sequence.
+Expected: `BUILD SUCCESSFUL`; 50 tests at this point in the sequence.
 
 - [ ] **Step 5: Document and commit**
 
@@ -3288,7 +3360,7 @@ Append to `docs/tracer.md`:
 ```markdown
 ## Git layer
 - `RevisionRange.resolve(from, to)` → `[from, …from..to oldest first]`, following the first-parent line so adjacent rows are parent and child even across merges. Unknown revision or empty range → `UsageException`; git not runnable → `ProviderException`.
-- `WorktreePool` → `git worktree prune`, then `git worktree add --detach <root>/wt-<sha7> <sha>` per commit. `close()` and a shutdown hook run `git worktree remove --force`; `--keep-worktrees` disables removal.
+- `WorktreePool` → `git worktree prune`, sweep of stale `wt-*` directories under the root (leftovers of a killed run), then `git worktree add --detach <root>/wt-<sha7> <sha>` per commit. `close()` and a shutdown hook run `git worktree remove --force`; `--keep-worktrees` disables removal.
 ```
 
 ```bash
@@ -3303,16 +3375,16 @@ working tree is never touched and Ctrl-C leaves nothing behind."
 
 ---
 
-### Task 10: Comparator and TableRenderer
+### Task 10: KeyComparator and TableRenderer
 
 **Files:**
-- Create: `tools/tracer/src/main/java/io/joeyang/tracer/cli/Comparator.java`, `tools/tracer/src/main/java/io/joeyang/tracer/cli/TableRenderer.java`
-- Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/{ComparatorTest,TableRendererTest}.java`
+- Create: `tools/tracer/src/main/java/io/joeyang/tracer/cli/KeyComparator.java`, `tools/tracer/src/main/java/io/joeyang/tracer/cli/TableRenderer.java`
+- Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/{KeyComparatorTest,TableRendererTest}.java`
 - Modify: `docs/tracer.md`
 
 - [ ] **Step 1: Write the failing tests**
 
-`tools/tracer/src/test/java/io/joeyang/tracer/cli/ComparatorTest.java`:
+`tools/tracer/src/test/java/io/joeyang/tracer/cli/KeyComparatorTest.java`:
 ```java
 package io.joeyang.tracer.cli;
 
@@ -3324,7 +3396,7 @@ import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
-class ComparatorTest {
+class KeyComparatorTest {
     static final Commit C = new Commit("c".repeat(40), "some change");
     static final String TASK = ":app:appA:compileJava";
 
@@ -3334,7 +3406,7 @@ class ComparatorTest {
 
     @Test void firstCommitIsBase() {
         TaskKey k = key("k1", Map.of(), Map.of(), "i");
-        Verdict v = Comparator.verdict(C, Optional.empty(), Optional.of(k), Optional.empty(), BazelStatus.NONE);
+        Verdict v = KeyComparator.verdict(C, Optional.empty(), Optional.of(k), Optional.empty(), BazelStatus.NONE);
         assertEquals(Status.BASE, v.status());
         assertEquals(List.of(), v.culprits());
     }
@@ -3342,14 +3414,14 @@ class ComparatorTest {
     @Test void sameKeyIsClean() {
         TaskKey a = key("k1", Map.of("classpath", Map.of("/x/core.jar", "aa")), Map.of(), "i");
         TaskKey b = key("k1", Map.of("classpath", Map.of("/y/core.jar", "aa")), Map.of(), "i");
-        Verdict v = Comparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.CLEAN);
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.CLEAN);
         assertEquals(Status.CLEAN, v.status());
     }
 
     @Test void changedJarIsNamedByFileName() {
         TaskKey a = key("k1", Map.of("classpath", Map.of("/w1/core/build/libs/core.jar", "aa", "/w1/lib/build/libs/lib.jar", "bb")), Map.of(), "i");
         TaskKey b = key("k2", Map.of("classpath", Map.of("/w2/core/build/libs/core.jar", "a2", "/w2/lib/build/libs/lib.jar", "bb")), Map.of(), "i");
-        Verdict v = Comparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
         assertEquals(Status.CHANGED, v.status());
         assertEquals(List.of("core.jar"), v.culprits());
     }
@@ -3357,7 +3429,7 @@ class ComparatorTest {
     @Test void changedSourceIsNamedRelativeToItsModule() {
         TaskKey a = key("k1", Map.of("stableSources", Map.of("/w1/app/appA/src/main/java/io/joeyang/tracer/app/a/AppA.java", "aa")), Map.of(), "i");
         TaskKey b = key("k2", Map.of("stableSources", Map.of("/w2/app/appA/src/main/java/io/joeyang/tracer/app/a/AppA.java", "a2")), Map.of(), "i");
-        Verdict v = Comparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
         assertEquals(List.of("appA/src/main/java/io/joeyang/tracer/app/a/AppA.java"), v.culprits());
     }
 
@@ -3368,14 +3440,14 @@ class ComparatorTest {
         TaskKey b = key("k2", Map.of("classpath", Map.of(
                 "/w2/core/build/classes/java/main/io/joeyang/tracer/core/Greeter.class", "aa",
                 "/w2/core/build/classes/java/main/io/joeyang/tracer/core/Other.class", "b2")), Map.of(), "i");
-        Verdict v = Comparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
         assertEquals(List.of("core classes"), v.culprits());
     }
 
     @Test void addedAndRemovedFilesCount() {
         TaskKey a = key("k1", Map.of("classpath", Map.of("/w1/libs/gson-2.10.1.jar", "aa")), Map.of(), "i");
         TaskKey b = key("k2", Map.of("classpath", Map.of("/w2/libs/gson-2.11.0.jar", "bb")), Map.of(), "i");
-        Verdict v = Comparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
         assertEquals(List.of("gson-2.10.1.jar", "gson-2.11.0.jar"), v.culprits());
     }
 
@@ -3384,21 +3456,21 @@ class ComparatorTest {
                 "/home/u/.gradle/caches/modules-2/files-2.1/com.google.code.gson/gson/2.10.1/abc/gson-2.10.1.jar", "aa")), Map.of(), "i");
         TaskKey b = key("k2", Map.of("runtimeClasspath", Map.of(
                 "/home/u/.gradle/caches/modules-2/files-2.1/com.google.code.gson/gson/2.11.0/def/gson-2.11.0.jar", "bb")), Map.of(), "i");
-        Verdict v = Comparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
         assertEquals(List.of("com.google.code.gson:gson"), v.culprits());
     }
 
     @Test void changedValueAndImplementationAreNamed() {
         TaskKey a = key("k1", Map.of(), Map.of("options.compilerArgs", "v1"), "impl1");
         TaskKey b = key("k2", Map.of(), Map.of("options.compilerArgs", "v2"), "impl2");
-        Verdict v = Comparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
         assertEquals(List.of("options.compilerArgs", "build logic"), v.culprits());
     }
 
     @Test void culpritsAreCappedAtFour() {
         Map<String, String> many1 = Map.of("/a.jar", "1", "/b.jar", "1", "/c.jar", "1", "/d.jar", "1", "/e.jar", "1", "/f.jar", "1");
         Map<String, String> many2 = Map.of("/a.jar", "2", "/b.jar", "2", "/c.jar", "2", "/d.jar", "2", "/e.jar", "2", "/f.jar", "2");
-        Verdict v = Comparator.verdict(C, Optional.of(key("k1", Map.of("classpath", many1), Map.of(), "i")),
+        Verdict v = KeyComparator.verdict(C, Optional.of(key("k1", Map.of("classpath", many1), Map.of(), "i")),
                 Optional.of(key("k2", Map.of("classpath", many2), Map.of(), "i")), Optional.empty(), BazelStatus.IMPACTED);
         assertEquals(5, v.culprits().size());
         assertEquals("+2 more", v.culprits().get(4));
@@ -3407,12 +3479,12 @@ class ComparatorTest {
     @Test void keyChangedButNoFingerprintDifferenceStillNamesSomething() {
         TaskKey a = key("k1", Map.of(), Map.of(), "i");
         TaskKey b = key("k2", Map.of(), Map.of(), "i");
-        Verdict v = Comparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
         assertEquals(List.of("inputs changed (no fingerprint detail)"), v.culprits());
     }
 
     @Test void missingKeyIsBuildFailedWithTheError() {
-        Verdict v = Comparator.verdict(C, Optional.of(key("k1", Map.of(), Map.of(), "i")), Optional.empty(),
+        Verdict v = KeyComparator.verdict(C, Optional.of(key("k1", Map.of(), Map.of(), "i")), Optional.empty(),
                 Optional.of("Could not resolve com.example:missing:1.0"), BazelStatus.NOT_AVAILABLE);
         assertEquals(Status.BUILD_FAILED, v.status());
         assertTrue(v.error().orElseThrow().contains("missing:1.0"));
@@ -3482,12 +3554,12 @@ class TableRendererTest {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `./gradlew :tools:tracer:test --tests '*ComparatorTest*' --tests '*TableRendererTest*'`
-Expected: FAIL at compile, `cannot find symbol` for `Comparator`, `TableRenderer`.
+Run: `./gradlew :tools:tracer:test --tests '*KeyComparatorTest*' --tests '*TableRendererTest*'`
+Expected: FAIL at compile, `cannot find symbol` for `KeyComparator`, `TableRenderer`.
 
 - [ ] **Step 3: Implement**
 
-`tools/tracer/src/main/java/io/joeyang/tracer/cli/Comparator.java`:
+`tools/tracer/src/main/java/io/joeyang/tracer/cli/KeyComparator.java`:
 ```java
 package io.joeyang.tracer.cli;
 
@@ -3501,10 +3573,10 @@ import java.util.Set;
 import java.util.TreeSet;
 
 /** Pure logic: turns two adjacent keys into a verdict and a short list of culprits. */
-public final class Comparator {
+public final class KeyComparator {
     static final int MAX_CULPRITS = 4;
 
-    private Comparator() {}
+    private KeyComparator() {}
 
     /**
      * @param previous the last successfully obtained key before this commit; empty for the base commit
@@ -3580,11 +3652,11 @@ public final class Comparator {
      */
     static String displayName(String path) {
         String p = path.replace('\\', '/');
-        int classes = p.indexOf("/build/classes/");
+        int classes = p.lastIndexOf("/build/classes/");
         if (classes >= 0) {
             return lastSegmentBefore(p, classes) + " classes";
         }
-        int resources = p.indexOf("/build/resources/");
+        int resources = p.lastIndexOf("/build/resources/");
         if (resources >= 0) {
             return lastSegmentBefore(p, resources) + " resources";
         }
@@ -3595,7 +3667,7 @@ public final class Comparator {
                 return parts[0] + ":" + parts[1];
             }
         }
-        int src = p.indexOf("/src/");
+        int src = p.lastIndexOf("/src/");
         if (src >= 0) {
             return lastSegmentBefore(p, src) + p.substring(src);
         }
@@ -3708,14 +3780,14 @@ public final class TableRenderer {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 64 tests at this point in the sequence. Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
+Expected: `BUILD SUCCESSFUL`; 65 tests at this point in the sequence. Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
 
 - [ ] **Step 5: Document and commit**
 
 Append to `docs/tracer.md`:
 ```markdown
 ## Comparison
-`Comparator.verdict(commit, previousGoodKey, currentKey, error, bazel)`: no current key → `BUILD-FAILED`; no previous → `base`;
+`KeyComparator.verdict(commit, previousGoodKey, currentKey, error, bazel)`: no current key → `BUILD-FAILED`; no previous → `base`;
 equal keys → `clean`; otherwise `CHANGED` with culprits = file fingerprints that differ (compared by location-independent display
 name: `core.jar`, `appA/src/main/java/.../AppA.java`, `appA classes`, and `group:artifact` for jars from the Gradle module cache so a version bump is one culprit), value properties that differ, and `build logic` when the task
 implementation hash differs. Capped at four plus `+N more`.
@@ -3867,7 +3939,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 69 tests at this point in the sequence; the timeout test finishes in well under a second.
+Expected: `BUILD SUCCESSFUL`; 70 tests at this point in the sequence; the timeout test finishes in well under a second.
 
 - [ ] **Step 5: Commit**
 
@@ -3882,10 +3954,242 @@ wedge the tracer."
 ```
 
 ---
-### Task 12: Cli
+### Task 12: Cli options parsing
 
 **Files:**
-- Modify: `tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java` (replace the skeleton)
+- Modify: `tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java` (add the `Options` record and the final usage text; `main` only parses for now)
+- Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/CliOptionsTest.java`
+- Modify: `docs/tracer.md`
+
+Split from the wiring (Task 13) to keep each commit under the 400-line limit.
+
+- [ ] **Step 1: Write the failing tests**
+
+`tools/tracer/src/test/java/io/joeyang/tracer/cli/CliOptionsTest.java`:
+```java
+package io.joeyang.tracer.cli;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.nio.file.Path;
+import org.junit.jupiter.api.Test;
+
+class CliOptionsTest {
+    static Cli.Options parse(String... args) throws UsageException {
+        return Cli.Options.parse(args);
+    }
+
+    @Test void defaultsForARange() throws Exception {
+        Cli.Options o = parse("appA", "--from", "x", "--to", "y");
+        assertEquals(":app:appA:compileJava", o.taskPath());
+        assertEquals("//app/appA:appA", o.bazelTarget());
+        assertTrue(o.bazel());
+        assertFalse(o.offline() || o.keepWorktrees() || o.tsv());
+        assertNull(o.tsvOut());
+        assertNull(o.at());
+        assertEquals(10, o.timeout().toMinutes());
+    }
+
+    @Test void parsesEveryFlag() throws Exception {
+        Cli.Options o = parse("appB", "--from", "x", "--to", "y", "--task", "fingerprint", "--no-bazel", "--offline",
+                "--keep-worktrees", "--tsv-out", "rows.tsv", "--timeout-minutes", "3");
+        assertEquals(":app:appB:fingerprint", o.taskPath());
+        assertFalse(o.bazel());
+        assertTrue(o.offline() && o.keepWorktrees());
+        assertEquals(Path.of("rows.tsv"), o.tsvOut());
+        assertEquals(3, o.timeout().toMinutes());
+    }
+
+    @Test void atModeNeedsNoRange() throws Exception {
+        Cli.Options o = parse("appC", "--at", "HEAD", "--tsv");
+        assertEquals("HEAD", o.at());
+        assertNull(o.from());
+        assertTrue(o.tsv());
+    }
+
+    @Test void repeatedBooleanFlagsAreHarmless() throws Exception {
+        assertFalse(parse("appA", "--at", "z", "--no-bazel", "--no-bazel").bazel());
+    }
+
+    @Test void rejectsMissingApp() { assertThrows(UsageException.class, () -> parse()); }
+    @Test void rejectsFlagInAppPosition() { assertThrows(UsageException.class, () -> parse("--from", "x", "--to", "y")); }
+    @Test void rejectsMissingTo() { assertThrows(UsageException.class, () -> parse("appA", "--from", "x")); }
+    @Test void rejectsAtTogetherWithRange() { assertThrows(UsageException.class, () -> parse("appA", "--from", "x", "--to", "y", "--at", "z")); }
+    @Test void rejectsUnknownFlag() { assertThrows(UsageException.class, () -> parse("appA", "--at", "z", "--bogus")); }
+    @Test void rejectsNonNumericTimeout() { assertThrows(UsageException.class, () -> parse("appA", "--at", "z", "--timeout-minutes", "soon")); }
+    @Test void rejectsFlagWithoutValue() { assertThrows(UsageException.class, () -> parse("appA", "--at")); }
+
+    @Test void usageMentionsEveryFlag() {
+        for (String flag : new String[] {"--from", "--to", "--at", "--task", "--no-bazel", "--offline", "--keep-worktrees", "--tsv", "--tsv-out", "--timeout-minutes"}) {
+            assertTrue(Cli.USAGE.contains(flag), flag);
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `./gradlew :tools:tracer:test --tests '*CliOptionsTest*'`
+Expected: FAIL at compile, `cannot find symbol: class Options`.
+
+- [ ] **Step 3: Implement**
+
+Replace `tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java` with:
+```java
+package io.joeyang.tracer.cli;
+
+import java.io.PrintStream;
+import java.nio.file.Path;
+import java.time.Duration;
+
+/** Entry point. Options parsing lives here; the range walk arrives in the next task. */
+public final class Cli {
+    public static final int EXIT_OK = 0;
+    public static final int EXIT_USAGE = 1;
+    public static final int EXIT_TOOL_FAILURE = 2;
+    public static final int EXIT_CHANGED = 3;
+
+    static final String USAGE = """
+            usage: trace <app> --from <rev> --to <rev> [--task <name>] [--no-bazel] [--offline] [--keep-worktrees]
+                                                        [--tsv | --tsv-out <file>] [--timeout-minutes <n>]
+                   trace <app> --at <rev> [--task <name>]
+
+              <app>            appA | appB | appC   (maps to :app:<app>:<task> and //app/<app>:<app>)
+              --task           Gradle task whose cache key is compared; default compileJava, alternative fingerprint
+              --no-bazel       skip the bazel-diff column
+              --offline        pass --offline to gradle; forbid repository downloads in bazel
+              --keep-worktrees leave the checked-out worktrees and hash files in place for inspection
+              --tsv            machine-readable output only (sha, subject, key, bazel, verdict, culprits)
+              --tsv-out <file> print the table and also write the TSV to <file>
+              --timeout-minutes per external command, default 10
+
+            exit codes: 0 no change, 1 usage error, 2 a tool failed, 3 at least one CHANGED
+            """;
+
+    /** Parsed command line. */
+    record Options(String app, String from, String to, String at, String task, boolean bazel, boolean offline,
+                   boolean keepWorktrees, boolean tsv, Path tsvOut, Duration timeout) {
+
+        static Options parse(String[] args) throws UsageException {
+            if (args.length == 0) {
+                throw new UsageException("missing <app>");
+            }
+            String app = args[0];
+            if (app.startsWith("--")) {
+                throw new UsageException("first argument must be the app name, got '" + app + "'");
+            }
+            String from = null, to = null, at = null, task = "compileJava";
+            boolean bazel = true, offline = false, keep = false, tsv = false;
+            Path tsvOut = null;
+            Duration timeout = Duration.ofMinutes(10);
+            for (int i = 1; i < args.length; i++) {
+                String flag = args[i];
+                switch (flag) {
+                    case "--no-bazel" -> bazel = false;
+                    case "--offline" -> offline = true;
+                    case "--keep-worktrees" -> keep = true;
+                    case "--tsv" -> tsv = true;
+                    case "--from", "--to", "--at", "--task", "--tsv-out", "--timeout-minutes" -> {
+                        if (i + 1 >= args.length) {
+                            throw new UsageException(flag + " needs a value");
+                        }
+                        String value = args[++i];
+                        switch (flag) {
+                            case "--from" -> from = value;
+                            case "--to" -> to = value;
+                            case "--at" -> at = value;
+                            case "--task" -> task = value;
+                            case "--tsv-out" -> tsvOut = Path.of(value);
+                            default -> timeout = parseMinutes(value);
+                        }
+                    }
+                    default -> throw new UsageException("unknown option '" + flag + "'");
+                }
+            }
+            if (at != null && (from != null || to != null)) {
+                throw new UsageException("use either --at or --from/--to, not both");
+            }
+            if (at == null && (from == null || to == null)) {
+                throw new UsageException("--from and --to are both required (or use --at)");
+            }
+            return new Options(app, from, to, at, task, bazel, offline, keep, tsv, tsvOut, timeout);
+        }
+
+        private static Duration parseMinutes(String value) throws UsageException {
+            try {
+                return Duration.ofMinutes(Long.parseLong(value));
+            } catch (NumberFormatException e) {
+                throw new UsageException("--timeout-minutes needs a whole number, got '" + value + "'");
+            }
+        }
+
+        String taskPath() {
+            return ":app:" + app + ":" + task;
+        }
+
+        String bazelTarget() {
+            return "//app/" + app + ":" + app;
+        }
+    }
+
+    private Cli() {}
+
+    static int usage(PrintStream err, String problem) {
+        err.println("trace: " + problem);
+        err.print(USAGE);
+        return EXIT_USAGE;
+    }
+
+    public static void main(String[] args) {
+        try {
+            Options.parse(args);
+        } catch (UsageException e) {
+            System.exit(usage(System.err, e.getMessage()));
+            return;
+        }
+        System.err.println("trace: options accepted; the range walk arrives in the next task");
+        System.exit(EXIT_TOOL_FAILURE);
+    }
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `./gradlew :tools:tracer:test`
+Expected: `BUILD SUCCESSFUL`; 82 tests at this point in the sequence (the Task 6 `CliUsageTest` still passes).
+
+- [ ] **Step 5: Document and commit**
+
+Append to `docs/tracer.md`:
+```markdown
+## Cli
+`trace <app> --from A --to B [--task T] [--no-bazel] [--offline] [--keep-worktrees] [--tsv | --tsv-out F] [--timeout-minutes N]`
+and `trace <app> --at REV [--task T]`. Worktrees live under `$TMPDIR/gradle-tracer/<pid>/`. The Bazel column is
+computed from `bazel-diff get-impacted-targets` between adjacent commits; if bazel-diff fails once, the rest of the
+column is `n/a` and a warning goes to stderr. A commit whose Gradle run fails is `BUILD-FAILED`; the next commit is
+compared against the last good key.
+```
+
+```bash
+git add tools/tracer docs/tracer.md
+git commit -m "feat(tracer): parse command-line options
+
+Options are an immutable record parsed before anything runs, so every
+mistake on the command line is a usage error with exit code 1 before a
+worktree is created. Kept apart from the range walk to stay under the
+commit size limit."
+```
+
+---
+
+### Task 13: Cli wiring — range walk, --at, scratch hygiene, exit codes
+
+**Files:**
+- Modify: `tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java` (constructor, `run`, `range`, `at`, scratch cleanup, real `main`)
 - Modify: `tools/tracer/src/main/java/io/joeyang/tracer/cli/RevisionRange.java` (add `resolveOne`)
 - Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java`, add two tests to `RevisionRangeTest.java`
 - Modify: `docs/tracer.md`
@@ -3893,6 +4197,8 @@ wedge the tracer."
 Provider constructors used here and implemented in Tasks 7 and 8 — the signatures are fixed:
 `new GradleKeyProvider(ProcessRunner runner, boolean offline, Duration timeout)` and
 `new BazelDiffProvider(ProcessRunner runner, Path repo, boolean offline, Duration timeout)`.
+
+Scratch hygiene (spec §9): one fixed scratch root (`$TMPDIR/gradle-tracer`), never per pid, so the next run finds a killed run's leftovers. `WorktreePool` sweeps stale `wt-*` directories (Task 9); the Cli sweeps stale `hashes-*.json`/`*.impacted.txt` at start and removes the ones it created at the end unless `--keep-worktrees`.
 
 - [ ] **Step 1: Add `resolveOne` tests to RevisionRangeTest**
 
@@ -3922,7 +4228,6 @@ package io.joeyang.tracer.cli;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
@@ -3933,6 +4238,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -3970,8 +4276,15 @@ class CliTest {
         default -> throw new ProviderException("unexpected worktree " + wt);
     };
 
+    /** Writes a hashes file like the real tool does, and reports appA impacted for commit B only. */
     final ImpactProvider impacts = new ImpactProvider() {
-        @Override public Path hashes(Path worktree, Path output) { return output; }
+        @Override public Path hashes(Path worktree, Path output) throws ProviderException {
+            try {
+                return Files.writeString(output, "{}");
+            } catch (IOException e) {
+                throw new ProviderException(e.getMessage(), e);
+            }
+        }
         @Override public Set<String> impactedTargets(Path previous, Path current) {
             return current.getFileName().toString().contains("bbbbbbb") ? Set.of("//app/appA:appA") : Set.of();
         }
@@ -4054,19 +4367,17 @@ class CliTest {
         assertTrue(out().contains("k2") && out().contains("core.jar") && out().contains("h2"), out());
     }
 
-    @Test void optionsParsing() throws Exception {
-        Cli.Options o = Cli.Options.parse(new String[] {"appB", "--from", "x", "--to", "y", "--offline", "--keep-worktrees", "--timeout-minutes", "3"});
-        assertEquals(":app:appB:compileJava", o.taskPath());
-        assertEquals("//app/appB:appB", o.bazelTarget());
-        assertTrue(o.offline() && o.keepWorktrees() && o.bazel());
-        assertEquals(3, o.timeout().toMinutes());
+    @Test void staleScratchFilesAreSweptAndNewOnesRemoved() throws Exception {
+        Files.createDirectories(scratch);
+        Path stale = Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
 
-        assertThrows(UsageException.class, () -> Cli.Options.parse(new String[0]));
-        assertThrows(UsageException.class, () -> Cli.Options.parse(new String[] {"appA", "--from", "x"}));
-        assertThrows(UsageException.class, () -> Cli.Options.parse(new String[] {"appA", "--from", "x", "--to", "y", "--at", "z"}));
-        assertThrows(UsageException.class, () -> Cli.Options.parse(new String[] {"appA", "--at", "z", "--bogus"}));
-        assertThrows(UsageException.class, () -> Cli.Options.parse(new String[] {"appA", "--at", "z", "--timeout-minutes", "soon"}));
-        assertThrows(UsageException.class, () -> Cli.Options.parse(new String[] {"appA", "--at"}));
+        run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv");
+
+        assertFalse(Files.exists(stale), "a killed run's hash files are removed at start");
+        assertTrue(err().contains("removed 1 stale scratch file"), err());
+        try (Stream<Path> left = Files.list(scratch)) {
+            assertTrue(left.noneMatch(p -> p.getFileName().toString().startsWith("hashes-")), "hash files created by this run are removed at the end");
+        }
     }
 }
 ```
@@ -4074,7 +4385,7 @@ class CliTest {
 - [ ] **Step 3: Run the tests to verify they fail**
 
 Run: `./gradlew :tools:tracer:test --tests '*CliTest*' --tests '*RevisionRangeTest*'`
-Expected: FAIL at compile — `Cli.Options` and the `Cli` constructor do not exist; `resolveOne` not found.
+Expected: FAIL at compile — the `Cli` constructor and `run` do not exist; `resolveOne` not found.
 
 - [ ] **Step 4: Implement `resolveOne` and the Cli**
 
@@ -4087,7 +4398,7 @@ Add to `RevisionRange`:
     }
 ```
 
-Replace `tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java` with:
+Replace `tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java` with (the `USAGE` text and the `Options` record are unchanged from Task 12 and repeated so the file is complete):
 ```java
 package io.joeyang.tracer.cli;
 
@@ -4100,6 +4411,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Stream;
 
 /** Entry point: parses options, walks the range through worktrees, prints the verdicts. */
 public final class Cli {
@@ -4107,6 +4419,8 @@ public final class Cli {
     public static final int EXIT_USAGE = 1;
     public static final int EXIT_TOOL_FAILURE = 2;
     public static final int EXIT_CHANGED = 3;
+    /** One fixed scratch root, so the next run finds and removes whatever a killed run left behind. */
+    static final Path DEFAULT_SCRATCH = Path.of(System.getProperty("java.io.tmpdir"), "gradle-tracer");
 
     static final String USAGE = """
             usage: trace <app> --from <rev> --to <rev> [--task <name>] [--no-bazel] [--offline] [--keep-worktrees]
@@ -4116,8 +4430,8 @@ public final class Cli {
               <app>            appA | appB | appC   (maps to :app:<app>:<task> and //app/<app>:<app>)
               --task           Gradle task whose cache key is compared; default compileJava, alternative fingerprint
               --no-bazel       skip the bazel-diff column
-              --offline        pass --offline to gradle and bazel
-              --keep-worktrees leave the checked-out worktrees in place for inspection
+              --offline        pass --offline to gradle; forbid repository downloads in bazel
+              --keep-worktrees leave the checked-out worktrees and hash files in place for inspection
               --tsv            machine-readable output only (sha, subject, key, bazel, verdict, culprits)
               --tsv-out <file> print the table and also write the TSV to <file>
               --timeout-minutes per external command, default 10
@@ -4215,10 +4529,9 @@ public final class Cli {
         }
         ProcessRunner runner = new DefaultProcessRunner();
         Path repo = Path.of("").toAbsolutePath();
-        Path scratch = Path.of(System.getProperty("java.io.tmpdir"), "gradle-tracer", String.valueOf(ProcessHandle.current().pid()));
         KeyProvider keys = new GradleKeyProvider(runner, options.offline(), options.timeout());
         ImpactProvider impacts = options.bazel() ? new BazelDiffProvider(runner, repo, options.offline(), options.timeout()) : null;
-        System.exit(new Cli(runner, repo, scratch, keys, impacts).run(options, System.out, System.err));
+        System.exit(new Cli(runner, repo, DEFAULT_SCRATCH, keys, impacts).run(options, System.out, System.err));
     }
 
     static int usage(PrintStream err, String problem) {
@@ -4243,6 +4556,10 @@ public final class Cli {
 
     private int range(Options o, PrintStream out, PrintStream err) throws UsageException, ProviderException {
         List<Commit> commits = new RevisionRange(runner, repo).resolve(o.from(), o.to());
+        int swept = deleteScratchFiles();
+        if (swept > 0) {
+            err.println("trace: removed " + swept + " stale scratch file(s) under " + scratch);
+        }
         List<Verdict> rows = new ArrayList<>();
         try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
             Optional<TaskKey> previousGood = Optional.empty();
@@ -4274,7 +4591,7 @@ public final class Cli {
                 } else if (impacts != null) {
                     bazel = BazelStatus.NOT_AVAILABLE;
                 }
-                rows.add(Comparator.verdict(commit, previousGood, key, error, bazel));
+                rows.add(KeyComparator.verdict(commit, previousGood, key, error, bazel));
                 if (key.isPresent()) {
                     previousGood = key;
                 }
@@ -4282,6 +4599,9 @@ public final class Cli {
                     pool.release(worktree);
                 }
             }
+        }
+        if (!o.keepWorktrees()) {
+            deleteScratchFiles();
         }
         String tsv = TableRenderer.renderTsv(rows);
         if (o.tsv()) {
@@ -4302,6 +4622,26 @@ public final class Cli {
         return rows.stream().anyMatch(v -> v.status() == Status.CHANGED) ? EXIT_CHANGED : EXIT_OK;
     }
 
+    /** Deletes bazel-diff hash and impacted-target files under the scratch root; returns how many went. */
+    private int deleteScratchFiles() {
+        if (!Files.isDirectory(scratch)) {
+            return 0;
+        }
+        int count = 0;
+        try (Stream<Path> entries = Files.list(scratch)) {
+            for (Path p : entries.toList()) {
+                String name = p.getFileName().toString();
+                if (Files.isRegularFile(p) && (name.startsWith("hashes-") || name.endsWith(".impacted.txt"))) {
+                    Files.deleteIfExists(p);
+                    count++;
+                }
+            }
+        } catch (IOException ignored) {
+            // best effort
+        }
+        return count;
+    }
+
     private int at(Options o, PrintStream out) throws UsageException, ProviderException {
         Commit commit = new RevisionRange(runner, repo).resolveOne(o.at());
         try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
@@ -4312,7 +4652,7 @@ public final class Cli {
             key.valueFingerprints().forEach((property, hash) -> out.println("value " + property + ": " + hash));
             key.fileFingerprints().forEach((property, files) -> {
                 out.println("files " + property + ":");
-                files.forEach((path, hash) -> out.println("  " + Comparator.displayName(path) + "  " + hash));
+                files.forEach((path, hash) -> out.println("  " + KeyComparator.displayName(path) + "  " + hash));
             });
         }
         return EXIT_OK;
@@ -4320,21 +4660,21 @@ public final class Cli {
 }
 ```
 
-- [ ] **Step 5: Run the unit tests**
+- [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: FAIL to compile — `GradleKeyProvider` and `BazelDiffProvider` referenced from `main` do not exist yet if Tasks 7 and 8 have not been done. This plan orders Tasks 7 and 8 before Task 12, so they do exist; if you are reading out of order, do Tasks 7 and 8 first. Expected after that: `BUILD SUCCESSFUL`; 80 tests.
+Expected: `BUILD SUCCESSFUL`; 93 tests at this point in the sequence. Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 
 Append to `docs/tracer.md`:
 ```markdown
-## Cli
-`trace <app> --from A --to B [--task T] [--no-bazel] [--offline] [--keep-worktrees] [--tsv | --tsv-out F] [--timeout-minutes N]`
-and `trace <app> --at REV [--task T]`. Worktrees live under `$TMPDIR/gradle-tracer/<pid>/`. The Bazel column is
-computed from `bazel-diff get-impacted-targets` between adjacent commits; if bazel-diff fails once, the rest of the
-column is `n/a` and a warning goes to stderr. A commit whose Gradle run fails is `BUILD-FAILED`; the next commit is
-compared against the last good key.
+## Range walk
+Worktrees and bazel-diff hash files live under one fixed root, `$TMPDIR/gradle-tracer/`. At start the tracer prunes git's
+worktree list, deletes stale `wt-*` directories and stale `hashes-*.json`/`*.impacted.txt` files left by a killed run, and
+reports how many it removed; at the end it removes what it created unless `--keep-worktrees`. If bazel-diff fails once, the
+rest of the Bazel column is `n/a` and a warning goes to stderr. A commit whose Gradle run fails is `BUILD-FAILED`; the next
+commit is compared against the last good key.
 ```
 
 ```bash
@@ -4343,12 +4683,13 @@ git commit -m "feat(tracer): wire the CLI over the providers
 
 The CLI walks the range through worktrees, degrades the Bazel column to
 n/a on failure, keeps comparing against the last good key after a failed
-build, and exits 0/1/2/3 so scripts can branch on the outcome."
+build, cleans its scratch root so killed runs leave nothing behind, and
+exits 0/1/2/3 so scripts can branch on the outcome."
 ```
 
 ---
 
-### Task 13: `./trace` wrapper and end-to-end test
+### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**
 - Create: `trace` (executable)
@@ -4548,7 +4889,7 @@ leaves appC's alone."
 
 ---
 
-### Task 14: Scenario script, docs/scenarios.md, README final
+### Task 15: Scenario script, docs/scenarios.md, README final
 
 **Files:**
 - Create: `tools/scenarios.sh` (executable)
@@ -4637,11 +4978,11 @@ edit "$WT/core/src/main/java/io/joeyang/tracer/core/Greeter.java" \
 }'
 commit "core: add Greeter.shout()" >/dev/null
 
-say "S3 lib: commons-lang3 3.14.0 -> 3.17.0 (relocking; needs network)"
-edit "$WT/gradle/libs.versions.toml" 'commons-lang3 = "3.14.0"' 'commons-lang3 = "3.17.0"'
-edit "$WT/MODULE.bazel" '"org.apache.commons:commons-lang3:3.14.0"' '"org.apache.commons:commons-lang3:3.17.0"'
+say "S3 lib: commons-lang3 3.18.0 -> 3.20.0 (relocking; needs network)"
+edit "$WT/gradle/libs.versions.toml" 'commons-lang3 = "3.18.0"' 'commons-lang3 = "3.20.0"'
+edit "$WT/MODULE.bazel" '"org.apache.commons:commons-lang3:3.18.0"' '"org.apache.commons:commons-lang3:3.20.0"'
 relock
-commit "deps: commons-lang3 3.14.0 -> 3.17.0" >/dev/null
+commit "deps: commons-lang3 3.18.0 -> 3.20.0" >/dev/null
 
 say "S4 appC: gson 2.10.1 -> 2.11.0 (relocking; needs network)"
 edit "$WT/gradle/libs.versions.toml" 'gson = "2.10.1"' 'gson = "2.11.0"'
@@ -4667,7 +5008,7 @@ declare -A EXPECT=(
   [appB:compileJava]="- C - - - C"  [appB:fingerprint]="C C - - - C"
   [appC:compileJava]="- - - C - C"  [appC:fingerprint]="C - - C - C"
 )
-# Expected bazel-diff column for S1..S6 (same for both tasks: bazel-diff hashes all transitive inputs).
+# Expected bazel-diff column for S1..S6 (checked on the compileJava pass only; bazel-diff hashes all transitive inputs regardless of task).
 declare -A EXPECT_BZ=( [appA]="C C C - C C" [appB]="C C - - C C" [appC]="C - - C - C" )
 
 check() {  # check LABEL EXPECTED ACTUAL
@@ -4676,12 +5017,15 @@ check() {  # check LABEL EXPECTED ACTUAL
 
 for app in appA appB appC; do
   for task in compileJava fingerprint; do
+    flags=("${TRACE_FLAGS[@]}")
+    # bazel-diff does not depend on the Gradle task, so one Bazel pass per app (the compileJava run) is enough.
+    [[ "$task" == fingerprint ]] && flags+=(--no-bazel)
     say "./trace $app --from ${BASE:0:7} --to ${TIP:0:7} --task $task"
     TSV="$WT/.trace-$app-$task.tsv"
-    ./trace "$app" --from "$BASE" --to "$TIP" --task "$task" --tsv-out "$TSV" "${TRACE_FLAGS[@]}" || true
+    ./trace "$app" --from "$BASE" --to "$TIP" --task "$task" --tsv-out "$TSV" "${flags[@]}" || true
     gradle_actual="$(awk -F'\t' 'NR>1 { printf "%s%s", (NR>2 ? " " : ""), ($5=="CHANGED" ? "C" : ($5=="clean" ? "-" : "?")) }' "$TSV")"
     check "$app $task" "${EXPECT[$app:$task]}" "$gradle_actual"
-    if [[ "$NO_BAZEL" != 1 ]]; then
+    if [[ "$NO_BAZEL" != 1 && "$task" == compileJava ]]; then
       bazel_actual="$(awk -F'\t' 'NR>1 { printf "%s%s", (NR>2 ? " " : ""), ($4=="impacted" ? "C" : ($4=="clean" ? "-" : "?")) }' "$TSV")"
       check "$app bazel-diff" "${EXPECT_BZ[$app]}" "$bazel_actual"
     fi
@@ -4707,7 +5051,7 @@ exit "$FAILURES"
 chmod +x tools/scenarios.sh
 tools/scenarios.sh
 ```
-Expected: six tables, then `OK` lines for every app/task pair (and `OK ... bazel-diff` lines), `all expectations held`, exit 0. Budget 10–20 minutes; the two relocks and seven bazel-diff analyses dominate.
+Expected: six tables, then `OK` lines for every app/task pair (and three `OK ... bazel-diff` lines), `all expectations held`, exit 0. Budget 20–40 minutes: two relocks plus 21 bazel-diff analyses (3 apps × 7 commits) dominate.
 
 If a cell disagrees with the expectation, do not edit `EXPECT` to match. Reproduce the single case by hand (`./trace <app> --from <base> --to <tip> --task <task>` and `./trace <app> --at <sha> --task <task>` on both sides), understand which fingerprint moved, and record the finding in `docs/scenarios.md`. Only then change the expectation, with the reason next to it.
 
@@ -4724,7 +5068,7 @@ If a cell disagrees with the expectation, do not edit `EXPECT` to match. Reprodu
 |---|---|---|---|---|---|
 | S1 | utils: body-only edit | - / C / C | - / C / C | - / C / C | ABI unchanged ⇒ no recompiles; runtime bytes differ everywhere |
 | S2 | core: add public method | C / C / C | C / C / C | - / - / - | ABI change reaches appA through `api`; appC untouched |
-| S3 | lib: commons-lang3 3.14.0 → 3.17.0 | - / C / C | - / - / - | - / - / - | `implementation` dep: runtime-only input for appA |
+| S3 | lib: commons-lang3 3.18.0 → 3.20.0 | - / C / C | - / - / - | - / - / - | `implementation` dep: runtime-only input for appA |
 | S4 | appC: gson 2.10.1 → 2.11.0 | - / - / - | - / - / - | C / C / C | direct dep whose ABI differs |
 | S5 | core: comment-only edit | - / - / C | - / - / C | - / - / - | bazel-diff hashes sources; Gradle hashes bytecode |
 | S6 | build logic: `-Xlint:all` in both builds | C / C / C | C / C / C | C / C / C | every Gradle task key includes the build-logic jar (implementation hash); every Bazel target hashes its `javacopts` |
@@ -4739,7 +5083,7 @@ Append to `README.md`:
 ```markdown
 ## Demo
 
-    tools/scenarios.sh            # replays six teaching commits and checks every verdict (10–20 min, needs network)
+    tools/scenarios.sh            # replays six teaching commits and checks every verdict (20–40 min, needs network)
     NO_BAZEL=1 tools/scenarios.sh # Gradle only
 
 `docs/scenarios.md` explains each row.
@@ -4762,8 +5106,8 @@ Acts as the acceptance test for the whole tracer."
 
 ## Self-review checklist (run after writing, before handing over)
 
-- Spec §5 CLI: `--from/--to`, `--at`, `--task`, `--no-bazel`, `--offline`, `--keep-worktrees` → Task 12; `./trace` wrapper → Task 13; `--tsv`/`--tsv-out` added for the scenario script (spec §14).
-- Spec §6 components: every row has a task (ProcessRunner 6/11, RevisionRange + WorktreePool 9, GradleKeyProvider + CacheDebugLog 7, BazelDiffProvider 8, Comparator + TableRenderer 10, Cli 12, wrapper + e2e 13, FingerprintTask 5, convention plugins 1, Bazel build 4).
-- Spec §8 scenarios: Task 14 asserts the table; S6 runtime column corrected to `C` (build-logic jar is part of every task's implementation hash).
-- Spec §9 failure handling: unknown rev/app/empty range (9, 12), stale worktrees (9), Gradle failure per commit (12), bazel missing (8, 12), `--offline` (7, 8, 12), hang (11), Ctrl-C (9), unrecognised debug output (7).
-- Spec §10 tests: all present. Spec §11 docs: README (1, 13, 14), gradle-build (1, 5), bazel-build (4, 8), tracer (6, 7, 8, 9, 10, 12, 13), scenarios (14).
+- Spec §5 CLI: `--from/--to`, `--at`, `--task`, `--no-bazel`, `--offline`, `--keep-worktrees` → Tasks 12–13; `./trace` wrapper → Task 14; `--tsv`/`--tsv-out` added for the scenario script (spec §14).
+- Spec §6 components: every row has a task (ProcessRunner 6/11, RevisionRange + WorktreePool 9, GradleKeyProvider + CacheDebugLog 7, BazelDiffProvider 8, KeyComparator + TableRenderer 10, Cli 12–13, wrapper + e2e 14, FingerprintTask 5, convention plugins 1, Bazel build 4).
+- Spec §8 scenarios: Task 15 asserts the table; S6 runtime column corrected to `C` (build-logic jar is part of every task's implementation hash).
+- Spec §9 failure handling: unknown rev/app/empty range (9, 12, 13), stale worktrees and scratch files (9, 13), Gradle failure per commit (13), bazel missing (8, 13), `--offline` (7, 8, 13), hang (11), Ctrl-C (9), unrecognised debug output (7).
+- Spec §10 tests: all present. Spec §11 docs: README (1, 14, 15), gradle-build (1, 5), bazel-build (4, 8), tracer (6, 7, 8, 9, 10, 12, 13, 14), scenarios (15).
