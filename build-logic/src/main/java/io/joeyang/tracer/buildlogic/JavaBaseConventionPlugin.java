@@ -8,6 +8,8 @@ import org.gradle.api.artifacts.VersionCatalog;
 import org.gradle.api.artifacts.VersionCatalogsExtension;
 import org.gradle.api.artifacts.dsl.DependencyHandler;
 import org.gradle.api.provider.Provider;
+import org.gradle.api.tasks.SourceSet;
+import org.gradle.api.tasks.SourceSetContainer;
 import org.gradle.api.tasks.bundling.Jar;
 import org.gradle.api.tasks.compile.JavaCompile;
 import org.gradle.api.tasks.testing.Test;
@@ -18,6 +20,7 @@ import org.gradle.api.tasks.testing.Test;
  */
 public final class JavaBaseConventionPlugin implements Plugin<Project> {
     static final int RELEASE = 21;
+    public static final String FINGERPRINT_TASK = "fingerprint";
 
     @Override
     public void apply(Project project) {
@@ -33,6 +36,18 @@ public final class JavaBaseConventionPlugin implements Plugin<Project> {
         project.getTasks().withType(Test.class).configureEach(Test::useJUnitPlatform);
         addJUnit(project);
         project.getDependencyLocking().lockAllConfigurations();
+        registerFingerprint(project);
+    }
+
+    private static void registerFingerprint(Project project) {
+        SourceSetContainer sourceSets = project.getExtensions().getByType(SourceSetContainer.class);
+        project.getTasks().register(FINGERPRINT_TASK, FingerprintTask.class, task -> {
+            task.setGroup("verification");
+            task.setDescription("Cacheable no-op whose build-cache key fingerprints the main runtime classpath");
+            task.getRuntimeClasspath().from(
+                    sourceSets.getByName(SourceSet.MAIN_SOURCE_SET_NAME).getRuntimeClasspath());
+            task.getMarker().set(project.getLayout().getBuildDirectory().file("fingerprint/runtime-classpath.txt"));
+        });
     }
 
     private static void addJUnit(Project project) {

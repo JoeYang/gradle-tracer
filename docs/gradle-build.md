@@ -49,3 +49,18 @@ catalog's own resolution (`incomingCatalogForLibs0`). Commit it with the module 
 ## Tests
 `./gradlew -p build-logic test` runs the TestKit tests (they need network for JUnit). Each TestKit
 project uses its own local build cache (`<project>/.build-cache`), so the functional tests are hermetic.
+
+## The fingerprint task
+`tracer.java-base` registers `fingerprint` on every module. It is a `@CacheableTask` whose only input is
+`sourceSets.main.runtimeClasspath` declared as `@Classpath`, and whose output is
+`build/fingerprint/runtime-classpath.txt`. Nothing reads that file. The point is the task's build-cache
+key: a content hash of the whole runtime classpath, path- and timestamp-independent.
+
+| edit | `compileJava` key of a consumer | `fingerprint` key of a consumer |
+|---|---|---|
+| method body in a dependency | unchanged (ABI normalisation) | changed |
+| public method added in a dependency | changed | changed |
+| comment-only edit, same line numbers | unchanged | unchanged (identical bytecode) |
+| third-party version bump (implementation dep of a dependency) | unchanged | changed |
+
+Read a key: `./gradlew :app:appA:fingerprint -Dorg.gradle.caching.debug=true --console=plain`.
