@@ -1,0 +1,11 @@
+[versions]
+junit = "6.1.3"
+commons-lang3 = "3.14.0"
+gson = "2.10.1"
+
+[libraries]
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+commons-lang3 = { module = "org.apache.commons:commons-lang3", version.ref = "commons-lang3" }
+gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
