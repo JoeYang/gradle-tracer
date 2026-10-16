@@ -1242,7 +1242,7 @@ behaviour is unit-tested without capturing stdout."
 ### Task 4: Bazel build for the same modules
 
 **Files:**
-- Create: `MODULE.bazel`, `.bazelrc`, `BUILD.bazel` (root, empty), `tools/BUILD.bazel` (empty), `tools/defs.bzl`
+- Create: `MODULE.bazel`, `.bazelrc`, `.bazelversion`, `BUILD.bazel` (root, empty), `tools/BUILD.bazel` (empty), `tools/defs.bzl`
 - Create: `utils/BUILD.bazel`, `core/BUILD.bazel`, `lib/BUILD.bazel`, `app/appA/BUILD.bazel`, `app/appB/BUILD.bazel`, `app/appC/BUILD.bazel`
 - Create: `docs/bazel-build.md`
 - Modify: `.gitignore` (`bazel-*` → `/bazel-*`; the unanchored pattern also ignored `docs/bazel-build.md`)
@@ -1468,6 +1468,7 @@ The same `src/main/java` and `src/test/java` trees as Gradle. Outputs go to `baz
 - `MODULE.bazel` — rules_java 9.9.0, rules_jvm_external 7.2, Maven artifacts pinned in `maven_install.json`
   (`REPIN=1 bazel run @maven//:pin` after any version change — only the very first pin runs without `REPIN`; the scenario script does this for S3/S4).
 - `.bazelrc` — remote JDK 21 for targets *and* tools; see the comment in the file for why the tool flags are required.
+- `.bazelversion` — pins the Bazel release itself; without it a Bazelisk install would run "latest", which can rewrite `MODULE.bazel.lock` and shift the bazel-diff hashes later tasks rely on.
 - `tools/defs.bzl` — `tracer_java_library`/`tracer_java_binary` apply `JAVACOPTS`; `junit5_test_suite` creates one
   `java_test` per `*Test.java` running `org.junit.platform.console.ConsoleLauncher execute --select-class <class>`,
   with helper sources and resources in a `<name>_support` library.
@@ -1490,7 +1491,7 @@ The same `src/main/java` and `src/test/java` trees as Gradle. Outputs go to `baz
 - [ ] **Step 5: Commit**
 
 ```bash
-git add .gitignore README.md MODULE.bazel MODULE.bazel.lock maven_install.json .bazelrc BUILD.bazel tools/BUILD.bazel tools/defs.bzl \
+git add .gitignore README.md MODULE.bazel MODULE.bazel.lock maven_install.json .bazelrc .bazelversion BUILD.bazel tools/BUILD.bazel tools/defs.bzl \
         utils/BUILD.bazel core/BUILD.bazel lib/BUILD.bazel app/appA/BUILD.bazel app/appB/BUILD.bazel app/appC/BUILD.bazel docs/bazel-build.md
 git commit -m "feat(bazel): build and test the same modules with Bazel
 
