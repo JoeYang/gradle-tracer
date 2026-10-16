@@ -751,14 +751,14 @@ Expected: `BUILD SUCCESSFUL`, 20 tests.
 - [ ] **Step 7: Write the lockfiles**
 
 Run: `./gradlew :utils:dependencies :core:dependencies :lib:dependencies --write-locks`
-Expected: `utils/gradle.lockfile`, `core/gradle.lockfile`, `lib/gradle.lockfile` created; `lib/gradle.lockfile` contains `org.apache.commons:commons-lang3:3.18.0=compileClasspath,runtimeClasspath,...`.
+Expected: `utils/gradle.lockfile`, `core/gradle.lockfile`, `lib/gradle.lockfile` and the root `settings-gradle.lockfile` created; `lib/gradle.lockfile` contains `org.apache.commons:commons-lang3:3.18.0=compileClasspath,runtimeClasspath,...`.
 
 Then: `./gradlew build` → `BUILD SUCCESSFUL`.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add settings.gradle.kts gradle/libs.versions.toml README.md utils core lib
+git add settings.gradle.kts settings-gradle.lockfile gradle/libs.versions.toml README.md utils core lib
 git commit -m "feat(libs): add utils, core and lib modules with tests
 
 Three small libraries whose dependency edges are chosen deliberately:
