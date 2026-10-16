@@ -19,6 +19,9 @@ Every module locks all configurations. Regenerate after a version change:
 
     ./gradlew <module>:dependencies --write-locks
 
+The same command also refreshes the root `settings-gradle.lockfile`, which locks the version
+catalog's own resolution (`incomingCatalogForLibs0`). Commit it with the module lockfiles.
+
 ## Tests
 `./gradlew -p build-logic test` runs the TestKit tests (they need network for JUnit). Each TestKit
 project uses its own local build cache (`<project>/.build-cache`), so the functional tests are hermetic.

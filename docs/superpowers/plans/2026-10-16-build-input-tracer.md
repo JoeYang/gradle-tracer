@@ -536,7 +536,7 @@ cache-key oracle relies on."
 - Create: `core/build.gradle.kts`, `core/src/main/java/io/joeyang/tracer/core/Greeter.java`
 - Create: `lib/build.gradle.kts`, `lib/src/main/java/io/joeyang/tracer/lib/Service.java`
 - Test: `utils/src/test/java/io/joeyang/tracer/utils/FormatterTest.java`, `core/src/test/java/io/joeyang/tracer/core/GreeterTest.java`, `lib/src/test/java/io/joeyang/tracer/lib/ServiceTest.java`
-- Generated: `utils/gradle.lockfile`, `core/gradle.lockfile`, `lib/gradle.lockfile`
+- Generated: `utils/gradle.lockfile`, `core/gradle.lockfile`, `lib/gradle.lockfile`, and the root `settings-gradle.lockfile` (lock state for the version catalog's `incomingCatalogForLibs0` configuration, which `--write-locks` also writes)
 
 The exact source lines matter: `tools/scenarios.sh` (Task 15) edits them by exact string match. Keep the marked lines verbatim.
 
