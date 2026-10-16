@@ -347,9 +347,11 @@ package io.joeyang.tracer.buildlogic;
 import org.gradle.api.GradleException;
 import org.gradle.api.Plugin;
 import org.gradle.api.Project;
+import org.gradle.api.artifacts.MinimalExternalModuleDependency;
 import org.gradle.api.artifacts.VersionCatalog;
 import org.gradle.api.artifacts.VersionCatalogsExtension;
 import org.gradle.api.artifacts.dsl.DependencyHandler;
+import org.gradle.api.provider.Provider;
 import org.gradle.api.tasks.bundling.Jar;
 import org.gradle.api.tasks.compile.JavaCompile;
 import org.gradle.api.tasks.testing.Test;
@@ -380,9 +382,9 @@ public final class JavaBaseConventionPlugin implements Plugin<Project> {
     private static void addJUnit(Project project) {
         VersionCatalog libs = catalog(project);
         DependencyHandler deps = project.getDependencies();
-        deps.add("testImplementation", deps.platform(library(libs, "junit-bom")));
-        deps.add("testImplementation", library(libs, "junit-jupiter"));
-        deps.add("testRuntimeOnly", library(libs, "junit-platform-launcher"));
+        deps.addProvider("testImplementation", deps.platform(library(libs, "junit-bom")));
+        deps.addProvider("testImplementation", library(libs, "junit-jupiter"));
+        deps.addProvider("testRuntimeOnly", library(libs, "junit-platform-launcher"));
     }
 
     static VersionCatalog catalog(Project project) {
@@ -394,7 +396,7 @@ public final class JavaBaseConventionPlugin implements Plugin<Project> {
                 () -> new GradleException("version catalog 'libs' not found; expected gradle/libs.versions.toml"));
     }
 
-    private static Object library(VersionCatalog libs, String alias) {
+    private static Provider<MinimalExternalModuleDependency> library(VersionCatalog libs, String alias) {
         return libs.findLibrary(alias).orElseThrow(
                 () -> new GradleException("alias '" + alias + "' is missing from gradle/libs.versions.toml"));
     }
