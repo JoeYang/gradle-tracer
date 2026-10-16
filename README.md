@@ -9,4 +9,4 @@ See `docs/gradle-build.md` (Gradle side) and `docs/bazel-build.md` (Bazel side, 
 
 ## Build
 
-    ./gradlew help         # no modules yet; `./gradlew build` arrives with the first module commit
+    ./gradlew build        # all modules, tests included
