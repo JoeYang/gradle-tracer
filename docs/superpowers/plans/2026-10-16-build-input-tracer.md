@@ -1534,6 +1534,7 @@ package io.joeyang.tracer.buildlogic;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Set;
 import java.util.stream.Stream;
 import org.gradle.testkit.runner.BuildResult;
 import org.gradle.testkit.runner.GradleRunner;
@@ -1578,6 +1579,7 @@ final class GradleProject {
         write("gradle.properties", "org.gradle.caching=true\n");
     }
 
+    /** Each project gets its own local build cache, so test methods never see each other's FROM-CACHE hits. */
     GradleProject(Path dir) throws IOException {
         this(dir, dir.resolve(".build-cache"));
     }
@@ -1589,13 +1591,21 @@ final class GradleProject {
         return this;
     }
 
-    /** Copies sources and build files (not build outputs) to another directory sharing the same cache. */
+    private static final Set<String> EXCLUDED_DIRS = Set.of("build", ".gradle", ".build-cache");
+
+    /** Copies sources and build files (not build outputs, at any depth) to another directory sharing the same cache. */
     GradleProject copyTo(Path other) throws IOException {
         try (Stream<Path> paths = Files.walk(dir)) {
             for (Path p : paths.toList()) {
                 Path rel = dir.relativize(p);
-                String first = rel.getNameCount() > 0 ? rel.getName(0).toString() : "";
-                if (first.equals("build") || first.equals(".gradle") || first.equals(".build-cache")) {
+                boolean excluded = false;
+                for (int i = 0; i < rel.getNameCount(); i++) {
+                    if (EXCLUDED_DIRS.contains(rel.getName(i).toString())) {
+                        excluded = true;
+                        break;
+                    }
+                }
+                if (excluded) {
                     continue;
                 }
                 Path target = other.resolve(rel);
@@ -1739,22 +1749,34 @@ class FingerprintTaskFunctionalTest {
     }
 
     @Test
-    void keyChangesWhenAnExternalDependencyVersionChanges() throws IOException {
-        String withGson = """
-                plugins { id("tracer.java-application") }
-                dependencies {
-                    implementation(project(":dep"))
-                    implementation("com.google.code.gson:gson:%s")
-                }
-                application { mainClass.set("app.Main") }
+    void keyChangesWhenATransitiveDependencyVersionChangesButCompileKeyDoesNot() throws IOException {
+        String depWithGson = """
+                plugins { id("tracer.java-library") }
+                dependencies { implementation("com.google.code.gson:gson:%s") }
                 """;
-        project.write("build.gradle.kts", withGson.formatted("2.10.1"));
+        project.write("dep/build.gradle.kts", depWithGson.formatted("2.10.1"));
         project.run(":fingerprint");
-        project.write("build.gradle.kts", withGson.formatted("2.11.0"));
+        project.write("dep/build.gradle.kts", depWithGson.formatted("2.11.0"));
 
         BuildResult result = project.run(":fingerprint");
 
         assertEquals(TaskOutcome.SUCCESS, result.task(":fingerprint").getOutcome(), "a different gson jar is a different runtime input");
+        assertEquals(TaskOutcome.UP_TO_DATE, result.task(":compileJava").getOutcome(),
+                "gson is dep's implementation detail, not part of dep's api, so the app's compileJava must be avoided");
+    }
+
+    @Test
+    void keyChangesWhenAPublicMethodIsAddedToADependency() throws IOException {
+        project.run(":fingerprint");
+        project.write("dep/src/main/java/dep/Dep.java", DEP_SOURCE.replace(
+                "public static String value() { return \"v1\"; }",
+                "public static String value() { return \"v1\"; }\n    public static String extra() { return \"x\"; }"));
+
+        BuildResult result = project.run(":fingerprint");
+
+        assertEquals(TaskOutcome.SUCCESS, result.task(":fingerprint").getOutcome(), "runtime bytes changed");
+        assertEquals(TaskOutcome.SUCCESS, result.task(":compileJava").getOutcome(),
+                "dep's ABI changed, so the app's compileJava must rerun");
     }
 
     @Test

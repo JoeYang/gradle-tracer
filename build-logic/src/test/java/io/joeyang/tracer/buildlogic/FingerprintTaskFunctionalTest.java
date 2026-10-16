@@ -104,22 +104,34 @@ class FingerprintTaskFunctionalTest {
     }
 
     @Test
-    void keyChangesWhenAnExternalDependencyVersionChanges() throws IOException {
-        String withGson = """
-                plugins { id("tracer.java-application") }
-                dependencies {
-                    implementation(project(":dep"))
-                    implementation("com.google.code.gson:gson:%s")
-                }
-                application { mainClass.set("app.Main") }
+    void keyChangesWhenATransitiveDependencyVersionChangesButCompileKeyDoesNot() throws IOException {
+        String depWithGson = """
+                plugins { id("tracer.java-library") }
+                dependencies { implementation("com.google.code.gson:gson:%s") }
                 """;
-        project.write("build.gradle.kts", withGson.formatted("2.10.1"));
+        project.write("dep/build.gradle.kts", depWithGson.formatted("2.10.1"));
         project.run(":fingerprint");
-        project.write("build.gradle.kts", withGson.formatted("2.11.0"));
+        project.write("dep/build.gradle.kts", depWithGson.formatted("2.11.0"));
 
         BuildResult result = project.run(":fingerprint");
 
         assertEquals(TaskOutcome.SUCCESS, result.task(":fingerprint").getOutcome(), "a different gson jar is a different runtime input");
+        assertEquals(TaskOutcome.UP_TO_DATE, result.task(":compileJava").getOutcome(),
+                "gson is dep's implementation detail, not part of dep's api, so the app's compileJava must be avoided");
+    }
+
+    @Test
+    void keyChangesWhenAPublicMethodIsAddedToADependency() throws IOException {
+        project.run(":fingerprint");
+        project.write("dep/src/main/java/dep/Dep.java", DEP_SOURCE.replace(
+                "public static String value() { return \"v1\"; }",
+                "public static String value() { return \"v1\"; }\n    public static String extra() { return \"x\"; }"));
+
+        BuildResult result = project.run(":fingerprint");
+
+        assertEquals(TaskOutcome.SUCCESS, result.task(":fingerprint").getOutcome(), "runtime bytes changed");
+        assertEquals(TaskOutcome.SUCCESS, result.task(":compileJava").getOutcome(),
+                "dep's ABI changed, so the app's compileJava must rerun");
     }
 
     @Test

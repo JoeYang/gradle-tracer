@@ -3,6 +3,7 @@ package io.joeyang.tracer.buildlogic;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Set;
 import java.util.stream.Stream;
 import org.gradle.testkit.runner.BuildResult;
 import org.gradle.testkit.runner.GradleRunner;
@@ -47,6 +48,7 @@ final class GradleProject {
         write("gradle.properties", "org.gradle.caching=true\n");
     }
 
+    /** Each project gets its own local build cache, so test methods never see each other's FROM-CACHE hits. */
     GradleProject(Path dir) throws IOException {
         this(dir, dir.resolve(".build-cache"));
     }
@@ -58,13 +60,21 @@ final class GradleProject {
         return this;
     }
 
-    /** Copies sources and build files (not build outputs) to another directory sharing the same cache. */
+    private static final Set<String> EXCLUDED_DIRS = Set.of("build", ".gradle", ".build-cache");
+
+    /** Copies sources and build files (not build outputs, at any depth) to another directory sharing the same cache. */
     GradleProject copyTo(Path other) throws IOException {
         try (Stream<Path> paths = Files.walk(dir)) {
             for (Path p : paths.toList()) {
                 Path rel = dir.relativize(p);
-                String first = rel.getNameCount() > 0 ? rel.getName(0).toString() : "";
-                if (first.equals("build") || first.equals(".gradle") || first.equals(".build-cache")) {
+                boolean excluded = false;
+                for (int i = 0; i < rel.getNameCount(); i++) {
+                    if (EXCLUDED_DIRS.contains(rel.getName(i).toString())) {
+                        excluded = true;
+                        break;
+                    }
+                }
+                if (excluded) {
                     continue;
                 }
                 Path target = other.resolve(rel);
