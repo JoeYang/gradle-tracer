@@ -20,7 +20,7 @@ import org.gradle.api.tasks.testing.Test;
  */
 public final class JavaBaseConventionPlugin implements Plugin<Project> {
     static final int RELEASE = 21;
-    public static final String FINGERPRINT_TASK = "fingerprint";
+    static final String FINGERPRINT_TASK = "fingerprint";
 
     @Override
     public void apply(Project project) {

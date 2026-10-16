@@ -1809,6 +1809,7 @@ Expected: FAIL — every test reports `Task 'fingerprint' not found in root proj
 ```java
 package io.joeyang.tracer.buildlogic;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -1841,11 +1842,10 @@ public abstract class FingerprintTask extends DefaultTask {
     @TaskAction
     public void write() throws IOException {
         List<String> names = getRuntimeClasspath().getFiles().stream()
-                .map(file -> file.getName())
+                .map(File::getName)
                 .sorted()
                 .toList();
         Path out = getMarker().get().getAsFile().toPath();
-        Files.createDirectories(out.getParent());
         Files.write(out, names);
     }
 }
@@ -1858,7 +1858,7 @@ import org.gradle.api.tasks.SourceSetContainer;
 ```
 a constant
 ```java
-    public static final String FINGERPRINT_TASK = "fingerprint";
+    static final String FINGERPRINT_TASK = "fingerprint";
 ```
 and, as the last line of `apply(...)`:
 ```java
