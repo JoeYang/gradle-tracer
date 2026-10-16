@@ -13,6 +13,8 @@ class AppATest {
         assertEquals("Hello,  Ada!" + System.lineSeparator() + "Hello,  ada!", AppA.run(new String[] {"ada"}));
     }
     @Test void rejectsBlankArgument() {
-        assertThrows(IllegalArgumentException.class, () -> AppA.run(new String[] {"  "}));
+        assertEquals(
+                "name must not be blank",
+                assertThrows(IllegalArgumentException.class, () -> AppA.run(new String[] {"  "})).getMessage());
     }
 }

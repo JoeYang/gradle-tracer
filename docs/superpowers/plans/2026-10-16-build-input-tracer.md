@@ -906,7 +906,9 @@ class AppATest {
         assertEquals("Hello,  Ada!" + System.lineSeparator() + "Hello,  ada!", AppA.run(new String[] {"ada"}));
     }
     @Test void rejectsBlankArgument() {
-        assertThrows(IllegalArgumentException.class, () -> AppA.run(new String[] {"  "}));
+        assertEquals(
+                "name must not be blank",
+                assertThrows(IllegalArgumentException.class, () -> AppA.run(new String[] {"  "})).getMessage());
     }
 }
 ```
@@ -923,7 +925,11 @@ import org.junit.jupiter.api.Test;
 class AppBTest {
     @Test void defaultsToWorld() { assertEquals("Hello,    world!", AppB.run(new String[0])); }
     @Test void usesFirstArgument() { assertEquals("Hello,    Bob!", AppB.run(new String[] {"Bob"})); }
-    @Test void rejectsBlankArgument() { assertThrows(IllegalArgumentException.class, () -> AppB.run(new String[] {""})); }
+    @Test void rejectsBlankArgument() {
+        assertEquals(
+                "name must not be blank",
+                assertThrows(IllegalArgumentException.class, () -> AppB.run(new String[] {""})).getMessage());
+    }
 }
 ```
 
@@ -932,8 +938,8 @@ class AppBTest {
 package io.joeyang.tracer.app.c;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
 
@@ -946,7 +952,22 @@ class AppCTest {
     }
     @Test void rejectsNonNumericArgument() {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> AppC.run(new String[] {"ten"}));
-        assertTrue(e.getMessage().contains("ten"));
+        assertEquals("expected a whole number of cents, got 'ten'", e.getMessage());
+        assertInstanceOf(NumberFormatException.class, e.getCause());
+    }
+    @Test void rejectsLongMinValue() {
+        IllegalArgumentException e = assertThrows(
+                IllegalArgumentException.class, () -> AppC.run(new String[] {"-9223372036854775808"}));
+        assertEquals("cents must be greater than Long.MIN_VALUE", e.getMessage());
+    }
+    @Test void rejectsOverflowingArgument() {
+        IllegalArgumentException e = assertThrows(
+                IllegalArgumentException.class, () -> AppC.run(new String[] {"9223372036854775808"}));
+        assertEquals("expected a whole number of cents, got '9223372036854775808'", e.getMessage());
+    }
+    @Test void rejectsEmptyArgument() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> AppC.run(new String[] {""}));
+        assertEquals("expected a whole number of cents, got ''", e.getMessage());
     }
 }
 ```
