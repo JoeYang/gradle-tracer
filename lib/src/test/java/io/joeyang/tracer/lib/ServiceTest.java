@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 class ServiceTest {
     @Test void describeCapitalisesAndTrims() { assertEquals("Hello,  Grace!", new Service().describe("  grace ")); }
+    @Test void describeStripsUnicodeWhitespace() { assertEquals("Hello,  Grace!", new Service().describe("　grace  ")); }
     @Test void describeRejectsNull() { assertThrows(IllegalArgumentException.class, () -> new Service().describe(null)); }
     @Test void describeRejectsBlank() { assertThrows(IllegalArgumentException.class, () -> new Service().describe(" ")); }
     @Test void greeterIsExposedAndStable() {

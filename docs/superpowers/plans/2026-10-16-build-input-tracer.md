@@ -664,6 +664,7 @@ import org.junit.jupiter.api.Test;
 
 class ServiceTest {
     @Test void describeCapitalisesAndTrims() { assertEquals("Hello,  Grace!", new Service().describe("  grace ")); }
+    @Test void describeStripsUnicodeWhitespace() { assertEquals("Hello,  Grace!", new Service().describe("　grace  ")); }
     @Test void describeRejectsNull() { assertThrows(IllegalArgumentException.class, () -> new Service().describe(null)); }
     @Test void describeRejectsBlank() { assertThrows(IllegalArgumentException.class, () -> new Service().describe(" ")); }
     @Test void greeterIsExposedAndStable() {
@@ -768,12 +769,12 @@ public final class Service {
         return greeter;
     }
 
-    /** Trims and capitalises the name, then greets it. */
+    /** Strips and capitalises the name, then greets it. */
     public String describe(String name) {
         if (name == null) {
             throw new IllegalArgumentException("name must not be null");
         }
-        return greeter.greet(StringUtils.capitalize(name.trim()));
+        return greeter.greet(StringUtils.capitalize(name.strip()));
     }
 }
 ```

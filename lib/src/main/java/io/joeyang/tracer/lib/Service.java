@@ -14,11 +14,11 @@ public final class Service {
         return greeter;
     }
 
-    /** Trims and capitalises the name, then greets it. */
+    /** Strips and capitalises the name, then greets it. */
     public String describe(String name) {
         if (name == null) {
             throw new IllegalArgumentException("name must not be null");
         }
-        return greeter.greet(StringUtils.capitalize(name.trim()));
+        return greeter.greet(StringUtils.capitalize(name.strip()));
     }
 }
