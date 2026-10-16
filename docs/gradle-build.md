@@ -33,9 +33,10 @@ depends on `commons-lang3` with `implementation` because `StringUtils` is used o
 
 Each app depends on its libraries with `implementation`: nothing consumes an app, so no app type
 needs to be visible further up the graph. `appA` reaches `core` only through `lib`'s `api` edge,
-`appB` depends on `core` directly, and `appC` never touches `core` or `lib`.
+`appB` depends on `core` directly, and `appC` never touches `core` or `lib`. Each app validates
+its argument; a bad one prints `appX: <reason>` to stderr and exits with code 2.
 
-`./gradlew build` runs every module's tests (33 today).
+`./gradlew build` runs every module's tests (42 today).
 
 ## Dependency locking
 Every module locks all configurations. Regenerate after a version change:

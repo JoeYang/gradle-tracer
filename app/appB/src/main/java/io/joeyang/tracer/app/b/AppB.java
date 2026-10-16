@@ -1,6 +1,7 @@
 package io.joeyang.tracer.app.b;
 
 import io.joeyang.tracer.core.Greeter;
+import java.io.PrintStream;
 
 /** appB depends on core directly and knows nothing about lib or utils. */
 public final class AppB {
@@ -11,7 +12,20 @@ public final class AppB {
         return new Greeter(10).greet(name);
     }
 
+    static int main0(String[] args, PrintStream out, PrintStream err) {
+        try {
+            out.println(run(args));
+            return 0;
+        } catch (IllegalArgumentException e) {
+            err.println("appB: " + e.getMessage());
+            return 2;
+        }
+    }
+
     public static void main(String[] args) {
-        System.out.println(run(args));
+        int code = main0(args, System.out, System.err);
+        if (code != 0) {
+            System.exit(code);
+        }
     }
 }

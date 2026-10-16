@@ -2,6 +2,7 @@ package io.joeyang.tracer.app.a;
 
 import io.joeyang.tracer.core.Greeter;
 import io.joeyang.tracer.lib.Service;
+import java.io.PrintStream;
 
 /** appA talks to lib, and to the core type lib hands back. */
 public final class AppA {
@@ -14,7 +15,20 @@ public final class AppA {
         return service.describe(name) + System.lineSeparator() + greeter.greet(name);
     }
 
+    static int main0(String[] args, PrintStream out, PrintStream err) {
+        try {
+            out.println(run(args));
+            return 0;
+        } catch (IllegalArgumentException e) {
+            err.println("appA: " + e.getMessage());
+            return 2;
+        }
+    }
+
     public static void main(String[] args) {
-        System.out.println(run(args));
+        int code = main0(args, System.out, System.err);
+        if (code != 0) {
+            System.exit(code);
+        }
     }
 }

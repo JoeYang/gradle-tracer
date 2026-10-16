@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import org.junit.jupiter.api.Test;
 
 class AppCTest {
@@ -31,5 +33,25 @@ class AppCTest {
     @Test void rejectsEmptyArgument() {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> AppC.run(new String[] {""}));
         assertEquals("expected a whole number of cents, got ''", e.getMessage());
+    }
+
+    @Test void main0PrintsResultAndReturnsZero() {
+        ByteArrayOutputStream outBytes = new ByteArrayOutputStream();
+        ByteArrayOutputStream errBytes = new ByteArrayOutputStream();
+        int code = AppC.main0(new String[] {"250"}, new PrintStream(outBytes), new PrintStream(errBytes));
+        assertEquals(0, code);
+        assertEquals(
+                "{\"amount\":\"$2.50\",\"label\":\"total   \"}" + System.lineSeparator(), outBytes.toString());
+        assertEquals("", errBytes.toString());
+    }
+
+    @Test void main0ReportsBadArgumentOnStderr() {
+        ByteArrayOutputStream outBytes = new ByteArrayOutputStream();
+        ByteArrayOutputStream errBytes = new ByteArrayOutputStream();
+        int code = AppC.main0(new String[] {"ten"}, new PrintStream(outBytes), new PrintStream(errBytes));
+        assertEquals(2, code);
+        assertEquals("", outBytes.toString());
+        assertEquals(
+                "appC: expected a whole number of cents, got 'ten'" + System.lineSeparator(), errBytes.toString());
     }
 }

@@ -896,6 +896,8 @@ package io.joeyang.tracer.app.a;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import org.junit.jupiter.api.Test;
 
 class AppATest {
@@ -910,6 +912,26 @@ class AppATest {
                 "name must not be blank",
                 assertThrows(IllegalArgumentException.class, () -> AppA.run(new String[] {"  "})).getMessage());
     }
+
+    @Test void main0PrintsResultAndReturnsZero() {
+        ByteArrayOutputStream outBytes = new ByteArrayOutputStream();
+        ByteArrayOutputStream errBytes = new ByteArrayOutputStream();
+        int code = AppA.main0(new String[] {"ada"}, new PrintStream(outBytes), new PrintStream(errBytes));
+        assertEquals(0, code);
+        assertEquals(
+                "Hello,  Ada!" + System.lineSeparator() + "Hello,  ada!" + System.lineSeparator(),
+                outBytes.toString());
+        assertEquals("", errBytes.toString());
+    }
+
+    @Test void main0ReportsBadArgumentOnStderr() {
+        ByteArrayOutputStream outBytes = new ByteArrayOutputStream();
+        ByteArrayOutputStream errBytes = new ByteArrayOutputStream();
+        int code = AppA.main0(new String[] {"  "}, new PrintStream(outBytes), new PrintStream(errBytes));
+        assertEquals(2, code);
+        assertEquals("", outBytes.toString());
+        assertEquals("appA: name must not be blank" + System.lineSeparator(), errBytes.toString());
+    }
 }
 ```
 
@@ -920,6 +942,8 @@ package io.joeyang.tracer.app.b;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import org.junit.jupiter.api.Test;
 
 class AppBTest {
@@ -929,6 +953,24 @@ class AppBTest {
         assertEquals(
                 "name must not be blank",
                 assertThrows(IllegalArgumentException.class, () -> AppB.run(new String[] {""})).getMessage());
+    }
+
+    @Test void main0PrintsResultAndReturnsZero() {
+        ByteArrayOutputStream outBytes = new ByteArrayOutputStream();
+        ByteArrayOutputStream errBytes = new ByteArrayOutputStream();
+        int code = AppB.main0(new String[] {"Bob"}, new PrintStream(outBytes), new PrintStream(errBytes));
+        assertEquals(0, code);
+        assertEquals("Hello,    Bob!" + System.lineSeparator(), outBytes.toString());
+        assertEquals("", errBytes.toString());
+    }
+
+    @Test void main0ReportsBadArgumentOnStderr() {
+        ByteArrayOutputStream outBytes = new ByteArrayOutputStream();
+        ByteArrayOutputStream errBytes = new ByteArrayOutputStream();
+        int code = AppB.main0(new String[] {""}, new PrintStream(outBytes), new PrintStream(errBytes));
+        assertEquals(2, code);
+        assertEquals("", outBytes.toString());
+        assertEquals("appB: name must not be blank" + System.lineSeparator(), errBytes.toString());
     }
 }
 ```
@@ -941,6 +983,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import org.junit.jupiter.api.Test;
 
 class AppCTest {
@@ -969,6 +1013,26 @@ class AppCTest {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> AppC.run(new String[] {""}));
         assertEquals("expected a whole number of cents, got ''", e.getMessage());
     }
+
+    @Test void main0PrintsResultAndReturnsZero() {
+        ByteArrayOutputStream outBytes = new ByteArrayOutputStream();
+        ByteArrayOutputStream errBytes = new ByteArrayOutputStream();
+        int code = AppC.main0(new String[] {"250"}, new PrintStream(outBytes), new PrintStream(errBytes));
+        assertEquals(0, code);
+        assertEquals(
+                "{\"amount\":\"$2.50\",\"label\":\"total   \"}" + System.lineSeparator(), outBytes.toString());
+        assertEquals("", errBytes.toString());
+    }
+
+    @Test void main0ReportsBadArgumentOnStderr() {
+        ByteArrayOutputStream outBytes = new ByteArrayOutputStream();
+        ByteArrayOutputStream errBytes = new ByteArrayOutputStream();
+        int code = AppC.main0(new String[] {"ten"}, new PrintStream(outBytes), new PrintStream(errBytes));
+        assertEquals(2, code);
+        assertEquals("", outBytes.toString());
+        assertEquals(
+                "appC: expected a whole number of cents, got 'ten'" + System.lineSeparator(), errBytes.toString());
+    }
 }
 ```
 
@@ -985,6 +1049,7 @@ package io.joeyang.tracer.app.a;
 
 import io.joeyang.tracer.core.Greeter;
 import io.joeyang.tracer.lib.Service;
+import java.io.PrintStream;
 
 /** appA talks to lib, and to the core type lib hands back. */
 public final class AppA {
@@ -997,8 +1062,21 @@ public final class AppA {
         return service.describe(name) + System.lineSeparator() + greeter.greet(name);
     }
 
+    static int main0(String[] args, PrintStream out, PrintStream err) {
+        try {
+            out.println(run(args));
+            return 0;
+        } catch (IllegalArgumentException e) {
+            err.println("appA: " + e.getMessage());
+            return 2;
+        }
+    }
+
     public static void main(String[] args) {
-        System.out.println(run(args));
+        int code = main0(args, System.out, System.err);
+        if (code != 0) {
+            System.exit(code);
+        }
     }
 }
 ```
@@ -1008,6 +1086,7 @@ public final class AppA {
 package io.joeyang.tracer.app.b;
 
 import io.joeyang.tracer.core.Greeter;
+import java.io.PrintStream;
 
 /** appB depends on core directly and knows nothing about lib or utils. */
 public final class AppB {
@@ -1018,8 +1097,21 @@ public final class AppB {
         return new Greeter(10).greet(name);
     }
 
+    static int main0(String[] args, PrintStream out, PrintStream err) {
+        try {
+            out.println(run(args));
+            return 0;
+        } catch (IllegalArgumentException e) {
+            err.println("appB: " + e.getMessage());
+            return 2;
+        }
+    }
+
     public static void main(String[] args) {
-        System.out.println(run(args));
+        int code = main0(args, System.out, System.err);
+        if (code != 0) {
+            System.exit(code);
+        }
     }
 }
 ```
@@ -1030,6 +1122,7 @@ package io.joeyang.tracer.app.c;
 
 import com.google.gson.Gson;
 import io.joeyang.tracer.utils.Formatter;
+import java.io.PrintStream;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -1052,8 +1145,21 @@ public final class AppC {
         return new Gson().toJson(doc);
     }
 
+    static int main0(String[] args, PrintStream out, PrintStream err) {
+        try {
+            out.println(run(args));
+            return 0;
+        } catch (IllegalArgumentException e) {
+            err.println("appC: " + e.getMessage());
+            return 2;
+        }
+    }
+
     public static void main(String[] args) {
-        System.out.println(run(args));
+        int code = main0(args, System.out, System.err);
+        if (code != 0) {
+            System.exit(code);
+        }
     }
 }
 ```
@@ -1061,7 +1167,7 @@ public final class AppC {
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `./gradlew :app:appA:test :app:appB:test :app:appC:test`
-Expected: `BUILD SUCCESSFUL`, 9 tests.
+Expected: `BUILD SUCCESSFUL`, 18 tests.
 
 - [ ] **Step 7: Lockfiles, full build, run one app**
 
@@ -1087,9 +1193,10 @@ Then replace the section's last paragraph (the one ending "arrive in the next co
 ```markdown
 Each app depends on its libraries with `implementation`: nothing consumes an app, so no app type
 needs to be visible further up the graph. `appA` reaches `core` only through `lib`'s `api` edge,
-`appB` depends on `core` directly, and `appC` never touches `core` or `lib`.
+`appB` depends on `core` directly, and `appC` never touches `core` or `lib`. Each app validates
+its argument; a bad one prints `appX: <reason>` to stderr and exits with code 2.
 
-`./gradlew build` runs every module's tests (33 today).
+`./gradlew build` runs every module's tests (42 today).
 ```
 
 - [ ] **Step 9: Commit**

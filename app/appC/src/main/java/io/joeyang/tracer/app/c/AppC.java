@@ -2,6 +2,7 @@ package io.joeyang.tracer.app.c;
 
 import com.google.gson.Gson;
 import io.joeyang.tracer.utils.Formatter;
+import java.io.PrintStream;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -24,7 +25,20 @@ public final class AppC {
         return new Gson().toJson(doc);
     }
 
+    static int main0(String[] args, PrintStream out, PrintStream err) {
+        try {
+            out.println(run(args));
+            return 0;
+        } catch (IllegalArgumentException e) {
+            err.println("appC: " + e.getMessage());
+            return 2;
+        }
+    }
+
     public static void main(String[] args) {
-        System.out.println(run(args));
+        int code = main0(args, System.out, System.err);
+        if (code != 0) {
+            System.exit(code);
+        }
     }
 }
