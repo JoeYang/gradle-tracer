@@ -1242,7 +1242,7 @@ behaviour is unit-tested without capturing stdout."
 ### Task 4: Bazel build for the same modules
 
 **Files:**
-- Create: `MODULE.bazel`, `.bazelrc`, `.bazelversion`, `BUILD.bazel` (root, empty), `tools/BUILD.bazel` (empty), `tools/defs.bzl`
+- Create: `MODULE.bazel`, `.bazelrc`, `.bazelversion` (one line: `9.1.0`), `BUILD.bazel` (root, empty), `tools/BUILD.bazel` (empty), `tools/defs.bzl`
 - Create: `utils/BUILD.bazel`, `core/BUILD.bazel`, `lib/BUILD.bazel`, `app/appA/BUILD.bazel`, `app/appB/BUILD.bazel`, `app/appC/BUILD.bazel`
 - Create: `docs/bazel-build.md`
 - Modify: `.gitignore` (`bazel-*` → `/bazel-*`; the unanchored pattern also ignored `docs/bazel-build.md`)
@@ -1944,7 +1944,7 @@ load("//tools:defs.bzl", "junit5_test_suite", "tracer_java_binary", "tracer_java
 tracer_java_library(
     name = "tracer_lib",
     srcs = glob(["src/main/java/**/*.java"]),
-    visibility = ["//visibility:public"],
+    visibility = ["//:__subpackages__"],
 )
 
 tracer_java_binary(
