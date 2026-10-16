@@ -531,6 +531,7 @@ cache-key oracle relies on."
 **Files:**
 - Modify: `gradle/libs.versions.toml` (`commons-lang3 = "3.14.0"` → `"3.18.0"`: Task 1 landed before the CVE-2025-48924 finding; this task is the first to consume the entry)
 - Modify: `settings.gradle.kts` (add `include("utils", "core", "lib")`)
+- Modify: `README.md` (the Build section becomes `./gradlew build        # all modules, tests included`; until this commit no `build` task existed and Gradle's abbreviation matching would silently run `buildEnvironment`)
 - Create: `utils/build.gradle.kts`, `utils/src/main/java/io/joeyang/tracer/utils/Formatter.java`
 - Create: `core/build.gradle.kts`, `core/src/main/java/io/joeyang/tracer/core/Greeter.java`
 - Create: `lib/build.gradle.kts`, `lib/src/main/java/io/joeyang/tracer/lib/Service.java`
@@ -546,6 +547,8 @@ Append to `settings.gradle.kts`:
 include("utils", "core", "lib")
 ```
 In `gradle/libs.versions.toml` change `commons-lang3 = "3.14.0"` to `commons-lang3 = "3.18.0"` (3.14.0–3.17.x carry CVE-2025-48924; the entry was unused until this task).
+
+In `README.md` replace the Build section's command line with `    ./gradlew build        # all modules, tests included` — true from this commit on.
 
 - [ ] **Step 2: Build files**
 
@@ -755,7 +758,7 @@ Then: `./gradlew build` → `BUILD SUCCESSFUL`.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add settings.gradle.kts gradle/libs.versions.toml utils core lib
+git add settings.gradle.kts gradle/libs.versions.toml README.md utils core lib
 git commit -m "feat(libs): add utils, core and lib modules with tests
 
 Three small libraries whose dependency edges are chosen deliberately:
