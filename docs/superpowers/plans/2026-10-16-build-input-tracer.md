@@ -907,10 +907,18 @@ class AppATest {
     @Test void usesFirstArgument() {
         assertEquals("Hello,  Ada!" + System.lineSeparator() + "Hello,  ada!", AppA.run(new String[] {"ada"}));
     }
+    @Test void stripsSurroundingWhitespaceConsistently() {
+        assertEquals("Hello,  Ada!" + System.lineSeparator() + "Hello,  ada!", AppA.run(new String[] {" ada "}));
+    }
     @Test void rejectsBlankArgument() {
         assertEquals(
                 "name must not be blank",
                 assertThrows(IllegalArgumentException.class, () -> AppA.run(new String[] {"  "})).getMessage());
+    }
+    @Test void rejectsExtraArguments() {
+        assertEquals(
+                "expected at most one argument, got 2",
+                assertThrows(IllegalArgumentException.class, () -> AppA.run(new String[] {"a", "b"})).getMessage());
     }
 
     @Test void main0PrintsResultAndReturnsZero() {
@@ -953,6 +961,11 @@ class AppBTest {
         assertEquals(
                 "name must not be blank",
                 assertThrows(IllegalArgumentException.class, () -> AppB.run(new String[] {""})).getMessage());
+    }
+    @Test void rejectsExtraArguments() {
+        assertEquals(
+                "expected at most one argument, got 2",
+                assertThrows(IllegalArgumentException.class, () -> AppB.run(new String[] {"a", "b"})).getMessage());
     }
 
     @Test void main0PrintsResultAndReturnsZero() {
@@ -1013,6 +1026,11 @@ class AppCTest {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> AppC.run(new String[] {""}));
         assertEquals("expected a whole number of cents, got ''", e.getMessage());
     }
+    @Test void rejectsExtraArguments() {
+        IllegalArgumentException e = assertThrows(
+                IllegalArgumentException.class, () -> AppC.run(new String[] {"250", "extra"}));
+        assertEquals("expected at most one argument, got 2", e.getMessage());
+    }
 
     @Test void main0PrintsResultAndReturnsZero() {
         ByteArrayOutputStream outBytes = new ByteArrayOutputStream();
@@ -1056,7 +1074,10 @@ public final class AppA {
     private AppA() {}
 
     public static String run(String[] args) {
-        String name = args.length > 0 ? args[0] : "world";
+        if (args.length > 1) {
+            throw new IllegalArgumentException("expected at most one argument, got " + args.length);
+        }
+        String name = args.length > 0 ? args[0].strip() : "world";
         Service service = new Service();
         Greeter greeter = service.greeter();          // a core type, reachable only because lib uses api(project(":core"))
         return service.describe(name) + System.lineSeparator() + greeter.greet(name);
@@ -1093,6 +1114,9 @@ public final class AppB {
     private AppB() {}
 
     public static String run(String[] args) {
+        if (args.length > 1) {
+            throw new IllegalArgumentException("expected at most one argument, got " + args.length);
+        }
         String name = args.length > 0 ? args[0] : "world";
         return new Greeter(10).greet(name);
     }
@@ -1131,6 +1155,9 @@ public final class AppC {
     private AppC() {}
 
     public static String run(String[] args) {
+        if (args.length > 1) {
+            throw new IllegalArgumentException("expected at most one argument, got " + args.length);
+        }
         long cents = 1234L;
         if (args.length > 0) {
             try {
@@ -1167,7 +1194,7 @@ public final class AppC {
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `./gradlew :app:appA:test :app:appB:test :app:appC:test`
-Expected: `BUILD SUCCESSFUL`, 18 tests.
+Expected: `BUILD SUCCESSFUL`, 22 tests.
 
 - [ ] **Step 7: Lockfiles, full build, run one app**
 
@@ -1196,7 +1223,7 @@ needs to be visible further up the graph. `appA` reaches `core` only through `li
 `appB` depends on `core` directly, and `appC` never touches `core` or `lib`. Each app validates
 its argument; a bad one prints `appX: <reason>` to stderr and exits with code 2.
 
-`./gradlew build` runs every module's tests (42 today).
+`./gradlew build` runs every module's tests (46 today).
 ```
 
 - [ ] **Step 9: Commit**

@@ -11,6 +11,9 @@ public final class AppC {
     private AppC() {}
 
     public static String run(String[] args) {
+        if (args.length > 1) {
+            throw new IllegalArgumentException("expected at most one argument, got " + args.length);
+        }
         long cents = 1234L;
         if (args.length > 0) {
             try {

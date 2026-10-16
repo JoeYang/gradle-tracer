@@ -36,7 +36,7 @@ needs to be visible further up the graph. `appA` reaches `core` only through `li
 `appB` depends on `core` directly, and `appC` never touches `core` or `lib`. Each app validates
 its argument; a bad one prints `appX: <reason>` to stderr and exits with code 2.
 
-`./gradlew build` runs every module's tests (42 today).
+`./gradlew build` runs every module's tests (46 today).
 
 ## Dependency locking
 Every module locks all configurations. Regenerate after a version change:

@@ -14,10 +14,18 @@ class AppATest {
     @Test void usesFirstArgument() {
         assertEquals("Hello,  Ada!" + System.lineSeparator() + "Hello,  ada!", AppA.run(new String[] {"ada"}));
     }
+    @Test void stripsSurroundingWhitespaceConsistently() {
+        assertEquals("Hello,  Ada!" + System.lineSeparator() + "Hello,  ada!", AppA.run(new String[] {" ada "}));
+    }
     @Test void rejectsBlankArgument() {
         assertEquals(
                 "name must not be blank",
                 assertThrows(IllegalArgumentException.class, () -> AppA.run(new String[] {"  "})).getMessage());
+    }
+    @Test void rejectsExtraArguments() {
+        assertEquals(
+                "expected at most one argument, got 2",
+                assertThrows(IllegalArgumentException.class, () -> AppA.run(new String[] {"a", "b"})).getMessage());
     }
 
     @Test void main0PrintsResultAndReturnsZero() {

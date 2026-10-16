@@ -9,7 +9,10 @@ public final class AppA {
     private AppA() {}
 
     public static String run(String[] args) {
-        String name = args.length > 0 ? args[0] : "world";
+        if (args.length > 1) {
+            throw new IllegalArgumentException("expected at most one argument, got " + args.length);
+        }
+        String name = args.length > 0 ? args[0].strip() : "world";
         Service service = new Service();
         Greeter greeter = service.greeter();          // a core type, reachable only because lib uses api(project(":core"))
         return service.describe(name) + System.lineSeparator() + greeter.greet(name);

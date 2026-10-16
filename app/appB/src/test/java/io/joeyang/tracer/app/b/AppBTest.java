@@ -15,6 +15,11 @@ class AppBTest {
                 "name must not be blank",
                 assertThrows(IllegalArgumentException.class, () -> AppB.run(new String[] {""})).getMessage());
     }
+    @Test void rejectsExtraArguments() {
+        assertEquals(
+                "expected at most one argument, got 2",
+                assertThrows(IllegalArgumentException.class, () -> AppB.run(new String[] {"a", "b"})).getMessage());
+    }
 
     @Test void main0PrintsResultAndReturnsZero() {
         ByteArrayOutputStream outBytes = new ByteArrayOutputStream();

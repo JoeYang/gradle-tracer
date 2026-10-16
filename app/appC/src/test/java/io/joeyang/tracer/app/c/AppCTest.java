@@ -34,6 +34,11 @@ class AppCTest {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> AppC.run(new String[] {""}));
         assertEquals("expected a whole number of cents, got ''", e.getMessage());
     }
+    @Test void rejectsExtraArguments() {
+        IllegalArgumentException e = assertThrows(
+                IllegalArgumentException.class, () -> AppC.run(new String[] {"250", "extra"}));
+        assertEquals("expected at most one argument, got 2", e.getMessage());
+    }
 
     @Test void main0PrintsResultAndReturnsZero() {
         ByteArrayOutputStream outBytes = new ByteArrayOutputStream();

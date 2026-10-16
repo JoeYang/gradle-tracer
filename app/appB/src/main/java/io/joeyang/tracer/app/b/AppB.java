@@ -8,6 +8,9 @@ public final class AppB {
     private AppB() {}
 
     public static String run(String[] args) {
+        if (args.length > 1) {
+            throw new IllegalArgumentException("expected at most one argument, got " + args.length);
+        }
         String name = args.length > 0 ? args[0] : "world";
         return new Greeter(10).greet(name);
     }
