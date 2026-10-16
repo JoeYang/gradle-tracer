@@ -1189,11 +1189,14 @@ junit5_test_suite(
 
 ```bash
 bazel run @maven//:pin
+# On the very first pin (no maven_install.json yet) rules_jvm_external writes the lock under its canonical repo
+# name; normalise it once. Later re-pins must be run as `REPIN=1 bazel run @maven//:pin`.
+[[ -f rules_jvm_external++maven+maven_install.json ]] && mv rules_jvm_external++maven+maven_install.json maven_install.json
 bazel build //...
 bazel test //...
 bazel run //app/appC -- 250
 ```
-Expected, in order: `Successfully pinned resolved artifacts for @maven, .../maven_install.json is now up-to-date.`; `Build completed successfully`; `Executed 6 out of 6 tests: 6 tests pass.`; `{"amount":"$2.50","label":"total   "}`.
+Expected, in order: `Successfully pinned resolved artifacts for @maven, ...maven_install.json is now up-to-date.` (and `maven_install.json` present at the repo root); `Build completed successfully`; `Executed 6 out of 6 tests: 6 tests pass.`; `{"amount":"$2.50","label":"total   "}`.
 
 If Bazel prints a DEBUG message about `known_contributing_modules`, add `known_contributing_modules = ["protobuf"]` to `maven.install` as the message instructs and re-pin.
 
@@ -1207,7 +1210,7 @@ The same `src/main/java` and `src/test/java` trees as Gradle. Outputs go to `baz
 
 ## Files
 - `MODULE.bazel` — rules_java 9.9.0, rules_jvm_external 7.2, Maven artifacts pinned in `maven_install.json`
-  (`bazel run @maven//:pin` after any version change; the scenario script does this for S3/S4).
+  (`REPIN=1 bazel run @maven//:pin` after any version change — only the very first pin runs without `REPIN`; the scenario script does this for S3/S4).
 - `.bazelrc` — remote JDK 21 for targets *and* tools; see the comment in the file for why the tool flags are required.
 - `tools/defs.bzl` — `tracer_java_library`/`tracer_java_binary` apply `JAVACOPTS`; `junit5_test_suite` creates one
   `java_test` per `*Test.java` running `org.junit.platform.console.ConsoleLauncher execute --select-class <class>`,
@@ -1253,7 +1256,7 @@ default tool runtime is Java 11."
 - Test: `build-logic/src/test/java/io/joeyang/tracer/buildlogic/FingerprintTaskFunctionalTest.java`
 - Modify: `docs/gradle-build.md`
 
-Background for the engineer: Gradle computes a *build cache key* for every cacheable task from its implementation hash plus the fingerprints of its inputs. `@Classpath` inputs are fingerprinted by content (jar entries hashed, order and timestamps ignored). So a task whose only input is the main runtime classpath has a key that changes exactly when the runtime bytes change. The task's action is irrelevant; the key is the product.
+Background for the engineer: Gradle computes a *build cache key* for every cacheable task from its implementation hash plus the fingerprints of its inputs. `@Classpath` inputs are fingerprinted by content (jar entries hashed; paths, timestamps and the order of entries inside a jar ignored; the order of classpath entries is significant but deterministic). So a task whose only input is the main runtime classpath has a key that changes exactly when the runtime bytes change. The task's action is irrelevant; the key is the product.
 
 - [ ] **Step 1: Extend the TestKit helper**
 
@@ -1506,8 +1509,9 @@ import org.gradle.api.tasks.TaskAction;
 /**
  * A cacheable task whose only input is the main runtime classpath. Its build-cache key is therefore
  * a content hash of everything the application ships: own classes, project jars, third-party jars.
- * {@code @Classpath} normalisation ignores paths, order and timestamps, so a library bump changes the
- * key and a comment-only edit (identical bytecode) does not. The marker file exists only so the
+ * {@code @Classpath} normalisation ignores paths and timestamps (and entry order inside a jar) but not contents,
+ * so a library bump changes the key and a comment-only edit (identical bytecode) does not. The order of classpath
+ * entries themselves is significant, and deterministic for a given build. The marker file exists only so the
  * task has an output and can be cached; the key is the product.
  */
 @CacheableTask
@@ -2272,6 +2276,19 @@ class CacheDebugLogTest {
         assertTrue(key.implementation().contains("FingerprintTask"), key.implementation());
     }
 
+    @Test void keyOnlyBlockParsesWithEmptyInputs() {
+        // An UP-TO-DATE task prints the key and no input lines; fresh worktrees never hit this, but the parser must cope.
+        String log = "> Task :app:appA:compileJava UP-TO-DATE\nBuild cache key for task ':app:appA:compileJava' is 35c0f7cbe157cd2e30090cc5510cec8c\n";
+        TaskKey key = CacheDebugLog.parse(log, TASK).orElseThrow();
+        assertEquals("35c0f7cbe157cd2e30090cc5510cec8c", key.key());
+        assertTrue(key.fileFingerprints().isEmpty() && key.valueFingerprints().isEmpty());
+    }
+
+    @Test void nonCacheableReasonIsReportedForTheRightTaskOnly() {
+        assertEquals(Optional.of("Not worth caching [NOT_CACHEABLE]"), CacheDebugLog.nonCacheableReason(FIXTURE, ":core:jar"));
+        assertEquals(Optional.empty(), CacheDebugLog.nonCacheableReason(FIXTURE, TASK));
+    }
+
     private static String resource(String name) throws IOException {
         try (InputStream in = CacheDebugLogTest.class.getResourceAsStream(name)) {
             if (in == null) {
@@ -2360,6 +2377,14 @@ class GradleKeyProviderTest {
                 () -> new GradleKeyProvider(runner, false, Duration.ofMinutes(1)).keyFor(worktree, TASK));
         assertTrue(e.getMessage().contains("no cache key"), e.getMessage());
     }
+
+    @Test void nonCacheableTaskIsExplainedNotMisreported() {
+        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 0, CacheDebugLogTest.FIXTURE, "");
+        ProviderException e = assertThrows(ProviderException.class,
+                () -> new GradleKeyProvider(runner, false, Duration.ofMinutes(1)).keyFor(worktree, ":core:jar"));
+        assertTrue(e.getMessage().contains("not cacheable"), e.getMessage());
+        assertTrue(e.getMessage().contains("Not worth caching"), e.getMessage());
+    }
 }
 ```
 
@@ -2392,6 +2417,7 @@ final class CacheDebugLog {
     private static final Pattern FILES = Pattern.compile("^Appending input file fingerprints for '([^']+)' to build cache key: [0-9a-f]+ - [A-Z_]+\\{(.*)\\}$");
     private static final Pattern ENTRY = Pattern.compile("(.+?)=(?:'[^']*'|IGNORED) / ([0-9a-f]+)(?:, |$)");
     private static final Pattern KEY = Pattern.compile("^Build cache key for task '([^']+)' is ([0-9a-f]+)$");
+    private static final Pattern NON_CACHEABLE = Pattern.compile("^Non-cacheable because (.+)$");
 
     private CacheDebugLog() {}
 
@@ -2419,6 +2445,24 @@ final class CacheDebugLog {
                 implementation = "";
                 values = new LinkedHashMap<>();
                 files = new LinkedHashMap<>();
+            }
+        }
+        return Optional.empty();
+    }
+
+    /** The reason Gradle printed instead of a key for {@code taskPath} (e.g. "Not worth caching [NOT_CACHEABLE]" for jar tasks). */
+    static Optional<String> nonCacheableReason(String output, String taskPath) {
+        String current = null;
+        for (String raw : output.split("\\R")) {
+            String line = raw.strip();
+            Matcher header = TASK_HEADER.matcher(line);
+            if (header.find()) {
+                current = header.group(1);
+                continue;
+            }
+            Matcher m = NON_CACHEABLE.matcher(line);
+            if (m.matches() && taskPath.equals(current)) {
+                return Optional.of(m.group(1));
             }
         }
         return Optional.empty();
@@ -2480,9 +2524,11 @@ public final class GradleKeyProvider implements KeyProvider {
         if (!result.ok()) {
             throw new ProviderException("gradle failed: " + result.firstErrorLine());
         }
-        return CacheDebugLog.parse(result.stdout() + "\n" + result.stderr(), taskPath).orElseThrow(() -> new ProviderException(
-                "gradle printed no cache key for " + taskPath
-                        + " (is the task cacheable, and is org.gradle.caching=true at this commit?)"));
+        String output = result.stdout() + "\n" + result.stderr();
+        return CacheDebugLog.parse(output, taskPath).orElseThrow(() -> new ProviderException(
+                CacheDebugLog.nonCacheableReason(output, taskPath)
+                        .map(reason -> taskPath + " is not cacheable (" + reason + "), so it has no cache key; use compileJava or fingerprint")
+                        .orElse("gradle printed no cache key for " + taskPath + " (is org.gradle.caching=true at this commit?)")));
     }
 }
 ```
@@ -2490,7 +2536,7 @@ public final class GradleKeyProvider implements KeyProvider {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 27 tests at this point in the sequence (13 from Task 6 plus 14 here). Then `bazel test //tools/tracer/...` must also pass — the fixtures are on the Bazel test classpath through the `resources` attribute.
+Expected: `BUILD SUCCESSFUL`; 30 tests at this point in the sequence (13 from Task 6 plus 17 here). Then `bazel test //tools/tracer/...` must also pass — the fixtures are on the Bazel test classpath through the `resources` attribute.
 
 - [ ] **Step 6: Document and commit**
 
@@ -2505,7 +2551,8 @@ Append to `docs/tracer.md`:
 - `Build cache key for task '<path>' is <hash>` → the key
 Project dependencies appear as class directories on the compile classpath and as jars on the runtime classpath, which is why
 culprits read `core classes` under `compileJava` and `core.jar` under `fingerprint`. A task that prints `Non-cacheable because ...`
-has no key; the provider reports that as a failure rather than a silent `clean`.
+(jar, installDist, …) has no key; the provider reports the reason instead of a silent `clean`. An UP-TO-DATE task prints the
+key line without input lines; the tracer always runs in a fresh worktree, so the inputs are present whenever the key changed.
 ```
 
 ```bash
@@ -2528,7 +2575,7 @@ the format fails a test instead of producing silent 'clean' verdicts."
 - Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/BazelDiffProviderTest.java`
 - Modify: `docs/bazel-build.md`, `docs/tracer.md`
 
-Verified in the spike: bazel-diff is now a single static binary (Rust); `generate-hashes -w <ws> -b bazel --fineGrainedHashExternalRepos=maven <out.json>` hashes each `@maven//...` target separately (51 of them in the spike); `get-impacted-targets -w <ws> --startingHashes a.json --finalHashes b.json -o out.txt` writes one label per line. Building it from the Bazel Central Registry module would compile Rust via rules_rust, so we download the pinned release binary instead. Each worktree gets its own Bazel output base; the provider runs `bazel clean --expunge` in the worktree afterwards so disk does not leak.
+Verified in the spike: bazel-diff is now a single static binary (Rust); `generate-hashes -w <ws> -b bazel --fineGrainedHashExternalRepos=@maven <out.json>` hashes each `@maven//...` target separately (51 of them in the spike; the bare spelling `maven` fails with `ERROR: invalid package name 'maven/'`); `get-impacted-targets -w <ws> --startingHashes a.json --finalHashes b.json -o out.txt` writes one label per line. Building it from the Bazel Central Registry module would compile Rust via rules_rust, so we download the pinned release binary instead. Each worktree gets its own Bazel output base; the provider runs `bazel clean --expunge` in the worktree afterwards so disk does not leak.
 
 - [ ] **Step 1: Fetch script and ignore rule**
 
@@ -2602,7 +2649,7 @@ class BazelDiffProviderTest {
         return new BazelDiffProvider(runner, repo, offline, Duration.ofMinutes(1), binary);
     }
 
-    String generate() { return binary + " generate-hashes -w " + worktree + " -b bazel --fineGrainedHashExternalRepos=maven"; }
+    String generate() { return binary + " generate-hashes -w " + worktree + " -b bazel --fineGrainedHashExternalRepos=@maven"; }
 
     @Test void hashesRunsGenerateHashesFromTheRepoAndCleansTheWorktreeServer() throws Exception {
         FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 0, "", "").on("bazel clean --expunge", 0, "", "");
@@ -2612,7 +2659,7 @@ class BazelDiffProviderTest {
 
         assertEquals(out, result);
         assertEquals(List.of(binary.toString(), "generate-hashes", "-w", worktree.toString(), "-b", "bazel",
-                "--fineGrainedHashExternalRepos=maven", out.toString()), runner.calls.get(0));
+                "--fineGrainedHashExternalRepos=@maven", out.toString()), runner.calls.get(0));
         assertEquals(repo, runner.cwds.get(0));
         assertEquals(List.of("bazel", "clean", "--expunge"), runner.calls.get(1));
         assertEquals(worktree, runner.cwds.get(1));
@@ -2707,12 +2754,12 @@ import java.util.Set;
 
 /**
  * The Bazel oracle: {@code bazel-diff generate-hashes} per worktree and {@code get-impacted-targets} per adjacent pair.
- * External Maven artifacts are hashed individually ({@code --fineGrainedHashExternalRepos=maven}) so one library bump
+ * External Maven artifacts are hashed individually ({@code --fineGrainedHashExternalRepos=@maven}) so one library bump
  * impacts only its dependants. Every worktree gets its own Bazel output base, so the provider runs
  * {@code bazel clean --expunge} there afterwards to stop the server and free the disk.
  */
 public final class BazelDiffProvider implements ImpactProvider {
-    static final String FINE_GRAINED_REPOS = "maven";
+    static final String FINE_GRAINED_REPOS = "@maven";
     private static final String HOW_TO_GET = " (run tools/fetch-bazel-diff.sh or set BAZEL_DIFF=/path/to/binary)";
 
     private final ProcessRunner runner;
@@ -2804,12 +2851,12 @@ public final class BazelDiffProvider implements ImpactProvider {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 36 tests at this point in the sequence. Also `bazel test //tools/tracer/...` passes.
+Expected: `BUILD SUCCESSFUL`; 39 tests at this point in the sequence. Also `bazel test //tools/tracer/...` passes.
 
 - [ ] **Step 6: Try it for real against the repo**
 
 ```bash
-tools/bin/bazel-diff generate-hashes -w "$PWD" -b bazel --fineGrainedHashExternalRepos=maven /tmp/h.json && python3 -c "import json;d=json.load(open('/tmp/h.json'));print(len(d),'targets;', sum(1 for k in d if k.startswith('@maven//')),'maven')"
+tools/bin/bazel-diff generate-hashes -w "$PWD" -b bazel --fineGrainedHashExternalRepos=@maven /tmp/h.json && python3 -c "import json;d=json.load(open('/tmp/h.json'));print(len(d),'targets;', sum(1 for k in d if k.startswith('@maven//')),'maven')"
 ```
 Expected: a few dozen targets, of which several dozen `@maven//` ones, and `//app/appA:appA` among the keys.
 
@@ -2819,7 +2866,7 @@ Append to `docs/bazel-build.md`:
 ```markdown
 ## bazel-diff
 `tools/fetch-bazel-diff.sh` downloads the pinned release binary (v60.0.0, sha256-checked) to `tools/bin/` (gitignored).
-Override with `BAZEL_DIFF=/path/to/binary`. The tracer runs `generate-hashes -w <worktree> -b bazel --fineGrainedHashExternalRepos=maven`
+Override with `BAZEL_DIFF=/path/to/binary`. The tracer runs `generate-hashes -w <worktree> -b bazel --fineGrainedHashExternalRepos=@maven`
 per commit and `get-impacted-targets` per adjacent pair, then `bazel clean --expunge` in the worktree so each throwaway
 output base is removed. Building bazel-diff from the Bazel Central Registry module was rejected: it compiles Rust via rules_rust.
 ```
@@ -2923,7 +2970,7 @@ class RevisionRangeTest {
                 .on("git rev-parse --verify --quiet v1^{commit}", 0, A + "\n", "")
                 .on("git rev-parse --verify --quiet HEAD^{commit}", 0, C + "\n", "")
                 .on("git log -1 --format=%H%x1f%s " + A, 0, A + "\u001fbaseline\n", "")
-                .on("git log --reverse --format=%H%x1f%s " + A + ".." + C, 0,
+                .on("git log --reverse --first-parent --format=%H%x1f%s " + A + ".." + C, 0,
                         B + "\u001fcore: add shout\n" + C + "\u001fdeps: bump gson\n", "");
 
         List<Commit> commits = new RevisionRange(git, repo).resolve("v1", "HEAD");
@@ -2945,7 +2992,7 @@ class RevisionRangeTest {
                 .on("git rev-parse --verify --quiet A^{commit}", 0, A + "\n", "")
                 .on("git rev-parse --verify --quiet B^{commit}", 0, A + "\n", "")
                 .on("git log -1 --format=%H%x1f%s " + A, 0, A + "\u001fbaseline\n", "")
-                .on("git log --reverse --format=%H%x1f%s " + A + ".." + A, 0, "", "");
+                .on("git log --reverse --first-parent --format=%H%x1f%s " + A + ".." + A, 0, "", "");
 
         UsageException e = assertThrows(UsageException.class, () -> new RevisionRange(git, repo).resolve("A", "B"));
         assertTrue(e.getMessage().contains("no commits"), e.getMessage());
@@ -3064,7 +3111,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Turns {@code --from/--to} into an ordered commit list: the base commit first, then every commit in from..to. */
+/** Turns {@code --from/--to} into an ordered commit list: the base commit first, then every first-parent commit in from..to. */
 public final class RevisionRange {
     private static final Duration TIMEOUT = Duration.ofSeconds(30);
     private static final String FORMAT = "--format=%H%x1f%s";
@@ -3082,7 +3129,7 @@ public final class RevisionRange {
         String toSha = revParse(to);
         List<Commit> commits = new ArrayList<>();
         commits.add(parse(run("git", "log", "-1", FORMAT, fromSha).stdout().strip()));
-        ProcessRunner.Result log = run("git", "log", "--reverse", FORMAT, fromSha + ".." + toSha);
+        ProcessRunner.Result log = run("git", "log", "--reverse", "--first-parent", FORMAT, fromSha + ".." + toSha);
         if (!log.ok()) {
             throw new ProviderException("git log failed: " + log.firstErrorLine());
         }
@@ -3231,14 +3278,14 @@ public final class WorktreePool implements AutoCloseable {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 46 tests at this point in the sequence.
+Expected: `BUILD SUCCESSFUL`; 49 tests at this point in the sequence.
 
 - [ ] **Step 5: Document and commit**
 
 Append to `docs/tracer.md`:
 ```markdown
 ## Git layer
-- `RevisionRange.resolve(from, to)` → `[from, …from..to oldest first]`. Unknown revision or empty range → `UsageException`; git not runnable → `ProviderException`.
+- `RevisionRange.resolve(from, to)` → `[from, …from..to oldest first]`, following the first-parent line so adjacent rows are parent and child even across merges. Unknown revision or empty range → `UsageException`; git not runnable → `ProviderException`.
 - `WorktreePool` → `git worktree prune`, then `git worktree add --detach <root>/wt-<sha7> <sha>` per commit. `close()` and a shutdown hook run `git worktree remove --force`; `--keep-worktrees` disables removal.
 ```
 
@@ -3324,10 +3371,19 @@ class ComparatorTest {
     }
 
     @Test void addedAndRemovedFilesCount() {
-        TaskKey a = key("k1", Map.of("classpath", Map.of("/w1/gson-2.10.1.jar", "aa")), Map.of(), "i");
-        TaskKey b = key("k2", Map.of("classpath", Map.of("/w2/gson-2.11.0.jar", "bb")), Map.of(), "i");
+        TaskKey a = key("k1", Map.of("classpath", Map.of("/w1/libs/gson-2.10.1.jar", "aa")), Map.of(), "i");
+        TaskKey b = key("k2", Map.of("classpath", Map.of("/w2/libs/gson-2.11.0.jar", "bb")), Map.of(), "i");
         Verdict v = Comparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
         assertEquals(List.of("gson-2.10.1.jar", "gson-2.11.0.jar"), v.culprits());
+    }
+
+    @Test void moduleCacheJarsAreNamedByCoordinatesSoABumpIsOneCulprit() {
+        TaskKey a = key("k1", Map.of("runtimeClasspath", Map.of(
+                "/home/u/.gradle/caches/modules-2/files-2.1/com.google.code.gson/gson/2.10.1/abc/gson-2.10.1.jar", "aa")), Map.of(), "i");
+        TaskKey b = key("k2", Map.of("runtimeClasspath", Map.of(
+                "/home/u/.gradle/caches/modules-2/files-2.1/com.google.code.gson/gson/2.11.0/def/gson-2.11.0.jar", "bb")), Map.of(), "i");
+        Verdict v = Comparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals(List.of("com.google.code.gson:gson"), v.culprits());
     }
 
     @Test void changedValueAndImplementationAreNamed() {
@@ -3514,7 +3570,12 @@ public final class Comparator {
         return out;
     }
 
-    /** {@code .../core/build/libs/core.jar → core.jar}; {@code .../app/appA/src/main/java/X.java → appA/src/main/java/X.java}; {@code .../appA/build/classes/java/main → appA classes}. */
+    /**
+     * {@code .../core/build/libs/core.jar → core.jar}; {@code .../app/appA/src/main/java/X.java → appA/src/main/java/X.java};
+     * {@code .../appA/build/classes/java/main/... → appA classes};
+     * {@code ~/.gradle/caches/modules-2/files-2.1/com.google.code.gson/gson/2.11.0/<sha>/gson-2.11.0.jar → com.google.code.gson:gson}
+     * (so a version bump is one culprit, not a removed plus an added jar).
+     */
     static String displayName(String path) {
         String p = path.replace('\\', '/');
         int classes = p.indexOf("/build/classes/");
@@ -3524,6 +3585,13 @@ public final class Comparator {
         int resources = p.indexOf("/build/resources/");
         if (resources >= 0) {
             return lastSegmentBefore(p, resources) + " resources";
+        }
+        int cache = p.indexOf("/modules-2/files-2.1/");
+        if (cache >= 0) {
+            String[] parts = p.substring(cache + "/modules-2/files-2.1/".length()).split("/");
+            if (parts.length >= 2) {
+                return parts[0] + ":" + parts[1];
+            }
         }
         int src = p.indexOf("/src/");
         if (src >= 0) {
@@ -3638,7 +3706,7 @@ public final class TableRenderer {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 60 tests at this point in the sequence. Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
+Expected: `BUILD SUCCESSFUL`; 64 tests at this point in the sequence. Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
 
 - [ ] **Step 5: Document and commit**
 
@@ -3647,7 +3715,7 @@ Append to `docs/tracer.md`:
 ## Comparison
 `Comparator.verdict(commit, previousGoodKey, currentKey, error, bazel)`: no current key → `BUILD-FAILED`; no previous → `base`;
 equal keys → `clean`; otherwise `CHANGED` with culprits = file fingerprints that differ (compared by location-independent display
-name: `core.jar`, `appA/src/main/java/.../AppA.java`, `appA classes`), value properties that differ, and `build logic` when the task
+name: `core.jar`, `appA/src/main/java/.../AppA.java`, `appA classes`, and `group:artifact` for jars from the Gradle module cache so a version bump is one culprit), value properties that differ, and `build logic` when the task
 implementation hash differs. Capped at four plus `+N more`.
 
 `TableRenderer.render` prints the fixed-width table and a summary line; `renderTsv` prints `sha\tsubject\tkey\tbazel\tverdict\tculprits` for scripts.
@@ -3797,7 +3865,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 65 tests at this point in the sequence; the timeout test finishes in well under a second.
+Expected: `BUILD SUCCESSFUL`; 69 tests at this point in the sequence; the timeout test finishes in well under a second.
 
 - [ ] **Step 5: Commit**
 
@@ -3885,7 +3953,7 @@ class CliTest {
                 .on("git rev-parse --verify --quiet tip^{commit}", 0, C + "\n", "")
                 .on("git log -1 --format=%H%x1f%s " + A, 0, A + "\u001fbaseline\n", "")
                 .on("git log -1 --format=%H%x1f%s " + C, 0, C + "\u001fdocs only\n", "")
-                .on("git log --reverse --format=%H%x1f%s " + A + ".." + C, 0,
+                .on("git log --reverse --first-parent --format=%H%x1f%s " + A + ".." + C, 0,
                         B + "\u001fcore: add shout\n" + C + "\u001fdocs only\n", "")
                 .on("git worktree", 0, "", "");
     }
@@ -4253,7 +4321,7 @@ public final class Cli {
 - [ ] **Step 5: Run the unit tests**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: FAIL to compile — `GradleKeyProvider` and `BazelDiffProvider` referenced from `main` do not exist yet if Tasks 7 and 8 have not been done. This plan orders Tasks 7 and 8 before Task 12, so they do exist; if you are reading out of order, do Tasks 7 and 8 first. Expected after that: `BUILD SUCCESSFUL`; 76 tests.
+Expected: FAIL to compile — `GradleKeyProvider` and `BazelDiffProvider` referenced from `main` do not exist yet if Tasks 7 and 8 have not been done. This plan orders Tasks 7 and 8 before Task 12, so they do exist; if you are reading out of order, do Tasks 7 and 8 first. Expected after that: `BUILD SUCCESSFUL`; 80 tests.
 
 - [ ] **Step 6: Document and commit**
 
@@ -4534,7 +4602,7 @@ relock() {
   local tasks=()
   for p in "${PROJECTS[@]}"; do tasks+=(":$p:dependencies"); done
   (cd "$WT" && ./gradlew -q "${tasks[@]}" --write-locks >/dev/null)
-  [[ "$NO_BAZEL" == 1 ]] || (cd "$WT" && bazel run --ui_event_filters=-info,-stdout --noshow_progress @maven//:pin >/dev/null)
+  [[ "$NO_BAZEL" == 1 ]] || (cd "$WT" && REPIN=1 bazel run --ui_event_filters=-info,-stdout --noshow_progress @maven//:pin >/dev/null)
 }
 
 commit() { git -C "$WT" add -A >/dev/null && git -C "$WT" commit -q -m "$1" && git -C "$WT" rev-parse HEAD; }

@@ -10,3 +10,5 @@ bazel-*
 .vscode/
 # OS
 .DS_Store
+# Lavish review artifacts
+.lavish/

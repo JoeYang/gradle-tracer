@@ -111,7 +111,8 @@ Semantics:
   `bazel≠gradle`; the scenario script explains each one.
 - The **culprit** is derived from Gradle's per-input fingerprints: changed classpath
   entries (jar names, or `<module> classes` for class directories — Gradle feeds project
-  dependencies to `compileJava` as class directories and to the runtime classpath as jars),
+  dependencies to `compileJava` as class directories and to the runtime classpath as jars; jars from
+  the Gradle module cache are named `group:artifact`, so a version bump is one culprit),
   changed source files (`<module>/src/...`), changed input values (property names such as
   `options.compilerArgs`), or `build logic` when the task implementation hash changed.
 - `--tsv` prints `sha\tsubject\tkey\tbazel\tverdict\tculprits` instead of the table; `--tsv-out <file>`
@@ -132,7 +133,7 @@ Semantics:
    ▼  for each commit (WorktreePool: git worktree add <scratch>/wt-<sha>, removed on exit)
    ├─▶ GradleKeyProvider:  ./gradlew :app:appA:compileJava -Dorg.gradle.caching.debug=true --console=plain
    │        └─▶ CacheDebugLog parser ─▶ TaskKey{ key, inputs: {property → {file → hash}}, implementation }
-   └─▶ BazelDiffProvider: bazel-diff generate-hashes -w <wt> --fineGrainedHashExternalRepos=maven ─▶ hashes-<sha>.json
+   └─▶ BazelDiffProvider: bazel-diff generate-hashes -w <wt> --fineGrainedHashExternalRepos=@maven ─▶ hashes-<sha>.json
    │
    ▼
  Comparator: adjacent pairs ─▶ Verdict{ changed?, culprit set }   +   bazel-diff get-impacted-targets(prev, cur) ∋ //app/appA ?
@@ -180,10 +181,10 @@ Components, each with one job and a seam for tests:
 
 ### D2. Bazel oracle: bazel-diff with fine-grained Maven hashing
 - **Why.** Purpose-built for "impacted targets between two revisions", actively released, and
-  `--fineGrainedHashExternalRepos=maven` hashes each pinned third-party jar separately (verified: 51
+  `--fineGrainedHashExternalRepos=@maven` hashes each pinned third-party jar separately (verified: 51
   `@maven//` targets hashed individually in the spike).
 - **What.** A pinned, sha256-checked release binary (`tools/fetch-bazel-diff.sh`, v60.0.0, a single static
-  Rust executable); run `generate-hashes -w <worktree> -b bazel --fineGrainedHashExternalRepos=maven` per commit
+  Rust executable); run `generate-hashes -w <worktree> -b bazel --fineGrainedHashExternalRepos=@maven` per commit
   and `get-impacted-targets` for adjacent pairs; check whether `//app/appA:appA` is listed; `bazel clean --expunge`
   in the worktree afterwards so throwaway output bases do not accumulate.
 - **Pros.** Independent reference answer. Per-library granularity through `maven_install.json`.
@@ -355,8 +356,9 @@ Verified by experiment in a scratch directory (Gradle 9.1.0, Bazel 9.1.0, bazel-
   directory.
 - `fingerprint` key (prototype of D1's task): changed on a gson bump and on a `-Xlint:all` build-logic change;
   `compileJava` of a direct gson consumer also changed on the bump (S4 confirmed) and on the build-logic change (S6).
-- bazel-diff: `--fineGrainedHashExternalRepos=maven` and the canonical `rules_jvm_external++maven+maven` produce
-  identical output (51 `@maven//` targets); coarse mode hashes none individually.
+- bazel-diff: `--fineGrainedHashExternalRepos=@maven` (and the canonical `rules_jvm_external++maven+maven`) hash 51
+  `@maven//` targets individually; coarse mode hashes none. The bare spelling `maven` fails:
+  `ERROR: invalid package name 'maven/': package names may not end with '/'` (re-run and confirmed).
 - Bazel on this host: `UnsupportedClassVersionError` from rules_jvm_external's stamper until
   `--tool_java_runtime_version=remotejdk_21` (and `--tool_java_language_version=21`) are set.
 
@@ -374,3 +376,22 @@ Design changes resulting from the review and from current versions:
 | CLI | — | `--tsv`, `--tsv-out <file>`, `--timeout-minutes <n>` added; Gradle runs use `--no-parallel` |
 | Bazel tests | unspecified | JUnit console launcher macro; `build-logic` TestKit tests and the e2e suite stay Gradle-only |
 | Bazel hygiene | — | `bazel clean --expunge` per worktree after hashing |
+
+### Reviewer suggestions, triaged
+
+| id | suggestion | decision | where |
+|---|---|---|---|
+| B1 | S6 fingerprint cell is C, culprit "build logic" | accepted | §8, plan Task 14 expectations |
+| B2 | fine-grained flag must be `@maven` | accepted, re-verified | D2, plan Task 8 |
+| B3 | put `-Xlint:all` in a BUILD macro, not `.bazelrc` | already so (`JAVACOPTS` in `tools/defs.bzl`) | plan Task 4 |
+| B4 | culprits by location-independent names; external jars by `group:artifact` | accepted | §5, plan Task 10 |
+| B5 | report NOT_CACHEABLE and key-only blocks explicitly | accepted | plan Task 7 |
+| B6 | pin the prebuilt bazel-diff by sha256 | already so | D2, plan Task 8 |
+| B7 | `.bazelrc` runtime + tool runtime remotejdk_21 | already so | D6, plan Task 4 |
+| B8 | include `--from` as base; walk `--first-parent` | base already included; `--first-parent` accepted | plan Task 9 |
+| B9 | `bazel shutdown` per worktree | covered by `bazel clean --expunge` (stops the server too) | plan Task 8 |
+| B10 | keep the version catalog out of build-logic | rejected: the plugin reads the catalog from the consuming project at runtime, so a catalog edit does not change the build-logic jar; S3/S4's clean `fingerprint` cells for appB/appC are the regression check | §8 |
+| B11 | split large commits; trim fixtures | commits already split into 14 tasks (largest ≈360 lines); fixtures are generated and kept whole so the parser is tested against other tasks' blocks | plan |
+| B12 | ask the user about the Gradle version | asked via the plan review page (A2), plan approved | plan |
+| — | `@Classpath` ignores order only inside jars | wording corrected | plan Task 5 |
+| — | UP-TO-DATE prints the key without input lines | parser copes; fresh worktrees never hit it | plan Task 7 |
