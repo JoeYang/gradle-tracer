@@ -47,14 +47,19 @@ The same command also refreshes the root `settings-gradle.lockfile`, which locks
 catalog's own resolution (`incomingCatalogForLibs0`). Commit it with the module lockfiles.
 
 ## Tests
-`./gradlew -p build-logic test` runs the TestKit tests (they need network for JUnit). Each TestKit
-project uses its own local build cache (`<project>/.build-cache`), so the functional tests are hermetic.
+`./gradlew -p build-logic test` runs the TestKit tests (they need network for JUnit). By default each
+TestKit project gets its own local build cache (`<project>/.build-cache`), so the functional tests are
+hermetic; a test that checks a `FROM-CACHE` hit across two project directories passes the same cache
+directory to both (via `GradleProject.copyTo`) instead.
 
 ## The fingerprint task
 `tracer.java-base` registers `fingerprint` on every module. It is a `@CacheableTask` whose only input is
 `sourceSets.main.runtimeClasspath` declared as `@Classpath`, and whose output is
 `build/fingerprint/runtime-classpath.txt`. Nothing reads that file. The point is the task's build-cache
-key: a content hash of the whole runtime classpath, path- and timestamp-independent.
+key: a content hash of the whole runtime classpath, path- and timestamp-independent. The key also folds
+in `FingerprintTask`'s own implementation hash, so any commit that touches `build-logic` (or bumps the
+Gradle wrapper) changes every module's `fingerprint` key — the tracer reports such commits as
+build-logic culprits rather than runtime-input changes.
 
 | edit | `compileJava` key of a consumer | `fingerprint` key of a consumer |
 |---|---|---|

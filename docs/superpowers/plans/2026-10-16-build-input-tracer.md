@@ -1900,7 +1900,10 @@ Append to `docs/gradle-build.md`:
 `tracer.java-base` registers `fingerprint` on every module. It is a `@CacheableTask` whose only input is
 `sourceSets.main.runtimeClasspath` declared as `@Classpath`, and whose output is
 `build/fingerprint/runtime-classpath.txt`. Nothing reads that file. The point is the task's build-cache
-key: a content hash of the whole runtime classpath, path- and timestamp-independent.
+key: a content hash of the whole runtime classpath, path- and timestamp-independent. The key also folds
+in `FingerprintTask`'s own implementation hash, so any commit that touches `build-logic` (or bumps the
+Gradle wrapper) changes every module's `fingerprint` key — the tracer reports such commits as
+build-logic culprits rather than runtime-input changes.
 
 | edit | `compileJava` key of a consumer | `fingerprint` key of a consumer |
 |---|---|---|
