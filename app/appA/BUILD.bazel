@@ -1,0 +1,20 @@
+load("//tools:defs.bzl", "junit5_test_suite", "tracer_java_binary", "tracer_java_library")
+
+tracer_java_library(
+    name = "appA_lib",
+    srcs = glob(["src/main/java/**/*.java"]),
+    deps = ["//lib"],
+)
+
+tracer_java_binary(
+    name = "appA",
+    main_class = "io.joeyang.tracer.app.a.AppA",
+    runtime_deps = [":appA_lib"],
+    visibility = ["//visibility:public"],
+)
+
+junit5_test_suite(
+    name = "tests",
+    srcs = glob(["src/test/java/**/*.java"]),
+    deps = [":appA_lib"],
+)

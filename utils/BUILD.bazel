@@ -1,0 +1,13 @@
+load("//tools:defs.bzl", "junit5_test_suite", "tracer_java_library")
+
+tracer_java_library(
+    name = "utils",
+    srcs = glob(["src/main/java/**/*.java"]),
+    visibility = ["//visibility:public"],
+)
+
+junit5_test_suite(
+    name = "tests",
+    srcs = glob(["src/test/java/**/*.java"]),
+    deps = [":utils"],
+)
