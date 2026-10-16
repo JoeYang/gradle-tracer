@@ -12,3 +12,4 @@ dependencyResolutionManagement {
 rootProject.name = "gradle-tracer"
 
 include("utils", "core", "lib")
+include("app:appA", "app:appB", "app:appC")

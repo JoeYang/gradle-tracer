@@ -20,6 +20,9 @@
 | `utils` | `tracer.java-library` | none |
 | `core` | `tracer.java-library` | `implementation(project(":utils"))` |
 | `lib` | `tracer.java-library` | `api(project(":core"))`, `implementation(libs.commons.lang3)` (3.18.0) |
+| `app:appA` | `tracer.java-application` | `implementation(project(":lib"))` |
+| `app:appB` | `tracer.java-application` | `implementation(project(":core"))` |
+| `app:appC` | `tracer.java-application` | `implementation(project(":utils"))`, `implementation(libs.gson)` |
 
 `core` depends on `utils` with `implementation` because `core.Greeter` calls `Formatter.pad` only
 inside a method body; `utils` never appears in a consumer's public API, so it stays off their
@@ -28,8 +31,11 @@ compile classpath. `lib` depends on `core` with `api` because `lib.Service.greet
 depends on `commons-lang3` with `implementation` because `StringUtils` is used only inside
 `Service`'s method bodies, never exposed in a signature.
 
-`./gradlew build` runs every module's tests (24 today). The applications (`appA`, `appB`, `appC`)
-that consume these libraries arrive in the next commit.
+Each app depends on its libraries with `implementation`: nothing consumes an app, so no app type
+needs to be visible further up the graph. `appA` reaches `core` only through `lib`'s `api` edge,
+`appB` depends on `core` directly, and `appC` never touches `core` or `lib`.
+
+`./gradlew build` runs every module's tests (33 today).
 
 ## Dependency locking
 Every module locks all configurations. Regenerate after a version change:
