@@ -72,6 +72,7 @@ curl -sSL https://services.gradle.org/distributions/gradle-9.8.1-bin.zip.sha256 
 echo "$(cat gradle-9.8.1-bin.zip.sha256)  gradle-9.8.1-bin.zip" | sha256sum -c -
 unzip -q gradle-9.8.1-bin.zip
 cd /data/projects/gradle-tracer
+touch settings.gradle.kts   # `gradle wrapper` refuses to run without a settings file; Step 2 writes the real one
 "$S/gradle-dist/gradle-9.8.1/bin/gradle" wrapper --gradle-version 9.8.1 --distribution-type bin --no-daemon
 ./gradlew --version | head -3
 ```
@@ -181,7 +182,7 @@ gradlePlugin {
 
 - [ ] **Step 4: Write the TestKit helper and the failing functional tests**
 
-`build-logic/src/test/java/io/joeyang/tracer/buildlogic/GradleProject.java`:
+`build-logic/src/test/java/io/joeyang/tracer/buildlogic/GradleProject.java` (TestKit shares one build cache across every test method by default; three tests compile byte-identical sample code, so without a per-project cache the last one would see `FROM_CACHE` where it asserts `SUCCESS`):
 ```java
 package io.joeyang.tracer.buildlogic;
 
@@ -203,15 +204,27 @@ final class GradleProject {
             """;
 
     final Path dir;
+    final Path cacheDir;
 
+    /** Each project gets its own local build cache, so test methods never see each other's FROM-CACHE hits. */
     GradleProject(Path dir) throws IOException {
+        this(dir, dir.resolve(".build-cache"));
+    }
+
+    /** @param cacheDir local build cache for this project; two projects sharing it can be used to test FROM-CACHE across locations */
+    GradleProject(Path dir, Path cacheDir) throws IOException {
         this.dir = dir;
+        this.cacheDir = cacheDir;
+        Files.createDirectories(dir);
         write("settings.gradle.kts", """
                 dependencyResolutionManagement {
                     repositories { mavenCentral() }
                 }
+                buildCache {
+                    local { directory = file("%s") }
+                }
                 rootProject.name = "sample"
-                """);
+                """.formatted(cacheDir.toString().replace("\\", "/")));
         write("gradle/libs.versions.toml", CATALOG);
         write("gradle.properties", "org.gradle.caching=true\n");
     }
@@ -1368,7 +1381,7 @@ final class GradleProject {
     }
 }
 ```
-The second constructor keeps Task 1's tests compiling unchanged. Note `copyTo` re-creates settings for the new location but keeps the *same* cache directory.
+Compared with Task 1 this adds the private non-writing constructor and `copyTo`; the per-project cache directory already exists. `copyTo` wraps the copied files without rewriting them and keeps the *same* cache directory.
 
 - [ ] **Step 2: Write the failing functional tests**
 
@@ -2951,9 +2964,9 @@ Expected: `BUILD SUCCESSFUL`; 39 tests at this point in the sequence. Also `baze
 - [ ] **Step 6: Try it for real against the repo**
 
 ```bash
-tools/bin/bazel-diff generate-hashes -w "$PWD" -b bazel --fineGrainedHashExternalRepos=@maven /tmp/h.json && python3 -c "import json;d=json.load(open('/tmp/h.json'));print(len(d),'targets;', sum(1 for k in d if k.startswith('@maven//')),'maven')"
+tools/bin/bazel-diff generate-hashes -w "$PWD" -b bazel --fineGrainedHashExternalRepos=@maven /tmp/h.json && python3 -c "import json;d=json.load(open('/tmp/h.json'))['hashes'];print(len(d),'targets;', sum(1 for k in d if k.startswith('@maven//')),'maven')"
 ```
-Expected: a few dozen targets, of which several dozen `@maven//` ones, and `//app/appA:appA` among the keys.
+Expected: around a hundred targets, of which several dozen `@maven//` ones, and `//app/appA:appA` among the keys (bazel-diff v60 writes `{"hashes": {...}, "metadata": {...}}`, hence `['hashes']`).
 
 - [ ] **Step 7: Docs and commit**
 
@@ -2961,6 +2974,8 @@ Append to `docs/bazel-build.md`:
 ```markdown
 ## bazel-diff
 `tools/fetch-bazel-diff.sh` downloads the pinned release binary (v60.0.0, sha256-checked) to `tools/bin/` (gitignored).
+`--offline` maps to `--repository_disable_download` for the Bazel queries: it works on a fresh output base once the repository
+cache is warm, and fails with a clear "download is disabled" error when it is cold.
 Override with `BAZEL_DIFF=/path/to/binary`. The tracer runs `generate-hashes -w <worktree> -b bazel --fineGrainedHashExternalRepos=@maven`
 per commit and `get-impacted-targets` per adjacent pair, then `bazel clean --expunge` in the worktree so each throwaway
 output base is removed. Building bazel-diff from the Bazel Central Registry module was rejected: it compiles Rust via rules_rust.

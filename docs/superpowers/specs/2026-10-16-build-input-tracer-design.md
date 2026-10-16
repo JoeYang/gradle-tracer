@@ -415,3 +415,6 @@ Design changes resulting from the review and from current versions:
 | F13 | no test for a runtime dependency version bump | fixed: added to the FingerprintTask tests | plan Task 5 |
 | F14 | `/src/` in a scratch path could fool culprit names | fixed: last occurrence wins | plan Task 10 |
 | F15 | stale version in the tech stack line; `Comparator` shadows `java.util.Comparator`; direct `java_binary` instead of the macro; `jarsAreReproducible` cannot fail first | fixed (renamed to `KeyComparator`, macro used, versions aligned); the reproducibility test stays as a regression guard; a deprecation check (`--warning-mode=all`) is a verification step | plan |
+| F16 | bazel-diff v60 hash files are `{"hashes": {...}, "metadata": {...}}`, not a flat map | fixed in the Task 8 smoke command | plan Task 8 |
+| T1 | TestKit shares one build cache across test methods, so identical sample code came back `FROM_CACHE` where `SUCCESS` was asserted (found while implementing Task 1) | fixed: each TestKit project gets its own local build cache; the later TestKit tests already assumed this | plan Tasks 1, 5 |
+
