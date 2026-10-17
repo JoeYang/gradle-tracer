@@ -2348,23 +2348,33 @@ import java.util.List;
 
 /** The process could not run to completion (as opposed to running and failing). */
 public final class ProcessException extends Exception {
-    private ProcessException(String message, Throwable cause) {
+    private final boolean startFailed;
+
+    private ProcessException(String message, Throwable cause, boolean startFailed) {
         super(message, cause);
+        this.startFailed = startFailed;
     }
 
     public static ProcessException cannotStart(List<String> command, Throwable cause) {
-        return new ProcessException("cannot start '" + command.get(0) + "': " + cause.getMessage(), cause);
+        return new ProcessException("cannot start '" + command.get(0) + "': " + cause.getMessage(), cause, true);
     }
 
     public static ProcessException timeout(List<String> command, Duration timeout) {
-        return new ProcessException("'" + String.join(" ", command) + "' did not finish within " + timeout.toSeconds() + "s", null);
+        return new ProcessException("'" + String.join(" ", command) + "' did not finish within " + timeout.toSeconds() + "s", null, false);
     }
 
     public static ProcessException interrupted(List<String> command) {
-        return new ProcessException("interrupted while waiting for '" + command.get(0) + "'", null);
+        return new ProcessException("interrupted while waiting for '" + command.get(0) + "'", null, false);
+    }
+
+    /** True when the process never launched (e.g. the binary is missing) — false when it ran but timed out or was interrupted. */
+    public boolean startFailed() {
+        return startFailed;
     }
 }
 ```
+(`startFailed()` was added by a Task 8 re-review round so `BazelDiffProvider` could tell a launch failure from a
+timeout/interruption — see that task's region for why.)
 
 `tools/tracer/src/main/java/io/joeyang/tracer/cli/ProviderException.java`:
 ```java
@@ -4067,9 +4077,9 @@ real run triggers — see `docs/bazel-build.md`'s bazel-diff section for why.
 
 A re-review round found that a timed-out or interrupted `generate-hashes` left `started` false, skipping
 `bazel clean --expunge` in exactly the case most likely to leave a Bazel server running. The fix adds an
-additive `startFailed()` accessor to `tools/tracer/src/main/java/io/joeyang/tracer/cli/ProcessException.java`
-(defined for Task 6, not reproduced here) distinguishing "could not launch" (`cannotStart`, cleanup skipped —
-there is nothing to clean up) from "ran but did not finish" (`timeout`/`interrupted`, cleanup still runs). The
+additive `startFailed()` accessor on `ProcessException` (defined for Task 6 — see that task's region for the
+current block) distinguishing "could not launch" (`cannotStart`, cleanup skipped — there is nothing to clean
+up) from "ran but did not finish" (`timeout`/`interrupted`, cleanup still runs). The
 same round also added two `impactedTargets` failure-path tests that had no coverage: a non-zero bazel-diff
 exit (asserting the message names the repo) and a `ProcessException` (asserting it carries the fetch hint).
 It also corrected `docs/bazel-build.md`'s bazel-diff section: the measured hashes are identical with or without
@@ -4444,7 +4454,7 @@ public final class WorktreePool implements AutoCloseable {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 84 tests at this point in the sequence (bumped from 74 by the Task 8 review round's 10 added tests).
+Expected: `BUILD SUCCESSFUL`; 88 tests at this point in the sequence (bumped from 74 by the Task 8 review rounds' 14 added tests).
 
 - [ ] **Step 5: Document and commit**
 
@@ -4872,7 +4882,7 @@ public final class TableRenderer {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 99 tests at this point in the sequence (bumped from 89 by the Task 8 review round's 10 added tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
+Expected: `BUILD SUCCESSFUL`; 103 tests at this point in the sequence (bumped from 89 by the Task 8 review rounds' 14 added tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
 
 - [ ] **Step 5: Document and commit**
 
@@ -5031,7 +5041,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 104 tests at this point in the sequence (bumped from 94 by the Task 8 review round's 10 added tests); the timeout test finishes in well under a second.
+Expected: `BUILD SUCCESSFUL`; 108 tests at this point in the sequence (bumped from 94 by the Task 8 review rounds' 14 added tests); the timeout test finishes in well under a second.
 
 - [ ] **Step 5: Commit**
 
@@ -5252,7 +5262,7 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 116 tests at this point in the sequence (bumped from 106 by the Task 8 review round's 10 added tests; the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 120 tests at this point in the sequence (bumped from 106 by the Task 8 review rounds' 14 added tests; the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -5755,7 +5765,7 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 127 tests at this point in the sequence (bumped from 117 by the Task 8 review round's 10 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 131 tests at this point in the sequence (bumped from 117 by the Task 8 review rounds' 14 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 
