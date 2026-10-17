@@ -5024,6 +5024,29 @@ class KeyComparatorTest {
         assertEquals(List.of("core classes"), v.culprits());
     }
 
+    @Test void exactlyFiveCulpritsAreAllShownWithoutATruncationMarker() {
+        Map<String, String> many1 = Map.of("/a.jar", "1", "/b.jar", "1", "/c.jar", "1", "/d.jar", "1", "/e.jar", "1");
+        Map<String, String> many2 = Map.of("/a.jar", "2", "/b.jar", "2", "/c.jar", "2", "/d.jar", "2", "/e.jar", "2");
+        Verdict v = KeyComparator.verdict(C, Optional.of(key("k1", Map.of("classpath", many1), Map.of(), "i")),
+                Optional.of(key("k2", Map.of("classpath", many2), Map.of(), "i")), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals(5, v.culprits().size());
+        assertTrue(v.culprits().stream().noneMatch(c -> c.startsWith("+")), v.culprits().toString());
+    }
+
+    @Test void addedOrRemovedPropertiesAreDetectedAsCulprits() {
+        TaskKey a = key("k1", Map.of("classpath", Map.of("/w1/core/build/libs/core.jar", "aa")), Map.of(), "i");
+        TaskKey b = key("k2", Map.of(), Map.of("options.compilerArgs", "v2"), "i");
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertTrue(v.culprits().contains("core.jar"), v.culprits().toString());
+        assertTrue(v.culprits().contains("options.compilerArgs"), v.culprits().toString());
+    }
+
+    @Test void noCacheKeyObtainedIsTheDefaultErrorMessage() {
+        Verdict v = KeyComparator.verdict(C, Optional.empty(), Optional.empty(), Optional.empty(), BazelStatus.NOT_AVAILABLE);
+        assertEquals(Status.BUILD_FAILED, v.status());
+        assertEquals("no cache key obtained", v.error().orElseThrow());
+    }
+
     @Test void buildLogicCulpritIsAlwaysFirst() {
         TaskKey a = key("k1", Map.of("classpath", Map.of("/w1/z/build/libs/z.jar", "aa")),
                 Map.of("options.compilerArgs", "v1"), "impl1");
@@ -5063,14 +5086,17 @@ class TableRendererTest {
     @Test void rendersHeaderRowsAndSummary() {
         String out = TableRenderer.render(":app:appA:compileJava", "//app/appA:appA", rows);
         String[] lines = out.split("\n");
+        assertEquals(9, lines.length);
+        // Exact lines, not startsWith/contains: these pin the fixed column widths (9/37/12/12/14) byte for byte.
         assertEquals("Tracing inputs of :app:appA:compileJava (gradle) and //app/appA:appA (bazel-diff) over 3 commits", lines[0]);
-        assertTrue(lines[2].startsWith("commit   subject"), lines[2]);
-        assertTrue(lines[3].startsWith("aaaaaaa  baseline"), lines[3]);
-        assertTrue(lines[3].contains("3f9c…e1") && lines[3].contains("  -  ") && lines[3].contains("base"), lines[3]);
-        assertTrue(lines[4].contains("impacted") && lines[4].contains("clean") && lines[4].contains("bazel≠gradle"), lines[4]);
-        assertTrue(lines[5].contains("…") && lines[5].contains("CHANGED") && lines[5].contains("core.jar"), lines[5]);
-        assertTrue(lines[6].contains("BUILD-FAILED") && lines[6].contains("missing:1.0"), lines[6]);
-        assertEquals("1 of 3 commits changed compile inputs of appA. First: ccccccc. 1 commit could not be built.", lines[lines.length - 1]);
+        assertEquals("", lines[1]);
+        assertEquals("commit   subject                              gradle key  bazel-diff  verdict       culprit", lines[2]);
+        assertEquals("aaaaaaa  baseline                             3f9c…e1     -           base", lines[3]);
+        assertEquals("bbbbbbb  utils: body-only edit                3f9c…e1     impacted    clean         bazel≠gradle", lines[4]);
+        assertEquals("ccccccc  core: add Greeter.shout() with a ve… 2bb4…77     impacted    CHANGED       core.jar", lines[5]);
+        assertEquals("ddddddd  broken                               -           n/a         BUILD-FAILED  Could not resolve com.example:missing:1.0", lines[6]);
+        assertEquals("", lines[7]);
+        assertEquals("1 of 3 commits changed compile inputs of appA. First: ccccccc. 1 commit could not be built.", lines[8]);
     }
 
     @Test void subjectIsTruncatedToThirtySixColumns() {
@@ -5148,6 +5174,14 @@ class TableRendererTest {
     @Test void summaryFallsBackToTheFullTaskPathWhenThereIsNoAppSegment() {
         String out = TableRenderer.render(":compileJava", null, rows.subList(0, 2));
         assertTrue(out.contains("No commit changed compile inputs of :compileJava."), out);
+    }
+
+    @Test void bazelCleanOnAChangedRowGetsTheDisagreementSuffix() {
+        List<Verdict> row = List.of(new Verdict(commit('a', "x"), Status.CHANGED, Optional.of(key("k1")), BazelStatus.CLEAN,
+                List.of("core.jar"), Optional.empty()));
+        String out = TableRenderer.render(":app:appA:compileJava", null, row);
+        String line = out.split("\n")[3];
+        assertTrue(line.endsWith("core.jar (bazel≠gradle)"), line);
     }
 }
 ```
@@ -5434,7 +5468,7 @@ public final class TableRenderer {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 119 tests at this point in the sequence (bumped from 105 by the Task 8 review rounds' 14 added tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
+Expected: `BUILD SUCCESSFUL`; 133 tests at this point in the sequence (119 after the original Task 10 implementation, plus 14 more from the Task 10 quality-review fixes: worktree-root-anchored culprit names, TSV/surrogate-pair safety, and the edge-case/exact-width tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
 
 - [ ] **Step 5: Document and commit**
 
@@ -5611,7 +5645,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 124 tests at this point in the sequence (bumped from 110 by the Task 8 review rounds' 14 added tests); the timeout test finishes in well under a second.
+Expected: `BUILD SUCCESSFUL`; 138 tests at this point in the sequence (bumped from 124 by the Task 10 quality-review rounds' 14 added tests); the timeout test finishes in well under a second.
 
 - [ ] **Step 5: Commit**
 
@@ -5832,7 +5866,7 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 136 tests at this point in the sequence (bumped from 122 by the Task 8 review rounds' 14 added tests; the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 150 tests at this point in the sequence (bumped from 136 by the Task 10 quality-review rounds' 14 added tests; the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -6339,7 +6373,7 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 147 tests at this point in the sequence (bumped from 133 by the Task 8 review rounds' 14 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 161 tests at this point in the sequence (bumped from 147 by the Task 10 quality-review rounds' 14 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 

@@ -143,6 +143,29 @@ class KeyComparatorTest {
         assertEquals(List.of("core classes"), v.culprits());
     }
 
+    @Test void exactlyFiveCulpritsAreAllShownWithoutATruncationMarker() {
+        Map<String, String> many1 = Map.of("/a.jar", "1", "/b.jar", "1", "/c.jar", "1", "/d.jar", "1", "/e.jar", "1");
+        Map<String, String> many2 = Map.of("/a.jar", "2", "/b.jar", "2", "/c.jar", "2", "/d.jar", "2", "/e.jar", "2");
+        Verdict v = KeyComparator.verdict(C, Optional.of(key("k1", Map.of("classpath", many1), Map.of(), "i")),
+                Optional.of(key("k2", Map.of("classpath", many2), Map.of(), "i")), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals(5, v.culprits().size());
+        assertTrue(v.culprits().stream().noneMatch(c -> c.startsWith("+")), v.culprits().toString());
+    }
+
+    @Test void addedOrRemovedPropertiesAreDetectedAsCulprits() {
+        TaskKey a = key("k1", Map.of("classpath", Map.of("/w1/core/build/libs/core.jar", "aa")), Map.of(), "i");
+        TaskKey b = key("k2", Map.of(), Map.of("options.compilerArgs", "v2"), "i");
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertTrue(v.culprits().contains("core.jar"), v.culprits().toString());
+        assertTrue(v.culprits().contains("options.compilerArgs"), v.culprits().toString());
+    }
+
+    @Test void noCacheKeyObtainedIsTheDefaultErrorMessage() {
+        Verdict v = KeyComparator.verdict(C, Optional.empty(), Optional.empty(), Optional.empty(), BazelStatus.NOT_AVAILABLE);
+        assertEquals(Status.BUILD_FAILED, v.status());
+        assertEquals("no cache key obtained", v.error().orElseThrow());
+    }
+
     @Test void buildLogicCulpritIsAlwaysFirst() {
         TaskKey a = key("k1", Map.of("classpath", Map.of("/w1/z/build/libs/z.jar", "aa")),
                 Map.of("options.compilerArgs", "v1"), "impl1");

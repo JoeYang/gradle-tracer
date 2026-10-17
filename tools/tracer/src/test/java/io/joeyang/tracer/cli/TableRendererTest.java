@@ -23,14 +23,17 @@ class TableRendererTest {
     @Test void rendersHeaderRowsAndSummary() {
         String out = TableRenderer.render(":app:appA:compileJava", "//app/appA:appA", rows);
         String[] lines = out.split("\n");
+        assertEquals(9, lines.length);
+        // Exact lines, not startsWith/contains: these pin the fixed column widths (9/37/12/12/14) byte for byte.
         assertEquals("Tracing inputs of :app:appA:compileJava (gradle) and //app/appA:appA (bazel-diff) over 3 commits", lines[0]);
-        assertTrue(lines[2].startsWith("commit   subject"), lines[2]);
-        assertTrue(lines[3].startsWith("aaaaaaa  baseline"), lines[3]);
-        assertTrue(lines[3].contains("3f9c…e1") && lines[3].contains("  -  ") && lines[3].contains("base"), lines[3]);
-        assertTrue(lines[4].contains("impacted") && lines[4].contains("clean") && lines[4].contains("bazel≠gradle"), lines[4]);
-        assertTrue(lines[5].contains("…") && lines[5].contains("CHANGED") && lines[5].contains("core.jar"), lines[5]);
-        assertTrue(lines[6].contains("BUILD-FAILED") && lines[6].contains("missing:1.0"), lines[6]);
-        assertEquals("1 of 3 commits changed compile inputs of appA. First: ccccccc. 1 commit could not be built.", lines[lines.length - 1]);
+        assertEquals("", lines[1]);
+        assertEquals("commit   subject                              gradle key  bazel-diff  verdict       culprit", lines[2]);
+        assertEquals("aaaaaaa  baseline                             3f9c…e1     -           base", lines[3]);
+        assertEquals("bbbbbbb  utils: body-only edit                3f9c…e1     impacted    clean         bazel≠gradle", lines[4]);
+        assertEquals("ccccccc  core: add Greeter.shout() with a ve… 2bb4…77     impacted    CHANGED       core.jar", lines[5]);
+        assertEquals("ddddddd  broken                               -           n/a         BUILD-FAILED  Could not resolve com.example:missing:1.0", lines[6]);
+        assertEquals("", lines[7]);
+        assertEquals("1 of 3 commits changed compile inputs of appA. First: ccccccc. 1 commit could not be built.", lines[8]);
     }
 
     @Test void subjectIsTruncatedToThirtySixColumns() {
@@ -108,5 +111,13 @@ class TableRendererTest {
     @Test void summaryFallsBackToTheFullTaskPathWhenThereIsNoAppSegment() {
         String out = TableRenderer.render(":compileJava", null, rows.subList(0, 2));
         assertTrue(out.contains("No commit changed compile inputs of :compileJava."), out);
+    }
+
+    @Test void bazelCleanOnAChangedRowGetsTheDisagreementSuffix() {
+        List<Verdict> row = List.of(new Verdict(commit('a', "x"), Status.CHANGED, Optional.of(key("k1")), BazelStatus.CLEAN,
+                List.of("core.jar"), Optional.empty()));
+        String out = TableRenderer.render(":app:appA:compileJava", null, row);
+        String line = out.split("\n")[3];
+        assertTrue(line.endsWith("core.jar (bazel≠gradle)"), line);
     }
 }
