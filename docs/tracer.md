@@ -76,6 +76,7 @@ first so it is never hidden by the cap below. When none of the above differ desp
 full with no `+N more` marker, since the cap only triggers above five.
 
 `TableRenderer.render` prints the fixed-width table and a summary line; `renderTsv` prints `sha\tsubject\tkey\tbazel\tverdict\tculprits`
-for scripts — for a `BUILD-FAILED` row, that last column is the error message, not the (empty) culprit list. Tabs, CR and LF
-inside any field are collapsed to a single space so they cannot shift a column. Table columns are padded and truncated by
+for scripts — for a `BUILD-FAILED` row, that last column is the error message, not the (empty) culprit list. Inside any
+field, each tab, CR or LF character becomes a single space (so a CRLF becomes two spaces) so none of them can shift a
+column. Table columns are padded and truncated by
 Unicode code point, not UTF-16 char, so a surrogate pair is never split.

@@ -4664,8 +4664,8 @@ public final class WorktreePool implements AutoCloseable {
     /**
      * A worktree directory's own name: {@code wt-} plus a 7-hex-char short sha, nothing else.
      * Package-private: {@link KeyComparator} reuses this to strip the worktree root off a culprit path before
-     * naming it, since the two commit's worktrees otherwise differ by this prefix. If this naming convention ever
-     * changes, {@link KeyComparator}'s stripping must change with it. (Amendment, Task 10 quality review.)
+     * naming it, since the two commits' worktrees otherwise differ by this prefix. If this naming convention ever
+     * changes, {@link KeyComparator}'s stripping must change with it.
      */
     static final Pattern WT_DIR_NAME = Pattern.compile("wt-[0-9a-f]{7}");
 
@@ -4997,6 +4997,13 @@ class KeyComparatorTest {
         assertEquals(List.of("src/main/java/Root.java"), v.culprits());
     }
 
+    @Test void rootProjectClassDirHasNoLeadingSpace() {
+        TaskKey a = key("k1", Map.of("classpath", Map.of("/scratch/wt-aaaaaaa/build/classes/java/main/pkg/Foo.class", "aa")), Map.of(), "i");
+        TaskKey b = key("k2", Map.of("classpath", Map.of("/scratch/wt-bbbbbbb/build/classes/java/main/pkg/Foo.class", "a2")), Map.of(), "i");
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals(List.of("classes"), v.culprits());
+    }
+
     @Test void worktreeRootContainingSrcDoesNotPolluteDisplayName() {
         TaskKey a = key("k1", Map.of("classpath",
                 Map.of("/home/u/src/tmp/gradle-tracer/wt-aaaaaaa/core/build/libs/core.jar", "aa")), Map.of(), "i");
@@ -5306,11 +5313,13 @@ public final class KeyComparator {
         String p = stripWorktreeRoot(path.replace('\\', '/'));
         int classes = p.lastIndexOf("/build/classes/");
         if (classes >= 0) {
-            return lastSegmentBefore(p, classes) + " classes";
+            String module = lastSegmentBefore(p, classes);
+            return module.isEmpty() ? "classes" : module + " classes";
         }
         int resources = p.lastIndexOf("/build/resources/");
         if (resources >= 0) {
-            return lastSegmentBefore(p, resources) + " resources";
+            String module = lastSegmentBefore(p, resources);
+            return module.isEmpty() ? "resources" : module + " resources";
         }
         int cache = p.indexOf("/modules-2/files-2.1/");
         if (cache >= 0) {
@@ -5468,7 +5477,7 @@ public final class TableRenderer {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 133 tests at this point in the sequence (119 after the original Task 10 implementation, plus 14 more from the Task 10 quality-review fixes: worktree-root-anchored culprit names, TSV/surrogate-pair safety, and the edge-case/exact-width tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
+Expected: `BUILD SUCCESSFUL`; 134 tests at this point in the sequence (119 after the original Task 10 implementation, plus 15 more from the Task 10 quality-review fixes: worktree-root-anchored culprit names, TSV/surrogate-pair safety, the edge-case/exact-width tests, and the root-project-class-dir naming nit). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
 
 - [ ] **Step 5: Document and commit**
 
@@ -5645,7 +5654,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 138 tests at this point in the sequence (bumped from 124 by the Task 10 quality-review rounds' 14 added tests); the timeout test finishes in well under a second.
+Expected: `BUILD SUCCESSFUL`; 139 tests at this point in the sequence (bumped from 124 by the Task 10 quality-review rounds' 15 added tests); the timeout test finishes in well under a second.
 
 - [ ] **Step 5: Commit**
 
@@ -5866,7 +5875,7 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 150 tests at this point in the sequence (bumped from 136 by the Task 10 quality-review rounds' 14 added tests; the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 151 tests at this point in the sequence (bumped from 136 by the Task 10 quality-review rounds' 15 added tests; the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -6373,7 +6382,7 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 161 tests at this point in the sequence (bumped from 147 by the Task 10 quality-review rounds' 14 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 162 tests at this point in the sequence (bumped from 147 by the Task 10 quality-review rounds' 15 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 

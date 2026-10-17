@@ -109,11 +109,13 @@ public final class KeyComparator {
         String p = stripWorktreeRoot(path.replace('\\', '/'));
         int classes = p.lastIndexOf("/build/classes/");
         if (classes >= 0) {
-            return lastSegmentBefore(p, classes) + " classes";
+            String module = lastSegmentBefore(p, classes);
+            return module.isEmpty() ? "classes" : module + " classes";
         }
         int resources = p.lastIndexOf("/build/resources/");
         if (resources >= 0) {
-            return lastSegmentBefore(p, resources) + " resources";
+            String module = lastSegmentBefore(p, resources);
+            return module.isEmpty() ? "resources" : module + " resources";
         }
         int cache = p.indexOf("/modules-2/files-2.1/");
         if (cache >= 0) {

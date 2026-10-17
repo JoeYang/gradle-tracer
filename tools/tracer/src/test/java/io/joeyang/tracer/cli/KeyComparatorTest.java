@@ -116,6 +116,13 @@ class KeyComparatorTest {
         assertEquals(List.of("src/main/java/Root.java"), v.culprits());
     }
 
+    @Test void rootProjectClassDirHasNoLeadingSpace() {
+        TaskKey a = key("k1", Map.of("classpath", Map.of("/scratch/wt-aaaaaaa/build/classes/java/main/pkg/Foo.class", "aa")), Map.of(), "i");
+        TaskKey b = key("k2", Map.of("classpath", Map.of("/scratch/wt-bbbbbbb/build/classes/java/main/pkg/Foo.class", "a2")), Map.of(), "i");
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals(List.of("classes"), v.culprits());
+    }
+
     @Test void worktreeRootContainingSrcDoesNotPolluteDisplayName() {
         TaskKey a = key("k1", Map.of("classpath",
                 Map.of("/home/u/src/tmp/gradle-tracer/wt-aaaaaaa/core/build/libs/core.jar", "aa")), Map.of(), "i");
