@@ -27,9 +27,11 @@ public final class Cli {
     public static final int EXIT_USAGE = 1;
     public static final int EXIT_TOOL_FAILURE = 2;
     public static final int EXIT_CHANGED = 3;
-    // The JVM ignores $TMPDIR on Linux (java.io.tmpdir is always /tmp), so the default scratch root
-    // reads the environment variable directly.
-    /** One fixed scratch root, so the next run finds and removes whatever a killed run left behind. */
+    /**
+     * One fixed scratch root, so the next run finds and removes whatever a killed run left behind. The JVM
+     * ignores {@code $TMPDIR} on Linux ({@code java.io.tmpdir} is always {@code /tmp}), so this reads the
+     * environment variable directly instead.
+     */
     static final Path DEFAULT_SCRATCH = defaultScratchRoot(System::getenv, () -> System.getProperty("java.io.tmpdir"));
 
     // <app> is used as a directory name under app/; restrict it so a path-like or option-like value
@@ -246,8 +248,7 @@ public final class Cli {
      * Locks the scratch root for the whole run, before any sweep or worktree work starts: two trace runs sharing
      * a root would otherwise sweep each other's live {@code wt-*} worktrees and hash files out from under one
      * another. {@code tryLock()} returns null for a lock held by another process, and throws
-     * {@link OverlappingFileLockException} for one held elsewhere in this same JVM (the case the tests exercise);
-     * both mean the root is busy.
+     * {@link OverlappingFileLockException} for one held elsewhere in this same JVM; both mean the root is busy.
      */
     private int withScratchLock(PrintStream err, LockedWork work) throws UsageException, ProviderException {
         ensurePrivateScratchRoot();

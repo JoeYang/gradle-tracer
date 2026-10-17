@@ -65,7 +65,7 @@ not something `parse` has to make sense of.
 
 ### Worktree root rules
 - The sweep at construction only ever touches directories directly under the pool's root whose name is exactly `wt-` plus 7 lowercase hex characters; anything else there (a stray file, an unrelated directory, `.lock`) is left alone.
-- Two `WorktreePool`s must never point at the same root at the same time: the sweep-then-prune startup sequence and `wt-<sha7>` naming assume the root is exclusively theirs for the run's duration, and a second pool's sweep would delete worktrees the first one is actively using. `Cli` now enforces this (see "One run per scratch root" below) rather than relying on it just happening to be true.
+- Two `WorktreePool`s must never point at the same root at the same time: the sweep-then-prune startup sequence and `wt-<sha7>` naming assume the root is exclusively theirs for the run's duration, and a second pool's sweep would delete worktrees the first one is actively using. `Cli` enforces this (see "One run per scratch root" below) rather than relying on it just happening to be true.
 - `--keep-worktrees` leaves everything — the checked-out directories and their `git worktree` registrations — in place when the run ends; no shutdown hook is even registered, so an interrupted run leaves them too. The *next* pool opened on that root deletes whatever is there in its startup sweep (git included, via sweep-then-prune) regardless of `--keep-worktrees`; a commit `checkout()` again within the same run tears down and recreates its worktree rather than reusing it in place.
 
 ## Comparison
@@ -119,20 +119,26 @@ non-positive timeout with an unchecked exception, so the CLI validates it here a
 passing one through.
 
 ## Range walk
-Worktrees and bazel-diff hash files live under one fixed root, `$TMPDIR/gradle-tracer/`. At start the tracer prunes git's
-worktree list, deletes stale `wt-*` directories and stale `hashes-*.json`/`*.impacted.txt` files left by a killed run, and
-reports how many it removed; at the end — including when a checkout or provider failure aborts the walk partway
-through — it removes what it created unless `--keep-worktrees`, which keeps the worktrees themselves (their
-`git worktree` registrations too) and every hash file this run wrote. If bazel-diff fails once, the rest of the
-Bazel column is `n/a` and exactly one warning goes to stderr for the whole run, not one per remaining commit. A
-commit whose Gradle run fails is `BUILD-FAILED`; the next commit is compared against the last good key.
+Worktrees and bazel-diff hash files live under one fixed root, `$TMPDIR/gradle-tracer/`. At start the tracer
+deletes stale scratch files left by a killed run — any file whose name starts with `hashes-` (any extension,
+not just `.json`) or ends with `.impacted.txt` — and reports how many; only then does `WorktreePool` delete
+stale `wt-*` directories and prune git's worktree list, in that order (hash files first, since they're Cli's own
+and cheap to check; worktree directories and git's own bookkeeping after). At the end — including when a
+checkout or provider failure aborts the walk partway through — it removes what it created unless
+`--keep-worktrees`, which keeps the worktrees themselves (their `git worktree` registrations too) and every
+hash file this run wrote. If bazel-diff fails once, the rest of the Bazel column is `n/a` and exactly one
+warning goes to stderr for the whole run, not one per remaining commit. A commit whose Gradle run fails is
+`BUILD-FAILED`; the next commit is compared against the last good key.
 
-Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed (some row is
-`BUILD-FAILED`, an unexpected runtime exception — e.g. `UncheckedIOException` from a provider or from a
-filesystem call — caught in `Cli.run` and reported as "internal error: `<class>`: `<message>`" rather than
-escaping as a raw stack trace, or the thread being interrupted mid-walk, reported as "interrupted" and aborting
-the range immediately instead of limping through every remaining commit with the interrupt flag still set), 3
-at least one row is `CHANGED` — and 2 wins over 3 when both apply in the same range.
+Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed — any of: some row is
+`BUILD-FAILED`; a `git` failure outside revision resolution (e.g. a `git worktree add` that fails mid-walk); an
+IO failure creating or checking the scratch root, or opening `.lock`; a `--tsv-out` write failure (the previous
+file, if any, is left untouched — see "The scratch root must be private" and the TSV atomic-write note above);
+an unexpected runtime exception — e.g. `UncheckedIOException` from a provider or from a filesystem call —
+caught in `Cli.run` and reported as "internal error: `<class>`: `<message>`" rather than escaping as a raw
+stack trace; or the thread being interrupted mid-walk, reported as "interrupted" and aborting the range
+immediately instead of limping through every remaining commit with the interrupt flag still set — 3 at least
+one row is `CHANGED`. 2 wins over 3 when both apply in the same range.
 
 `Cli.run` does its work in a fixed order: the app name is checked against `app/<app>` first (a usage error here
 needs no scratch root or git at all); then, for a range, `--tsv-out <file>` is pre-checked (parent directory

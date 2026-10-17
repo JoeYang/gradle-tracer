@@ -9382,6 +9382,155 @@ Run `./gradlew :tools:tracer:test`: 236 tests (233 going into this commit, plus 
 
 ---
 
+#### Commit S — `docs(tracer): align the range-walk docs and comments with the code`
+
+Why: quality review found the "Range walk" section's sweep order didn't match the code (it sweeps hash files,
+then `wt-*` directories, then prunes — the doc had prune first), used `.json` where the code actually matches
+any extension on a `hashes-*` name, and the exit-2 list omitted git failures, scratch/lock IO failures and the
+TSV write failure, listing only `BUILD-FAILED`, the internal-error case and the interrupt case. Three comments
+also referenced task numbers or test-suite internals that date the prose instead of describing current
+behaviour, and a `//` line comment sat stacked directly above a separate `/**` Javadoc on `DEFAULT_SCRATCH`.
+
+Decision on the sweep order: described the code as it is (hash files, then `wt-*` directories, then prune)
+rather than reordering the code to match the doc. The existing order already makes sense — Cli's own,
+cheaply-checked hash files first, then handing off to `WorktreePool`'s own sweep-then-prune sequence — and nothing
+in this review asked for a behaviour change, only an accurate description of one.
+
+Removed history: `RevisionRangeTest`'s "from Task 9" (the referenced tests are in the same file, task numbers
+aren't needed to find them); `docs/tracer.md`'s "`Cli` now enforces this" (the enforcement is just what `Cli`
+does, not news); `Cli.java`'s "(the case the tests exercise)" (a true fact about the test suite, not about the
+method). Merged the stacked `//`/`/**` comments on `DEFAULT_SCRATCH` into one Javadoc.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index 7e957ef..a5beafe 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -27,9 +27,11 @@ public final class Cli {
+     public static final int EXIT_USAGE = 1;
+     public static final int EXIT_TOOL_FAILURE = 2;
+     public static final int EXIT_CHANGED = 3;
+-    // The JVM ignores $TMPDIR on Linux (java.io.tmpdir is always /tmp), so the default scratch root
+-    // reads the environment variable directly.
+-    /** One fixed scratch root, so the next run finds and removes whatever a killed run left behind. */
++    /**
++     * One fixed scratch root, so the next run finds and removes whatever a killed run left behind. The JVM
++     * ignores {@code $TMPDIR} on Linux ({@code java.io.tmpdir} is always {@code /tmp}), so this reads the
++     * environment variable directly instead.
++     */
+     static final Path DEFAULT_SCRATCH = defaultScratchRoot(System::getenv, () -> System.getProperty("java.io.tmpdir"));
+ 
+     // <app> is used as a directory name under app/; restrict it so a path-like or option-like value
+@@ -246,8 +248,7 @@ public final class Cli {
+      * Locks the scratch root for the whole run, before any sweep or worktree work starts: two trace runs sharing
+      * a root would otherwise sweep each other's live {@code wt-*} worktrees and hash files out from under one
+      * another. {@code tryLock()} returns null for a lock held by another process, and throws
+-     * {@link OverlappingFileLockException} for one held elsewhere in this same JVM (the case the tests exercise);
+-     * both mean the root is busy.
++     * {@link OverlappingFileLockException} for one held elsewhere in this same JVM; both mean the root is busy.
+      */
+     private int withScratchLock(PrintStream err, LockedWork work) throws UsageException, ProviderException {
+         ensurePrivateScratchRoot();
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java
+index 260d8ab..39c221c 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java
+@@ -149,8 +149,8 @@ class RevisionRangeTest {
+         assertEquals(new Commit(B, "core: add shout"), new RevisionRange(git, repo).resolveOne("HEAD"));
+     }
+ 
+-    // Real git, under --quiet, exits 1 with no stderr for an unresolvable revision (see RevisionRangeTest's
+-    // unknownRevisionIsAUsageError and revParseFailureOtherThanExitOneIsAProviderError from Task 9).
++    // Real git, under --quiet, exits 1 with no stderr for an unresolvable revision (see this file's
++    // unknownRevisionIsAUsageError and revParseFailureOtherThanExitOneIsAProviderError).
+     @Test void resolveOneRejectsUnknownRevision() {
+         FakeProcessRunner git = new FakeProcessRunner()
+                 .on("git rev-parse --verify --quiet zzz^{commit}", 1, "", "");
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index f130244..3da4800 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -65,7 +65,7 @@ not something `parse` has to make sense of.
+ 
+ ### Worktree root rules
+ - The sweep at construction only ever touches directories directly under the pool's root whose name is exactly `wt-` plus 7 lowercase hex characters; anything else there (a stray file, an unrelated directory, `.lock`) is left alone.
+-- Two `WorktreePool`s must never point at the same root at the same time: the sweep-then-prune startup sequence and `wt-<sha7>` naming assume the root is exclusively theirs for the run's duration, and a second pool's sweep would delete worktrees the first one is actively using. `Cli` now enforces this (see "One run per scratch root" below) rather than relying on it just happening to be true.
++- Two `WorktreePool`s must never point at the same root at the same time: the sweep-then-prune startup sequence and `wt-<sha7>` naming assume the root is exclusively theirs for the run's duration, and a second pool's sweep would delete worktrees the first one is actively using. `Cli` enforces this (see "One run per scratch root" below) rather than relying on it just happening to be true.
+ - `--keep-worktrees` leaves everything — the checked-out directories and their `git worktree` registrations — in place when the run ends; no shutdown hook is even registered, so an interrupted run leaves them too. The *next* pool opened on that root deletes whatever is there in its startup sweep (git included, via sweep-then-prune) regardless of `--keep-worktrees`; a commit `checkout()` again within the same run tears down and recreates its worktree rather than reusing it in place.
+ 
+ ## Comparison
+@@ -119,20 +119,26 @@ non-positive timeout with an unchecked exception, so the CLI validates it here a
+ passing one through.
+ 
+ ## Range walk
+-Worktrees and bazel-diff hash files live under one fixed root, `$TMPDIR/gradle-tracer/`. At start the tracer prunes git's
+-worktree list, deletes stale `wt-*` directories and stale `hashes-*.json`/`*.impacted.txt` files left by a killed run, and
+-reports how many it removed; at the end — including when a checkout or provider failure aborts the walk partway
+-through — it removes what it created unless `--keep-worktrees`, which keeps the worktrees themselves (their
+-`git worktree` registrations too) and every hash file this run wrote. If bazel-diff fails once, the rest of the
+-Bazel column is `n/a` and exactly one warning goes to stderr for the whole run, not one per remaining commit. A
+-commit whose Gradle run fails is `BUILD-FAILED`; the next commit is compared against the last good key.
+-
+-Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed (some row is
+-`BUILD-FAILED`, an unexpected runtime exception — e.g. `UncheckedIOException` from a provider or from a
+-filesystem call — caught in `Cli.run` and reported as "internal error: `<class>`: `<message>`" rather than
+-escaping as a raw stack trace, or the thread being interrupted mid-walk, reported as "interrupted" and aborting
+-the range immediately instead of limping through every remaining commit with the interrupt flag still set), 3
+-at least one row is `CHANGED` — and 2 wins over 3 when both apply in the same range.
++Worktrees and bazel-diff hash files live under one fixed root, `$TMPDIR/gradle-tracer/`. At start the tracer
++deletes stale scratch files left by a killed run — any file whose name starts with `hashes-` (any extension,
++not just `.json`) or ends with `.impacted.txt` — and reports how many; only then does `WorktreePool` delete
++stale `wt-*` directories and prune git's worktree list, in that order (hash files first, since they're Cli's own
++and cheap to check; worktree directories and git's own bookkeeping after). At the end — including when a
++checkout or provider failure aborts the walk partway through — it removes what it created unless
++`--keep-worktrees`, which keeps the worktrees themselves (their `git worktree` registrations too) and every
++hash file this run wrote. If bazel-diff fails once, the rest of the Bazel column is `n/a` and exactly one
++warning goes to stderr for the whole run, not one per remaining commit. A commit whose Gradle run fails is
++`BUILD-FAILED`; the next commit is compared against the last good key.
++
++Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed — any of: some row is
++`BUILD-FAILED`; a `git` failure outside revision resolution (e.g. a `git worktree add` that fails mid-walk); an
++IO failure creating or checking the scratch root, or opening `.lock`; a `--tsv-out` write failure (the previous
++file, if any, is left untouched — see "The scratch root must be private" and the TSV atomic-write note above);
++an unexpected runtime exception — e.g. `UncheckedIOException` from a provider or from a filesystem call —
++caught in `Cli.run` and reported as "internal error: `<class>`: `<message>`" rather than escaping as a raw
++stack trace; or the thread being interrupted mid-walk, reported as "interrupted" and aborting the range
++immediately instead of limping through every remaining commit with the interrupt flag still set — 3 at least
++one row is `CHANGED`. 2 wins over 3 when both apply in the same range.
+ 
+ `Cli.run` does its work in a fixed order: the app name is checked against `app/<app>` first (a usage error here
+ needs no scratch root or git at all); then, for a range, `--tsv-out <file>` is pre-checked (parent directory
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java \
+        docs/tracer.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+docs(tracer): align the range-walk docs and comments with the code
+
+The "Range walk" section's sweep order didn't match the code (hash
+files first, then wt-* directories, then prune — not prune first),
+undersold which extensions "hashes-*" matches, and the exit-2 list
+was missing git/scratch/lock/TSV-write failures. Fix the description
+rather than the code: nothing here changes behaviour. Also drop three
+comments that referenced task numbers or test-suite internals instead
+of describing what the code does, and merge a stacked line comment
+and Javadoc on DEFAULT_SCRATCH into one Javadoc.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: still 236 (docs/comments-only commit).
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**
