@@ -9,7 +9,7 @@ composed from. On a usage error it exits 1 with the usage text. The `./trace` wr
 | type | meaning |
 |---|---|
 | `ProcessRunner` / `Result` | runs a command; non-zero exit is a `Result`, "could not run" is a `ProcessException` |
-| `DefaultProcessRunner` | the real `ProcessRunner`: UTF-8 stdout/stderr capture on named daemon threads (`tracer-stdout-N`/`tracer-stderr-N`), stdin from `/dev/null`, a single deadline bounding both the process wait and the drain, and a process-tree kill (not just the direct child) on timeout |
+| `DefaultProcessRunner` | the real `ProcessRunner`: UTF-8 stdout/stderr capture on named daemon threads (`tracer-stdout-N`/`tracer-stderr-N`), stdin from `/dev/null`, a single deadline bounding both the process wait and the drain, and a process-tree kill (not just the direct child) on timeout — see below for its limit |
 | `Commit` | sha + subject |
 | `TaskKey` | a task's cache key plus per-input fingerprints (`property → file → hash`), value fingerprints and implementation hash |
 | `Status` | `BASE`, `CHANGED`, `CLEAN`, `BUILD_FAILED` — the Gradle verdict |
@@ -139,3 +139,10 @@ using `<scratch>`; wait for it or set `TMPDIR` to another directory") with no gi
 sweeping the first run's live `wt-*` worktrees and hash files out from under it. `.lock` itself is never swept:
 `WorktreePool`'s sweep only touches `wt-*` directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/
 `*.impacted.txt` files.
+
+### Process timeouts and detached children
+On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it
+started, then the direct child itself. A process that has already detached from that tree and been reparented —
+for example a Gradle daemon, or a Bazel server started by the build — is no longer a descendant by the time
+`killTree` runs, so it survives the kill. This is by design: those servers are meant to outlive the single
+invocation that happened to start them.
