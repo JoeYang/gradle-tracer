@@ -59,7 +59,7 @@ public final class BazelDiffProvider implements ImpactProvider {
         try {
             ProcessRunner.Result result = run(repo, command);
             if (!result.ok()) {
-                throw new ProviderException("bazel-diff generate-hashes failed: " + result.firstErrorLine());
+                throw new ProviderException("bazel-diff generate-hashes failed for " + worktree + ": " + bazelError(result));
             }
             if (!Files.isRegularFile(output)) {
                 throw new ProviderException("bazel-diff produced no hashes file at " + output);
@@ -77,7 +77,7 @@ public final class BazelDiffProvider implements ImpactProvider {
                 "--startingHashes", previousHashes.toString(), "--finalHashes", currentHashes.toString(), "-o", impacted.toString());
         ProcessRunner.Result result = run(repo, command);
         if (!result.ok()) {
-            throw new ProviderException("bazel-diff get-impacted-targets failed: " + result.firstErrorLine());
+            throw new ProviderException("bazel-diff get-impacted-targets failed for " + repo + ": " + bazelError(result));
         }
         try {
             Set<String> targets = new LinkedHashSet<>();
@@ -94,6 +94,18 @@ public final class BazelDiffProvider implements ImpactProvider {
         } catch (ProcessException e) {
             throw new ProviderException("bazel-diff: " + e.getMessage() + HOW_TO_GET, e);
         }
+    }
+
+    /**
+     * The real Bazel error, not bazel-diff's own wrapper line ({@code "[Error] Bazel query failed, exit code N: ..."}),
+     * which never names the actual cause. Prefers a line mentioning "download is disabled" (a cold, offline output base),
+     * else the first line Bazel itself prefixes with {@code ERROR:}, else the generic {@link ProcessRunner.Result#firstErrorLine()}.
+     */
+    private static String bazelError(ProcessRunner.Result result) {
+        List<String> lines = (result.stdout() + "\n" + result.stderr()).lines().map(String::strip).filter(l -> !l.isEmpty()).toList();
+        return lines.stream().filter(l -> l.contains("download is disabled")).findFirst()
+                .or(() -> lines.stream().filter(l -> l.startsWith("ERROR:")).findFirst())
+                .orElseGet(result::firstErrorLine);
     }
 
     private void cleanUpServer(Path worktree) {

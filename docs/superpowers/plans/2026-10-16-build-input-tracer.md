@@ -3579,6 +3579,56 @@ class BazelDiffProviderTest {
         assertTrue(e.getMessage().contains("no such package"), e.getMessage());
     }
 
+    /**
+     * Real stderr captured from {@code bazel-diff generate-hashes} against a worktree with a syntax error
+     * injected into {@code utils/BUILD.bazel} (see commit message for how it was reproduced). bazel-diff's own
+     * wrapper line ("[Error] Bazel query failed...") comes first; Bazel's real {@code ERROR:} lines come after.
+     */
+    private static final String BROKEN_PACKAGE_STDERR = ""
+            + "\n"
+            + "[Error] Bazel query failed, exit code 7: Loading: 0 packages loaded\n"
+            + "ERROR: /repo/utils/BUILD.bazel:14:6: 'is' not supported, use '==' instead\n"
+            + "ERROR: /repo/utils/BUILD.bazel:14:6: syntax error at 'is': expected newline\n"
+            + "ERROR: package contains errors: utils\n"
+            + "ERROR: package contains errors: utils: 'is' not supported, use '==' instead\n"
+            + "ERROR: Error evaluating '//...:all-targets': error loading package 'utils': Package 'utils' contains errors\n";
+
+    /**
+     * Real stderr captured from a cold (freshly created) Bazel output base with {@code --repository_disable_download}:
+     * bazel-diff's wrapper line comes first, then Bazel's repository-fetch failure, several lines in.
+     */
+    private static final String COLD_CACHE_OFFLINE_STDERR = ""
+            + "\n"
+            + "[Error] Bazel query failed, exit code 7: Loading: 0 packages loaded\n"
+            + "INFO: Repo package_metadata+ defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\n"
+            + "INFO: Repo rules_license+ defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\n"
+            + "ERROR: /base/external/bazel_tools/tools/build_defs/repo/http.bzl:200:45: An error occurred during the fetch of repository 'package_metadata+':\n"
+            + "   Traceback (most recent call last):\n"
+            + "\tFile \"/base/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 200, column 45, in _http_archive_impl\n"
+            + "\t\tdownload_info = ctx.download_and_extract(\n"
+            + "Error in download_and_extract: java.io.IOException: Failed to download repository @@package_metadata+: download is disabled.\n"
+            + "ERROR: error loading package under directory '': no such package '@@package_metadata+//rules': java.io.IOException: Failed to download repository @@package_metadata+: download is disabled.\n";
+
+    @Test void bazelErrorPrefersTheDownloadDisabledLineOverBazelDiffsOwnWrapperLine() {
+        FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 1, "", COLD_CACHE_OFFLINE_STDERR).on("bazel clean", 0, "", "");
+        ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, true).hashes(worktree, out));
+        assertTrue(e.getMessage().contains("download is disabled"), e.getMessage());
+        assertTrue(e.getMessage().contains(worktree.toString()), "must name the worktree: " + e.getMessage());
+    }
+
+    @Test void bazelErrorPrefersTheRealBazelErrorLineOverBazelDiffsOwnWrapperLine() {
+        FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 1, "", BROKEN_PACKAGE_STDERR).on("bazel clean", 0, "", "");
+        ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, false).hashes(worktree, out));
+        assertTrue(e.getMessage().contains("'is' not supported"), e.getMessage());
+        assertTrue(!e.getMessage().contains("[Error] Bazel query failed"), e.getMessage());
+    }
+
+    @Test void bazelErrorFallsBackToFirstErrorLineWhenNeitherPatternMatches() {
+        FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 1, "", "some other failure\n").on("bazel clean", 0, "", "");
+        ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, false).hashes(worktree, out));
+        assertTrue(e.getMessage().contains("some other failure"), e.getMessage());
+    }
+
     @Test void missingBinaryIsAProviderError() {
         FakeProcessRunner runner = new FakeProcessRunner()
                 .failWith(binary.toString(), ProcessException.cannotStart(List.of(binary.toString()), new IOException("No such file")))
@@ -3646,6 +3696,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -3669,11 +3720,11 @@ public final class BazelDiffProvider implements ImpactProvider {
     }
 
     BazelDiffProvider(ProcessRunner runner, Path repo, boolean offline, Duration timeout, Path binary) {
-        this.runner = runner;
-        this.repo = repo;
+        this.runner = Objects.requireNonNull(runner, "runner must not be null");
+        this.repo = Objects.requireNonNull(repo, "repo must not be null");
         this.offline = offline;
-        this.timeout = timeout;
-        this.binary = binary;
+        this.timeout = Objects.requireNonNull(timeout, "timeout must not be null");
+        this.binary = Objects.requireNonNull(binary, "binary must not be null");
     }
 
     /** {@code $BAZEL_DIFF} if set, else the fetched copy under tools/bin, else whatever {@code bazel-diff} is on the PATH. */
@@ -3697,7 +3748,7 @@ public final class BazelDiffProvider implements ImpactProvider {
         try {
             ProcessRunner.Result result = run(repo, command);
             if (!result.ok()) {
-                throw new ProviderException("bazel-diff generate-hashes failed: " + result.firstErrorLine());
+                throw new ProviderException("bazel-diff generate-hashes failed for " + worktree + ": " + bazelError(result));
             }
             if (!Files.isRegularFile(output)) {
                 throw new ProviderException("bazel-diff produced no hashes file at " + output);
@@ -3715,7 +3766,7 @@ public final class BazelDiffProvider implements ImpactProvider {
                 "--startingHashes", previousHashes.toString(), "--finalHashes", currentHashes.toString(), "-o", impacted.toString());
         ProcessRunner.Result result = run(repo, command);
         if (!result.ok()) {
-            throw new ProviderException("bazel-diff get-impacted-targets failed: " + result.firstErrorLine());
+            throw new ProviderException("bazel-diff get-impacted-targets failed for " + repo + ": " + bazelError(result));
         }
         try {
             Set<String> targets = new LinkedHashSet<>();
@@ -3732,6 +3783,18 @@ public final class BazelDiffProvider implements ImpactProvider {
         } catch (ProcessException e) {
             throw new ProviderException("bazel-diff: " + e.getMessage() + HOW_TO_GET, e);
         }
+    }
+
+    /**
+     * The real Bazel error, not bazel-diff's own wrapper line ({@code "[Error] Bazel query failed, exit code N: ..."}),
+     * which never names the actual cause. Prefers a line mentioning "download is disabled" (a cold, offline output base),
+     * else the first line Bazel itself prefixes with {@code ERROR:}, else the generic {@link ProcessRunner.Result#firstErrorLine()}.
+     */
+    private static String bazelError(ProcessRunner.Result result) {
+        List<String> lines = (result.stdout() + "\n" + result.stderr()).lines().map(String::strip).filter(l -> !l.isEmpty()).toList();
+        return lines.stream().filter(l -> l.contains("download is disabled")).findFirst()
+                .or(() -> lines.stream().filter(l -> l.startsWith("ERROR:")).findFirst())
+                .orElseGet(result::firstErrorLine);
     }
 
     private void cleanUpServer(Path worktree) {

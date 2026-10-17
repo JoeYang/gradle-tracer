@@ -65,6 +65,56 @@ class BazelDiffProviderTest {
         assertTrue(e.getMessage().contains("no such package"), e.getMessage());
     }
 
+    /**
+     * Real stderr captured from {@code bazel-diff generate-hashes} against a worktree with a syntax error
+     * injected into {@code utils/BUILD.bazel} (see commit message for how it was reproduced). bazel-diff's own
+     * wrapper line ("[Error] Bazel query failed...") comes first; Bazel's real {@code ERROR:} lines come after.
+     */
+    private static final String BROKEN_PACKAGE_STDERR = ""
+            + "\n"
+            + "[Error] Bazel query failed, exit code 7: Loading: 0 packages loaded\n"
+            + "ERROR: /repo/utils/BUILD.bazel:14:6: 'is' not supported, use '==' instead\n"
+            + "ERROR: /repo/utils/BUILD.bazel:14:6: syntax error at 'is': expected newline\n"
+            + "ERROR: package contains errors: utils\n"
+            + "ERROR: package contains errors: utils: 'is' not supported, use '==' instead\n"
+            + "ERROR: Error evaluating '//...:all-targets': error loading package 'utils': Package 'utils' contains errors\n";
+
+    /**
+     * Real stderr captured from a cold (freshly created) Bazel output base with {@code --repository_disable_download}:
+     * bazel-diff's wrapper line comes first, then Bazel's repository-fetch failure, several lines in.
+     */
+    private static final String COLD_CACHE_OFFLINE_STDERR = ""
+            + "\n"
+            + "[Error] Bazel query failed, exit code 7: Loading: 0 packages loaded\n"
+            + "INFO: Repo package_metadata+ defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\n"
+            + "INFO: Repo rules_license+ defined by rule http_archive in @@bazel_tools//tools/build_defs/repo:http.bzl\n"
+            + "ERROR: /base/external/bazel_tools/tools/build_defs/repo/http.bzl:200:45: An error occurred during the fetch of repository 'package_metadata+':\n"
+            + "   Traceback (most recent call last):\n"
+            + "\tFile \"/base/external/bazel_tools/tools/build_defs/repo/http.bzl\", line 200, column 45, in _http_archive_impl\n"
+            + "\t\tdownload_info = ctx.download_and_extract(\n"
+            + "Error in download_and_extract: java.io.IOException: Failed to download repository @@package_metadata+: download is disabled.\n"
+            + "ERROR: error loading package under directory '': no such package '@@package_metadata+//rules': java.io.IOException: Failed to download repository @@package_metadata+: download is disabled.\n";
+
+    @Test void bazelErrorPrefersTheDownloadDisabledLineOverBazelDiffsOwnWrapperLine() {
+        FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 1, "", COLD_CACHE_OFFLINE_STDERR).on("bazel clean", 0, "", "");
+        ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, true).hashes(worktree, out));
+        assertTrue(e.getMessage().contains("download is disabled"), e.getMessage());
+        assertTrue(e.getMessage().contains(worktree.toString()), "must name the worktree: " + e.getMessage());
+    }
+
+    @Test void bazelErrorPrefersTheRealBazelErrorLineOverBazelDiffsOwnWrapperLine() {
+        FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 1, "", BROKEN_PACKAGE_STDERR).on("bazel clean", 0, "", "");
+        ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, false).hashes(worktree, out));
+        assertTrue(e.getMessage().contains("'is' not supported"), e.getMessage());
+        assertTrue(!e.getMessage().contains("[Error] Bazel query failed"), e.getMessage());
+    }
+
+    @Test void bazelErrorFallsBackToFirstErrorLineWhenNeitherPatternMatches() {
+        FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 1, "", "some other failure\n").on("bazel clean", 0, "", "");
+        ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, false).hashes(worktree, out));
+        assertTrue(e.getMessage().contains("some other failure"), e.getMessage());
+    }
+
     @Test void missingBinaryIsAProviderError() {
         FakeProcessRunner runner = new FakeProcessRunner()
                 .failWith(binary.toString(), ProcessException.cannotStart(List.of(binary.toString()), new IOException("No such file")))
