@@ -2,7 +2,7 @@ package io.joeyang.tracer.cli;
 
 import java.io.PrintStream;
 
-/** Entry point. Only usage handling exists until Tasks 12 and 13. */
+/** Entry point. Only usage handling exists today; argument parsing and the revision-range walk arrive in later commits. */
 public final class Cli {
     public static final int EXIT_OK = 0;
     public static final int EXIT_USAGE = 1;

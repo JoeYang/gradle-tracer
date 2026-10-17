@@ -148,7 +148,7 @@ Components, each with one job and a seam for tests:
 |---|---|---|
 | `build-logic` convention plugins | apply `java-library`/`application`, release 21, JUnit 5, reproducible jars, build cache on | Gradle API |
 | `FingerprintTask` (`build-logic`) | `@CacheableTask`; single `@Classpath` input = `sourceSets.main.runtimeClasspath`; writes a marker file | Gradle API |
-| `ProcessRunner` (interface) | run a command with cwd, env, timeout; returns exit code + stdout + stderr | JDK `ProcessBuilder` |
+| `ProcessRunner` (interface) | run a command with cwd, timeout; returns exit code + stdout + stderr | JDK `ProcessBuilder` |
 | `RevisionRange` | resolve `--from/--to` to an ordered commit list; reject unknown revs | `ProcessRunner` (git) |
 | `WorktreePool` | create one worktree per commit under the scratch dir; prune stale ones at start; remove on exit incl. Ctrl-C | `ProcessRunner` (git) |
 | `GradleKeyProvider` + `CacheDebugLog` | run the task with cache debug; parse key, per-file fingerprints, implementation hash | `ProcessRunner` |
@@ -417,4 +417,5 @@ Design changes resulting from the review and from current versions:
 | F15 | stale version in the tech stack line; `Comparator` shadows `java.util.Comparator`; direct `java_binary` instead of the macro; `jarsAreReproducible` cannot fail first | fixed (renamed to `KeyComparator`, macro used, versions aligned); the reproducibility test stays as a regression guard; a deprecation check (`--warning-mode=all`) is a verification step | plan |
 | F16 | bazel-diff v60 hash files are `{"hashes": {...}, "metadata": {...}}`, not a flat map | fixed in the Task 8 smoke command | plan Task 8 |
 | T1 | TestKit shares one build cache across test methods, so identical sample code came back `FROM_CACHE` where `SUCCESS` was asserted (found while implementing Task 1) | fixed: each TestKit project gets its own local build cache; the later TestKit tests already assumed this | plan Tasks 1, 5 |
+| T2 | §6 gave `ProcessRunner` an `env` parameter the implemented interface never had and no provider needs (every command's environment is just the parent process's) | fixed: §6 now matches `ProcessRunner.run(Path, Duration, List<String>)` as coded in Task 6 | §6 |
 

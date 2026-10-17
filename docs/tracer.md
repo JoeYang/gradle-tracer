@@ -1,6 +1,8 @@
 # tracer
 
-`tools/tracer` is a Java CLI. `./trace` (Task 14) builds it with `installDist` and runs the launcher.
+`tools/tracer` is a Java CLI. Today it only parses its arguments enough to print usage
+(`Cli.main`); a `./trace` wrapper that builds it with `installDist` and runs the launcher,
+and the revision-range walk that produces real verdicts, arrive in later commits.
 
 ## Vocabulary (`io.joeyang.tracer.cli`)
 | type | meaning |
