@@ -21,7 +21,7 @@ composed from. On a usage error it exits 1 with the usage text. The `./trace` wr
 ## Exit codes
 0 no change in range (or `--at` succeeded) · 1 usage error · 2 a tool failed · 3 at least one CHANGED. 2 wins
 over 3 when a range has both a BUILD-FAILED row and a CHANGED row. See "Range walk" below for the full list of
-what counts as a 2 — it's grown well past "some row is BUILD-FAILED" since this was first written.
+what counts as a 2.
 
 ## Gradle oracle
 `GradleKeyProvider` runs `<worktree>/gradlew --console=plain --no-parallel --build-cache -Dorg.gradle.caching.debug=true <task>`

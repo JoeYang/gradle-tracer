@@ -300,8 +300,9 @@ public final class Cli {
      * pre-create it and tamper with the worktrees whose {@code gradlew} this tool executes, or hold {@code .lock}
      * to block every run. A fresh root is created {@code rwx------}; an existing one must already be owned by
      * the current user with no group/other write bit, or the run refuses to touch it.
+     *
+     * @return false (after printing the reason) when the root exists but isn't private; true otherwise
      */
-    /** @return false (after printing the reason) when the root exists but isn't private; true otherwise. */
     private boolean ensurePrivateScratchRoot(PrintStream err) throws ProviderException {
         // isSymbolicLink alongside isDirectory: a symlinked scratch root must go through the privacy check too
         // (which reads the link's own attributes, not its target's — see checkScratchRootIsPrivate), not get

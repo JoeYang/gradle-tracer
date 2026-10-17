@@ -10697,6 +10697,72 @@ Run `./gradlew :tools:tracer:test`: 244 tests (241 going into this commit, plus
 
 ---
 
+#### Commit AB — `docs(tracer): merge stacked Javadoc and drop a history phrase`
+
+Two small cleanups, found by round-3 quality review:
+
+5. `ensurePrivateScratchRoot`'s security rationale (why the scratch root must be private at all) and its
+   `@return` tag ended up in two separate, stacked `/** ... */` blocks — Commit X added the `@return` doc on
+   top of the existing one instead of folding it in. Merged into one Javadoc.
+
+6. `docs/tracer.md`'s "Exit codes" section said the full exit-2 list "has grown well past 'some row is
+   BUILD-FAILED' since this was first written" — true, but it's a history note about the doc's own past
+   content, not a fact about current behaviour. Dropped.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index 99544b6..051c48d 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -300,8 +300,9 @@ public final class Cli {
+      * pre-create it and tamper with the worktrees whose {@code gradlew} this tool executes, or hold {@code .lock}
+      * to block every run. A fresh root is created {@code rwx------}; an existing one must already be owned by
+      * the current user with no group/other write bit, or the run refuses to touch it.
++     *
++     * @return false (after printing the reason) when the root exists but isn't private; true otherwise
+      */
+-    /** @return false (after printing the reason) when the root exists but isn't private; true otherwise. */
+     private boolean ensurePrivateScratchRoot(PrintStream err) throws ProviderException {
+         // isSymbolicLink alongside isDirectory: a symlinked scratch root must go through the privacy check too
+         // (which reads the link's own attributes, not its target's — see checkScratchRootIsPrivate), not get
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 6b64908..e6e50a4 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -21,7 +21,7 @@ composed from. On a usage error it exits 1 with the usage text. The `./trace` wr
+ ## Exit codes
+ 0 no change in range (or `--at` succeeded) · 1 usage error · 2 a tool failed · 3 at least one CHANGED. 2 wins
+ over 3 when a range has both a BUILD-FAILED row and a CHANGED row. See "Range walk" below for the full list of
+-what counts as a 2 — it's grown well past "some row is BUILD-FAILED" since this was first written.
++what counts as a 2.
+ 
+ ## Gradle oracle
+ `GradleKeyProvider` runs `<worktree>/gradlew --console=plain --no-parallel --build-cache -Dorg.gradle.caching.debug=true <task>`
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        docs/tracer.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+docs(tracer): merge stacked Javadoc and drop a history phrase
+
+ensurePrivateScratchRoot's security rationale and its @return tag
+ended up in two separate, stacked Javadoc blocks instead of one.
+Also drop "it's grown well past ... since this was first written"
+from the Exit codes section — a history note about the doc's own
+past content, not a fact about current behaviour.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: still 244 (docs/comments-only commit). Run `bazel test //...` and
+`git diff --exit-code MODULE.bazel.lock` to confirm nothing else drifted.
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**
