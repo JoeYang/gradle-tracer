@@ -8,6 +8,7 @@ and the revision-range walk that produces real verdicts, arrive in later commits
 | type | meaning |
 |---|---|
 | `ProcessRunner` / `Result` | runs a command; non-zero exit is a `Result`, "could not run" is a `ProcessException` |
+| `DefaultProcessRunner` | the real `ProcessRunner`: UTF-8 stdout/stderr capture on named daemon threads (`tracer-stdout-N`/`tracer-stderr-N`), stdin from `/dev/null`, a single deadline bounding both the process wait and the drain, and a process-tree kill (not just the direct child) on timeout |
 | `Commit` | sha + subject |
 | `TaskKey` | a task's cache key plus per-input fingerprints (`property → file → hash`), value fingerprints and implementation hash |
 | `Status` | `BASE`, `CHANGED`, `CLEAN`, `BUILD_FAILED` — the Gradle verdict |
