@@ -20,3 +20,10 @@ See `docs/gradle-build.md` (Gradle side) and `docs/bazel-build.md` (Bazel side).
     ./trace appA --at HEAD                               # what the key is made of
 
 See `docs/tracer.md` for the table format and exit codes.
+
+## Demo
+
+    tools/scenarios.sh            # replays six teaching commits and checks every verdict (20–40 min, needs network)
+    NO_BAZEL=1 tools/scenarios.sh # Gradle only
+
+`docs/scenarios.md` explains each row.
