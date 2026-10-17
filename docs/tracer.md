@@ -179,7 +179,11 @@ lock or worktree work. The fixed path itself is unchanged; this only narrows who
 compared by uid (`unix:uid`, against `com.sun.security.auth.module.UnixSystem`'s uid), not by
 `Files.getOwner()`'s user name: a uid with no passwd entry (common for a container run as `-u $(id -u)`) makes
 the JVM report `user.name` as `"?"`, so a name comparison would call every later run on the same root "not
-private to you" even though the same user created it.
+private to you" even though the same user created it. Every read in this check — permissions, owner — passes
+`LinkOption.NOFOLLOW_LINKS`, so a scratch root that is itself a symlink is checked (and rejected) on the link's
+own attributes, never on whatever it points to; on Linux a symlink's own permission bits report as world
+read/write/execute regardless of who made it, so this alone rejects any symlink as "not private" without a
+separate is-it-a-symlink check.
 
 ### Process timeouts and detached children
 On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it

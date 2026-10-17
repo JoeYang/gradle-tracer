@@ -7,6 +7,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -296,7 +297,10 @@ public final class Cli {
      * the current user with no group/other write bit, or the run refuses to touch it.
      */
     private void ensurePrivateScratchRoot() throws UsageException, ProviderException {
-        if (Files.isDirectory(scratch)) {
+        // isSymbolicLink alongside isDirectory: a symlinked scratch root must go through the privacy check too
+        // (which reads the link's own attributes, not its target's — see checkScratchRootIsPrivate), not get
+        // treated as "doesn't exist yet" and recreated or (for a symlink to a file) fail as a generic IO error.
+        if (Files.isDirectory(scratch, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(scratch)) {
             checkScratchRootIsPrivate();
             return;
         }
@@ -313,13 +317,17 @@ public final class Cli {
 
     private void checkScratchRootIsPrivate() throws UsageException, ProviderException {
         try {
-            Set<PosixFilePermission> perms = Files.getPosixFilePermissions(scratch);
+            // NOFOLLOW_LINKS throughout: a symlinked scratch root is checked on the link itself, never on
+            // whatever it points to. On Linux a symlink's own permissions report as world-read/write/execute
+            // regardless of who made it, so this alone is enough to reject any symlink as "not private" without
+            // a separate symlink check — it never needs to look at (or trust) the real target.
+            Set<PosixFilePermission> perms = Files.getPosixFilePermissions(scratch, LinkOption.NOFOLLOW_LINKS);
             boolean groupOrOtherWrite = perms.contains(PosixFilePermission.GROUP_WRITE)
                     || perms.contains(PosixFilePermission.OTHERS_WRITE);
             // Compared by uid, not by Files.getOwner().getName(): for a uid with no passwd entry (e.g.
             // "docker run -u $(id -u)"), the JVM reports user.name as "?" while getOwner() still resolves to
             // the numeric uid, so a name comparison would wrongly call every later run "not private to you".
-            long owner = ((Number) Files.getAttribute(scratch, "unix:uid")).longValue();
+            long owner = ((Number) Files.getAttribute(scratch, "unix:uid", LinkOption.NOFOLLOW_LINKS)).longValue();
             boolean notOwnedByMe = owner != currentUid.getAsLong();
             if (groupOrOtherWrite || notOwnedByMe) {
                 throw new UsageException("scratch root " + scratch

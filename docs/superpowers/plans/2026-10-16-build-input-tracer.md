@@ -9759,6 +9759,135 @@ Run `./gradlew :tools:tracer:test`: 237 tests (236 going into this commit, plus
 
 ---
 
+#### Commit V — `fix(tracer): do not follow a symlinked scratch root`
+
+Why: `checkScratchRootIsPrivate` read `scratch`'s permissions and owner following symlinks, and
+`ensurePrivateScratchRoot` only recognised an existing *directory*. A scratch root that was itself a symlink —
+to another user's directory, say — either fell through to the "doesn't exist yet" branch (failing with a
+generic IO error for a symlink-to-file, or worse, silently trusting a symlink-to-directory's target) instead of
+being rejected the way an insecure real directory is.
+
+Fix: route a symlink through the same privacy check as a real directory (`Files.isDirectory(scratch,
+NOFOLLOW_LINKS) || Files.isSymbolicLink(scratch)`), and make every read inside that check — permissions, owner
+— pass `LinkOption.NOFOLLOW_LINKS`, so it inspects the link itself, never its target. On Linux a symlink's own
+permission bits report as world read/write/execute no matter who created it, so this alone rejects any
+symlink with the same "not private" message, without a separate symlink-specific branch.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index a958662..42812f3 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -7,6 +7,7 @@ import java.nio.channels.FileChannel;
+ import java.nio.channels.FileLock;
+ import java.nio.channels.OverlappingFileLockException;
+ import java.nio.file.Files;
++import java.nio.file.LinkOption;
+ import java.nio.file.Path;
+ import java.nio.file.StandardCopyOption;
+ import java.nio.file.StandardOpenOption;
+@@ -296,7 +297,10 @@ public final class Cli {
+      * the current user with no group/other write bit, or the run refuses to touch it.
+      */
+     private void ensurePrivateScratchRoot() throws UsageException, ProviderException {
+-        if (Files.isDirectory(scratch)) {
++        // isSymbolicLink alongside isDirectory: a symlinked scratch root must go through the privacy check too
++        // (which reads the link's own attributes, not its target's — see checkScratchRootIsPrivate), not get
++        // treated as "doesn't exist yet" and recreated or (for a symlink to a file) fail as a generic IO error.
++        if (Files.isDirectory(scratch, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(scratch)) {
+             checkScratchRootIsPrivate();
+             return;
+         }
+@@ -313,13 +317,17 @@ public final class Cli {
+ 
+     private void checkScratchRootIsPrivate() throws UsageException, ProviderException {
+         try {
+-            Set<PosixFilePermission> perms = Files.getPosixFilePermissions(scratch);
++            // NOFOLLOW_LINKS throughout: a symlinked scratch root is checked on the link itself, never on
++            // whatever it points to. On Linux a symlink's own permissions report as world-read/write/execute
++            // regardless of who made it, so this alone is enough to reject any symlink as "not private" without
++            // a separate symlink check — it never needs to look at (or trust) the real target.
++            Set<PosixFilePermission> perms = Files.getPosixFilePermissions(scratch, LinkOption.NOFOLLOW_LINKS);
+             boolean groupOrOtherWrite = perms.contains(PosixFilePermission.GROUP_WRITE)
+                     || perms.contains(PosixFilePermission.OTHERS_WRITE);
+             // Compared by uid, not by Files.getOwner().getName(): for a uid with no passwd entry (e.g.
+             // "docker run -u $(id -u)"), the JVM reports user.name as "?" while getOwner() still resolves to
+             // the numeric uid, so a name comparison would wrongly call every later run "not private to you".
+-            long owner = ((Number) Files.getAttribute(scratch, "unix:uid")).longValue();
++            long owner = ((Number) Files.getAttribute(scratch, "unix:uid", LinkOption.NOFOLLOW_LINKS)).longValue();
+             boolean notOwnedByMe = owner != currentUid.getAsLong();
+             if (groupOrOtherWrite || notOwnedByMe) {
+                 throw new UsageException("scratch root " + scratch
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index 3fd123d..4e93cc7 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -383,6 +383,18 @@ class CliTest {
+         assertFalse(git.ran("git worktree"), "no worktree work when the scratch root isn't private");
+     }
+ 
++    @Test void symlinkedScratchRootIsAUsageError() throws Exception {
++        Path real = tmp.resolve("real-scratch");
++        Files.createDirectory(real, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
++        Files.createSymbolicLink(scratch, real);
++
++        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
++
++        assertEquals(Cli.EXIT_USAGE, code, err());
++        assertTrue(err().contains(scratch.toString()) && err().contains("not private"), err());
++        assertFalse(git.ran("git worktree"), "no worktree work when the scratch root is a symlink");
++    }
++
+     @Test void scratchRootThatIsAnExistingFileIsAToolFailure() throws Exception {
+         Files.writeString(scratch, "not a directory");
+ 
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 892c339..bb9b3bc 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -179,7 +179,11 @@ lock or worktree work. The fixed path itself is unchanged; this only narrows who
+ compared by uid (`unix:uid`, against `com.sun.security.auth.module.UnixSystem`'s uid), not by
+ `Files.getOwner()`'s user name: a uid with no passwd entry (common for a container run as `-u $(id -u)`) makes
+ the JVM report `user.name` as `"?"`, so a name comparison would call every later run on the same root "not
+-private to you" even though the same user created it.
++private to you" even though the same user created it. Every read in this check — permissions, owner — passes
++`LinkOption.NOFOLLOW_LINKS`, so a scratch root that is itself a symlink is checked (and rejected) on the link's
++own attributes, never on whatever it points to; on Linux a symlink's own permission bits report as world
++read/write/execute regardless of who made it, so this alone rejects any symlink as "not private" without a
++separate is-it-a-symlink check.
+ 
+ ### Process timeouts and detached children
+ On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/tracer.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+fix(tracer): do not follow a symlinked scratch root
+
+checkScratchRootIsPrivate read scratch's permissions and owner
+following symlinks, and ensurePrivateScratchRoot only recognised a
+real directory as "already exists" — a symlinked scratch root either
+hit a generic IO error or silently trusted whatever it pointed to.
+Route a symlink through the same privacy check, with NOFOLLOW_LINKS
+on every read, so it's checked (and rejected) on its own attributes.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: 238 tests (237 going into this commit, plus
+`symlinkedScratchRootIsAUsageError`).
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**

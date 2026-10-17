@@ -383,6 +383,18 @@ class CliTest {
         assertFalse(git.ran("git worktree"), "no worktree work when the scratch root isn't private");
     }
 
+    @Test void symlinkedScratchRootIsAUsageError() throws Exception {
+        Path real = tmp.resolve("real-scratch");
+        Files.createDirectory(real, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+        Files.createSymbolicLink(scratch, real);
+
+        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
+
+        assertEquals(Cli.EXIT_USAGE, code, err());
+        assertTrue(err().contains(scratch.toString()) && err().contains("not private"), err());
+        assertFalse(git.ran("git worktree"), "no worktree work when the scratch root is a symlink");
+    }
+
     @Test void scratchRootThatIsAnExistingFileIsAToolFailure() throws Exception {
         Files.writeString(scratch, "not a directory");
 
