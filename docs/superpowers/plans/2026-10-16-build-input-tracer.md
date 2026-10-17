@@ -3981,8 +3981,12 @@ Append to `docs/tracer.md`:
 ```markdown
 ## Bazel oracle
 `BazelDiffProvider` — see `docs/bazel-build.md`. Failure modes: binary missing → the error names `tools/fetch-bazel-diff.sh`;
-non-zero exit → first error line; no output file → explicit error. The Cli turns any of these into an `n/a` column, never a verdict.
+non-zero exit → the real Bazel `ERROR:` line (not bazel-diff's own wrapper line); no output file → explicit error;
+a stray non-label line in `get-impacted-targets`' output → explicit error naming the line. Mapping these into the
+`BazelStatus` column (`NOT_AVAILABLE` rather than failing the whole row) arrives in a later commit.
 ```
+(The sentence above reflects the review-round fixes landed after the commits below; it replaced an earlier draft
+that claimed the Cli already mapped these to an `n/a` column, which it does not yet do.)
 
 Land this as two commits at the fetch-script/provider seam, each leaving the build green (the fetch script and the
 provider are independently reviewable, and the script has no code dependency on the provider):
