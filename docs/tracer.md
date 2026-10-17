@@ -53,3 +53,7 @@ later commits.
 non-zero exit → the real Bazel `ERROR:` line (not bazel-diff's own wrapper line); no output file → explicit error;
 a stray non-label line in `get-impacted-targets`' output → explicit error naming the line. Mapping these into the
 `BazelStatus` column (`NOT_AVAILABLE` rather than failing the whole row) arrives in a later commit.
+
+## Git layer
+- `RevisionRange.resolve(from, to)` → `[from, …from..to oldest first]`, following the first-parent line so adjacent rows are parent and child even across merges. Unknown revision or empty range → `UsageException`; git not runnable → `ProviderException`. A `git log` line that does not parse into a well-formed `Commit` (e.g. a repo on SHA-256 object format, or a stray output line) is also a `ProviderException` naming the offending line, rather than an uncaught `IllegalArgumentException` from `Commit`'s constructor.
+- `WorktreePool` → `git worktree prune`, sweep of stale `wt-*` directories under the root (leftovers of a killed run), then `git worktree add --detach <root>/wt-<sha7> <sha>` per commit. `close()` and a shutdown hook run `git worktree remove --force`; `--keep-worktrees` disables removal.
