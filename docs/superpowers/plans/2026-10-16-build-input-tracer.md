@@ -5093,6 +5093,62 @@ class TableRendererTest {
         assertTrue(out.startsWith("Tracing inputs of :app:appB:fingerprint (gradle) over 1 commit\n"), out);
         assertTrue(out.endsWith("No commit changed runtime inputs of appB.\n"), out);
     }
+
+    @Test void tsvEscapesTabsAndNewlinesSoColumnsCannotShift() {
+        List<Verdict> withControlChars = List.of(
+                new Verdict(commit('a', "baseline"), Status.BASE, Optional.of(key("k1")), BazelStatus.NONE, List.of(), Optional.empty()),
+                new Verdict(commit('e', "fix: a\tbroken\r\nsubject"), Status.CHANGED, Optional.of(key("k2")), BazelStatus.IMPACTED,
+                        List.of("weird\tcrash\r\nreport"), Optional.empty()));
+        String tsv = TableRenderer.renderTsv(withControlChars);
+        String[] lines = tsv.split("\n", -1);
+        assertEquals(3, lines.length); // 2 rows + trailing empty string after the final newline
+        // every TSV line must have exactly 5 tabs (6 columns); a stray tab/CR/LF inside a field would shift this.
+        for (String line : lines) {
+            if (line.isEmpty()) {
+                continue;
+            }
+            assertEquals(5, line.chars().filter(c -> c == '\t').count(), line);
+        }
+        assertTrue(tsv.contains("fix: a broken  subject"), tsv);
+        assertTrue(tsv.contains("weird crash  report"), tsv);
+    }
+
+    @Test void truncateAndPadAreSafeForSurrogatePairs() {
+        // U+1F600 (grinning face) is one code point but two UTF-16 chars; truncating by char index would split it
+        // and print a lone low surrogate as '?'.
+        String emoji = "😀";
+        List<Verdict> withEmoji = List.of(
+                new Verdict(commit('a', "baseline"), Status.BASE, Optional.of(key("k1")), BazelStatus.NONE, List.of(), Optional.empty()),
+                new Verdict(commit('e', emoji.repeat(40)), Status.CLEAN, Optional.of(key("k2")), BazelStatus.NONE, List.of(), Optional.empty()));
+        String out = TableRenderer.render(":app:appA:compileJava", null, withEmoji);
+        String row = out.split("\n")[4];
+        assertNoLoneSurrogates(row);
+        String subjectColumn = row.substring(9, row.offsetByCodePoints(9, 37));
+        assertEquals(37, subjectColumn.codePointCount(0, subjectColumn.length()), subjectColumn);
+    }
+
+    private static void assertNoLoneSurrogates(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (Character.isHighSurrogate(c)) {
+                assertTrue(i + 1 < s.length() && Character.isLowSurrogate(s.charAt(i + 1)), "lone high surrogate in: " + s);
+                i++;
+            } else {
+                assertTrue(!Character.isLowSurrogate(c), "lone low surrogate in: " + s);
+            }
+        }
+    }
+
+    @Test void rowsWithNoCulpritHaveNoTrailingSpaces() {
+        String out = TableRenderer.render(":app:appA:compileJava", null, rows.subList(0, 1));
+        String row = out.split("\n")[3];
+        assertEquals(row, row.stripTrailing());
+    }
+
+    @Test void summaryFallsBackToTheFullTaskPathWhenThereIsNoAppSegment() {
+        String out = TableRenderer.render(":compileJava", null, rows.subList(0, 2));
+        assertTrue(out.contains("No commit changed compile inputs of :compileJava."), out);
+    }
 }
 ```
 
@@ -5290,12 +5346,13 @@ public final class TableRenderer {
         sb.append(pad("commit", 9)).append(pad("subject", SUBJECT_WIDTH + 1)).append(pad("gradle key", 12))
                 .append(pad("bazel-diff", 12)).append(pad("verdict", 14)).append("culprit\n");
         for (Verdict v : rows) {
-            sb.append(pad(v.commit().shortSha(), 9))
-                    .append(pad(truncate(v.commit().subject(), SUBJECT_WIDTH), SUBJECT_WIDTH + 1))
-                    .append(pad(v.key().map(TaskKey::shortKey).orElse("-"), 12))
-                    .append(pad(v.bazel().label(), 12))
-                    .append(pad(v.status().label(), 14))
-                    .append(culpritColumn(v)).append("\n");
+            String row = pad(v.commit().shortSha(), 9)
+                    + pad(truncate(v.commit().subject(), SUBJECT_WIDTH), SUBJECT_WIDTH + 1)
+                    + pad(v.key().map(TaskKey::shortKey).orElse("-"), 12)
+                    + pad(v.bazel().label(), 12)
+                    + pad(v.status().label(), 14)
+                    + culpritColumn(v);
+            sb.append(row.stripTrailing()).append("\n");
         }
         sb.append("\n").append(summary(taskPath, rows)).append("\n");
         return sb.toString();
@@ -5303,10 +5360,15 @@ public final class TableRenderer {
 
     public static String renderTsv(List<Verdict> rows) {
         return rows.stream().map(v -> String.join("\t",
-                v.commit().sha(), v.commit().subject(), v.key().map(TaskKey::key).orElse(""),
+                v.commit().sha(), tsvSafe(v.commit().subject()), v.key().map(TaskKey::key).orElse(""),
                 v.bazel().label(), v.status().label(),
-                v.status() == Status.BUILD_FAILED ? v.error().orElse("") : String.join(", ", v.culprits())))
+                tsvSafe(v.status() == Status.BUILD_FAILED ? v.error().orElse("") : String.join(", ", v.culprits()))))
                 .collect(Collectors.joining("\n", "", "\n"));
+    }
+
+    /** A tab, CR or LF inside a field would shift the TSV's columns, so each is collapsed to a single space. */
+    private static String tsvSafe(String s) {
+        return s.replaceAll("[\\t\\r\\n]", " ");
     }
 
     private static String culpritColumn(Verdict v) {
@@ -5340,18 +5402,31 @@ public final class TableRenderer {
         return sb.toString();
     }
 
-    /** {@code :app:appA:compileJava → appA}. */
+    /** {@code :app:appA:compileJava → appA}; falls back to the whole path when there is no app segment to name. */
     static String appName(String taskPath) {
         String[] parts = taskPath.split(":");
-        return parts.length >= 2 ? parts[parts.length - 2] : taskPath;
+        if (parts.length >= 2 && !parts[parts.length - 2].isBlank()) {
+            return parts[parts.length - 2];
+        }
+        return taskPath;
     }
 
+    /**
+     * Truncates by code point, not {@code char}, so a surrogate pair (an emoji, mostly) is never split into a lone
+     * surrogate followed by the ellipsis.
+     */
     private static String truncate(String s, int width) {
-        return s.length() <= width ? s : s.substring(0, width - 1) + "…";
+        if (s.codePointCount(0, s.length()) <= width) {
+            return s;
+        }
+        int cut = s.offsetByCodePoints(0, width - 1);
+        return s.substring(0, cut) + "…";
     }
 
+    /** Pads by code point count, matching {@link #truncate}, so a surrogate pair is counted as one column. */
     private static String pad(String s, int width) {
-        return s.length() >= width ? s + " " : s + " ".repeat(width - s.length());
+        int codePoints = s.codePointCount(0, s.length());
+        return codePoints >= width ? s + " " : s + " ".repeat(width - codePoints);
     }
 }
 ```
