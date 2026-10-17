@@ -28,8 +28,12 @@ public final class WorktreePool implements AutoCloseable {
         this.repo = repo;
         this.root = root;
         this.keep = keep;
-        run("git", "worktree", "prune");
+        // Sweep before prune: 'git worktree prune' only forgets a worktree whose directory is already missing.
+        // After --keep-worktrees or a killed run the directory is still there, so pruning first is a no-op; the
+        // sweep then deletes the directory out from under git, leaving a dangling registration that makes the
+        // next 'worktree add' of the same path fail with "is a missing but already registered worktree".
         sweepStaleDirectories();
+        run("git", "worktree", "prune");
         try {
             Files.createDirectories(root);
         } catch (IOException e) {
@@ -56,7 +60,18 @@ public final class WorktreePool implements AutoCloseable {
 
     public Path checkout(Commit commit) throws ProviderException {
         Path dir = root.resolve("wt-" + commit.shortSha());
-        deleteRecursively(dir);
+        if (Files.exists(dir)) {
+            // Unregister before deleting: if this directory is still a registered worktree (left behind between
+            // the constructor's one-time sweep and this call), deleting it without 'git worktree remove' first
+            // would leave git thinking it still exists, and the 'add' below would fail as "missing but already
+            // registered". Best effort: if it was never registered, this fails harmlessly and is ignored.
+            try {
+                git.run(repo, TIMEOUT, List.of("git", "worktree", "remove", "--force", dir.toString()));
+            } catch (ProcessException ignored) {
+                // see above
+            }
+            deleteRecursively(dir);
+        }
         ProcessRunner.Result r = run("git", "worktree", "add", "--detach", dir.toString(), commit.sha());
         if (!r.ok()) {
             throw new ProviderException("git worktree add failed for " + commit.shortSha() + ": " + r.firstErrorLine());

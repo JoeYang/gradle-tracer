@@ -4208,9 +4208,14 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -4292,6 +4297,97 @@ class WorktreePoolTest {
         WorktreePool pool = new WorktreePool(git, repo, tmp.resolve("wts"), false);
         pool.checkout(C1);
         pool.close(); // must not throw
+    }
+
+    // A directory left behind mid-run (not caught by the constructor's one-time sweep) is still registered with
+    // git; deleting it without 'git worktree remove' first would leave a dangling registration that makes the
+    // next 'git worktree add' of the same path fail with "is a missing but already registered worktree".
+    @Test void checkoutUnregistersBeforeDeletingAPreexistingDirectory() throws Exception {
+        FakeProcessRunner git = happyGit();
+        try (WorktreePool pool = new WorktreePool(git, repo, tmp.resolve("wts"), false)) {
+            Path dir = tmp.resolve("wts").resolve("wt-1111111");
+            Files.createDirectories(dir);
+            Files.writeString(dir.resolve("leftover.txt"), "x");
+
+            pool.checkout(C1);
+
+            int removeIndex = git.calls.indexOf(List.of("git", "worktree", "remove", "--force", dir.toString()));
+            int addIndex = git.calls.indexOf(List.of("git", "worktree", "add", "--detach", dir.toString(), C1.sha()));
+            assertTrue(removeIndex >= 0 && removeIndex < addIndex,
+                    "must unregister the stale worktree before re-adding it: " + git.calls);
+            assertFalse(Files.exists(dir.resolve("leftover.txt")));
+        }
+    }
+
+    // The fake cannot model git's own worktree registration bookkeeping, so this exercises the real binary: with
+    // the old prune-before-sweep order, a dir left behind by a --keep-worktrees run is still "registered" when the
+    // next pool's sweep deletes it (prune, run first, saw nothing missing yet), and the following 'worktree add'
+    // of the same sha then fails with "is a missing but already registered worktree" (exit 128).
+    @Test void reopeningThePoolCanReuseACommitKeptByThePreviousRun() throws Exception {
+        Assumptions.assumeTrue(gitIsOnPath(), "git is not on PATH; skipping the real-git regression test");
+        ProcessRunner git = realGit();
+        Path gitRepo = tmp.resolve("repo");
+        Files.createDirectories(gitRepo);
+        run(git, gitRepo, "git", "init", "-q");
+        run(git, gitRepo, "git", "-c", "user.name=t", "-c", "user.email=t@example.com",
+                "commit", "--allow-empty", "-q", "-m", "first");
+        String sha = run(git, gitRepo, "git", "rev-parse", "HEAD").stdout().strip();
+        Commit commit = new Commit(sha, "first");
+        Path root = tmp.resolve("wts");
+
+        try (WorktreePool pool1 = new WorktreePool(git, gitRepo, root, true)) {
+            pool1.checkout(commit);
+        } // keep=true: the worktree is left registered and on disk for the next run to find.
+
+        try (WorktreePool pool2 = new WorktreePool(git, gitRepo, root, true)) {
+            Path dir = pool2.checkout(commit);
+            assertTrue(Files.isDirectory(dir));
+        }
+    }
+
+    private static boolean gitIsOnPath() {
+        try {
+            return new ProcessBuilder("git", "--version").start().waitFor(10, TimeUnit.SECONDS);
+        } catch (IOException e) {
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    private static ProcessRunner realGit() {
+        return (cwd, timeout, command) -> {
+            Process process;
+            try {
+                process = new ProcessBuilder(command).directory(cwd.toFile()).start();
+            } catch (IOException e) {
+                throw ProcessException.cannotStart(command, e);
+            }
+            String out, err;
+            try {
+                out = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                err = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+                if (!process.waitFor(timeout.toSeconds(), TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    throw ProcessException.timeout(command, timeout);
+                }
+            } catch (IOException e) {
+                throw ProcessException.cannotStart(command, e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw ProcessException.interrupted(command);
+            }
+            return new ProcessRunner.Result(process.exitValue(), out, err);
+        };
+    }
+
+    private static ProcessRunner.Result run(ProcessRunner git, Path cwd, String... command) throws ProcessException {
+        ProcessRunner.Result r = git.run(cwd, Duration.ofSeconds(30), List.of(command));
+        if (!r.ok()) {
+            throw new AssertionError("command failed: " + String.join(" ", command) + ": " + r.stderr());
+        }
+        return r;
     }
 }
 ```
@@ -4429,8 +4525,12 @@ public final class WorktreePool implements AutoCloseable {
         this.repo = repo;
         this.root = root;
         this.keep = keep;
-        run("git", "worktree", "prune");
+        // Sweep before prune: 'git worktree prune' only forgets a worktree whose directory is already missing.
+        // After --keep-worktrees or a killed run the directory is still there, so pruning first is a no-op; the
+        // sweep then deletes the directory out from under git, leaving a dangling registration that makes the
+        // next 'worktree add' of the same path fail with "is a missing but already registered worktree".
         sweepStaleDirectories();
+        run("git", "worktree", "prune");
         try {
             Files.createDirectories(root);
         } catch (IOException e) {
@@ -4457,7 +4557,18 @@ public final class WorktreePool implements AutoCloseable {
 
     public Path checkout(Commit commit) throws ProviderException {
         Path dir = root.resolve("wt-" + commit.shortSha());
-        deleteRecursively(dir);
+        if (Files.exists(dir)) {
+            // Unregister before deleting: if this directory is still a registered worktree (left behind between
+            // the constructor's one-time sweep and this call), deleting it without 'git worktree remove' first
+            // would leave git thinking it still exists, and the 'add' below would fail as "missing but already
+            // registered". Best effort: if it was never registered, this fails harmlessly and is ignored.
+            try {
+                git.run(repo, TIMEOUT, List.of("git", "worktree", "remove", "--force", dir.toString()));
+            } catch (ProcessException ignored) {
+                // see above
+            }
+            deleteRecursively(dir);
+        }
         ProcessRunner.Result r = run("git", "worktree", "add", "--detach", dir.toString(), commit.sha());
         if (!r.ok()) {
             throw new ProviderException("git worktree add failed for " + commit.shortSha() + ": " + r.firstErrorLine());
@@ -4529,7 +4640,7 @@ public final class WorktreePool implements AutoCloseable {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 91 tests at this point in the sequence (bumped from 74 by the Task 8 review rounds' 14 added tests, plus 1 for the code-review amendment's `malformedLogLineIsAProviderErrorNamingTheLine` and 2 for the quality-review fix's `sideBranchStartIsRejected`/`rootCommitWithEmptyParentFieldIsRejectedNotCrashed`).
+Expected: `BUILD SUCCESSFUL`; 93 tests at this point in the sequence (bumped from 74 by the Task 8 review rounds' 14 added tests, plus 1 for the code-review amendment's `malformedLogLineIsAProviderErrorNamingTheLine`, 2 for the quality-review fix's `sideBranchStartIsRejected`/`rootCommitWithEmptyParentFieldIsRejectedNotCrashed`, and 2 for the quality-review fix's `checkoutUnregistersBeforeDeletingAPreexistingDirectory`/`reopeningThePoolCanReuseACommitKeptByThePreviousRun`).
 
 - [ ] **Step 5: Document and commit**
 
@@ -4976,7 +5087,7 @@ public final class TableRenderer {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 106 tests at this point in the sequence (bumped from 92 by the Task 8 review rounds' 14 added tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
+Expected: `BUILD SUCCESSFUL`; 108 tests at this point in the sequence (bumped from 94 by the Task 8 review rounds' 14 added tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
 
 - [ ] **Step 5: Document and commit**
 
@@ -5135,7 +5246,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 111 tests at this point in the sequence (bumped from 97 by the Task 8 review rounds' 14 added tests); the timeout test finishes in well under a second.
+Expected: `BUILD SUCCESSFUL`; 113 tests at this point in the sequence (bumped from 99 by the Task 8 review rounds' 14 added tests); the timeout test finishes in well under a second.
 
 - [ ] **Step 5: Commit**
 
@@ -5356,7 +5467,7 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 123 tests at this point in the sequence (bumped from 109 by the Task 8 review rounds' 14 added tests; the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 125 tests at this point in the sequence (bumped from 111 by the Task 8 review rounds' 14 added tests; the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -5859,7 +5970,7 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 134 tests at this point in the sequence (bumped from 120 by the Task 8 review rounds' 14 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 136 tests at this point in the sequence (bumped from 122 by the Task 8 review rounds' 14 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 
