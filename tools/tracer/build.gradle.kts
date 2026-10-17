@@ -1,3 +1,5 @@
+import java.time.Duration
+
 plugins {
     id("tracer.java-application")
 }
@@ -21,6 +23,7 @@ testing {
                         systemProperty("tracer.repoRoot", rootDir.absolutePath)
                         shouldRunAfter(tasks.test)
                         outputs.upToDateWhen { false }
+                        timeout.set(Duration.ofMinutes(15))
                     }
                 }
             }

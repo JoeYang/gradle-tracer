@@ -10793,7 +10793,7 @@ Expected: a table with `base`, two more rows (likely `clean`, since recent commi
 
 - [ ] **Step 2: The e2e test suite**
 
-Append to `tools/tracer/build.gradle.kts`:
+Append to `tools/tracer/build.gradle.kts` (plus `import java.time.Duration` at the top of the file):
 ```kotlin
 testing {
     suites {
@@ -10809,6 +10809,7 @@ testing {
                         systemProperty("tracer.repoRoot", rootDir.absolutePath)
                         shouldRunAfter(tasks.test)
                         outputs.upToDateWhen { false }
+                        timeout.set(Duration.ofMinutes(15))
                     }
                 }
             }
@@ -10823,36 +10824,47 @@ testing {
 package io.joeyang.tracer.cli;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /** Real git, real Gradle, no Bazel: appA's compile key must change when core gains a public method; appC's must not. */
 class EndToEndTest {
-    static final List<String> COPY = List.of("settings.gradle.kts", "gradle.properties", "gradle", "gradlew", "build-logic", "utils", "core", "lib", "app");
+    static final List<String> COPY = List.of(".gitignore", "settings.gradle.kts", "gradle.properties", "gradle",
+            "gradlew", "build-logic", "utils", "core", "lib", "app");
+    /**
+     * Isolates every fixture git call from the developer's own global config: a global {@code commit.gpgsign=true}
+     * would fail the baseline commit, a global {@code core.hooksPath} could run an unrelated hook, and a global
+     * {@code core.excludesFile} listing {@code *.jar} would silently drop {@code gradle-wrapper.jar} from
+     * {@code add -A} — every later row then reads BUILD-FAILED instead of a verdict.
+     */
+    static final List<String> SAFE_GIT_CONFIG = List.of(
+            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.excludesFile=/dev/null");
     @TempDir Path tmp;
 
     @Test
     void publicMethodInCoreChangesAppAButNotAppC() throws Exception {
         Path source = Path.of(System.getProperty("tracer.repoRoot"));
         Path fixture = tmp.resolve("fixture");
-        for (String entry : COPY) {
-            copyTree(source.resolve(entry), fixture.resolve(entry));
-        }
-        Files.writeString(fixture.resolve("settings.gradle.kts"),
-                Files.readString(fixture.resolve("settings.gradle.kts")).replace("include(\"tools:tracer\")", ""));
         ProcessRunner runner = new DefaultProcessRunner();
+        copyTracked(runner, source, fixture);
+
+        String settings = Files.readString(fixture.resolve("settings.gradle.kts"));
+        String patched = settings.replace("include(\"tools:tracer\")", "");
+        assertNotEquals(settings, patched, "settings.gradle.kts no longer contains the tools:tracer include to remove");
+        Files.writeString(fixture.resolve("settings.gradle.kts"), patched);
+
         git(runner, fixture, "init", "-q", "-b", "main");
         git(runner, fixture, "-c", "user.email=e2e@example.com", "-c", "user.name=e2e", "add", "-A");
         git(runner, fixture, "-c", "user.email=e2e@example.com", "-c", "user.name=e2e", "commit", "-q", "-m", "baseline");
@@ -10865,59 +10877,59 @@ class EndToEndTest {
         KeyProvider keys = new GradleKeyProvider(runner, false, Duration.ofMinutes(10));
         Cli cli = new Cli(runner, fixture, tmp.resolve("scratch"), keys, null);
 
-        String[] appA = trace(cli, "appA");
-        assertEquals("CHANGED", appA[4], String.join("|", appA));
-        assertTrue(appA[5].contains("core classes"), "compile classpath consumes project deps as class dirs: " + appA[5]);
+        TraceResult appA = trace(cli, "appA");
+        assertEquals(Cli.EXIT_CHANGED, appA.code(), appA.text());
+        assertEquals("base", appA.rows()[0][4], appA.text());
+        assertEquals("CHANGED", appA.rows()[1][4], appA.text());
+        assertTrue(appA.rows()[1][5].contains("core classes"),
+                "compile classpath consumes project deps as class dirs: " + appA.rows()[1][5]);
 
-        String[] appC = trace(cli, "appC");
-        assertEquals("clean", appC[4], String.join("|", appC));
+        TraceResult appC = trace(cli, "appC");
+        assertEquals(Cli.EXIT_OK, appC.code(), appC.text());
+        assertEquals("base", appC.rows()[0][4], appC.text());
+        assertEquals("clean", appC.rows()[1][4], appC.text());
     }
 
-    private static String[] trace(Cli cli, String app) throws Exception {
+    private record TraceResult(int code, String[][] rows, String text) {}
+
+    private static TraceResult trace(Cli cli, String app) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         ByteArrayOutputStream err = new ByteArrayOutputStream();
         int code = cli.run(Cli.Options.parse(new String[] {app, "--from", "HEAD~1", "--to", "HEAD", "--no-bazel", "--tsv"}),
                 new PrintStream(out, true, StandardCharsets.UTF_8), new PrintStream(err, true, StandardCharsets.UTF_8));
         String text = out.toString(StandardCharsets.UTF_8);
         assertTrue(code == Cli.EXIT_OK || code == Cli.EXIT_CHANGED, "exit " + code + "\n" + err + "\n" + text);
-        String[] rows = text.split("\n");
-        assertEquals(2, rows.length, text);
-        return rows[1].split("\t", -1);
+        String[] lines = text.split("\n");
+        assertEquals(2, lines.length, text);
+        String[][] rows = {lines[0].split("\t", -1), lines[1].split("\t", -1)};
+        return new TraceResult(code, rows, text);
     }
 
     private static void git(ProcessRunner runner, Path cwd, String... args) throws Exception {
-        List<String> cmd = new java.util.ArrayList<>(List.of("git"));
+        List<String> cmd = new ArrayList<>(List.of("git"));
+        cmd.addAll(SAFE_GIT_CONFIG);
         cmd.addAll(List.of(args));
         ProcessRunner.Result r = runner.run(cwd, Duration.ofMinutes(1), cmd);
         assertTrue(r.ok(), String.join(" ", cmd) + " failed: " + r.firstErrorLine());
     }
 
-    /** True when any path segment is a Gradle output dir (`build`, `.gradle`); `build.gradle.kts` and `build-logic` are kept. */
-    private static boolean isBuildOutput(Path rel) {
-        for (Path segment : rel) {
-            String name = segment.toString();
-            if (name.equals("build") || name.equals(".gradle")) {
-                return true;
+    /**
+     * Copies only the paths {@code git ls-files} tracks under {@link #COPY}, so untracked build output and
+     * scratch files from the developer's own working tree never leak into the fixture.
+     */
+    private static void copyTracked(ProcessRunner runner, Path source, Path fixture) throws Exception {
+        List<String> cmd = new ArrayList<>(List.of("git", "ls-files", "-z", "--"));
+        cmd.addAll(COPY);
+        ProcessRunner.Result r = runner.run(source, Duration.ofMinutes(1), cmd);
+        assertTrue(r.ok(), "git ls-files failed: " + r.firstErrorLine());
+        for (String rel : r.stdout().split("\0")) {
+            if (rel.isEmpty()) {
+                continue;
             }
-        }
-        return false;
-    }
-
-    private static void copyTree(Path from, Path to) throws IOException {
-        try (Stream<Path> paths = Files.walk(from)) {
-            for (Path p : paths.toList()) {
-                Path rel = from.relativize(p);
-                if (isBuildOutput(rel)) {
-                    continue;
-                }
-                Path target = to.resolve(rel);
-                if (Files.isDirectory(p)) {
-                    Files.createDirectories(target);
-                } else {
-                    Files.createDirectories(target.getParent());
-                    Files.copy(p, target, StandardCopyOption.COPY_ATTRIBUTES);
-                }
-            }
+            Path from = source.resolve(rel);
+            Path to = fixture.resolve(rel);
+            Files.createDirectories(to.getParent());
+            Files.copy(from, to, StandardCopyOption.COPY_ATTRIBUTES);
         }
     }
 }
@@ -10989,6 +11001,23 @@ fix(tracer): make ./trace report build failures as exit 2 and resolve its own pa
 A failed installDist used to fall through set -e into bash's own exit 1,
 indistinguishable from a usage error. A symlinked invocation or an
 inherited CDPATH could also break the script's own path resolution.
+EOF
+```
+
+Second follow-up fix, same files:
+```bash
+git add tools/tracer/build.gradle.kts \
+  tools/tracer/src/e2eTest/java/io/joeyang/tracer/cli/EndToEndTest.java \
+  docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+test(tracer): make the end-to-end fixture independent of the developer's git config
+
+A global commit.gpgsign, core.hooksPath or core.excludesFile leaked into
+every fixture commit, so the suite could fail (or silently drop
+gradle-wrapper.jar) on a machine configured differently from the one it
+was written on. Every fixture git call now pins the settings that
+matter; copying only git-tracked paths and asserting the exact verdicts
+and exit codes closes the remaining gaps the review found.
 EOF
 ```
 
