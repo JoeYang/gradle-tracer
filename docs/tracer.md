@@ -152,7 +152,13 @@ the first is still going fails fast as a usage error ("another trace is using `<
 live `wt-*` worktrees and hash files out from under it. (Its own revision resolution still runs first, same as
 any other invocation — that's read-only git against the repo, not the scratch root, so it's harmless even when
 the lock is about to be refused.) `.lock` itself is never swept: `WorktreePool`'s sweep only touches `wt-*`
-directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/`*.impacted.txt` files.
+directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/`*.impacted.txt` files. Lock contention gets
+its own one-line message on stderr, not the full usage text — it isn't a command-line mistake — though the exit
+code still reads as a usage error (1). The held `FileLock` is released via try-with-resources rather than a
+manual `release()` in a `finally`, so if the locked work also fails, `release()`'s own `IOException` is
+suppressed onto that failure instead of replacing it. Any `IOException` naming only the path again (a quirk of
+some `IOException` subtypes) falls back to the exception's class name instead of repeating the path a second
+time, the same fallback `BazelDiffProvider` already used.
 
 ### Process timeouts and detached children
 On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it

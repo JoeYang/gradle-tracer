@@ -251,9 +251,10 @@ public final class Cli {
         try {
             Files.createDirectories(scratch);
         } catch (IOException e) {
-            throw new ProviderException("cannot create scratch root " + scratch + ": " + e.getMessage(), e);
+            throw new ProviderException("cannot create scratch root " + scratch + ": " + ioReason(e, scratch), e);
         }
-        try (FileChannel channel = FileChannel.open(scratch.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+        Path lockPath = scratch.resolve(".lock");
+        try (FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
             FileLock lock;
             try {
                 lock = channel.tryLock();
@@ -261,16 +262,31 @@ public final class Cli {
                 lock = null;
             }
             if (lock == null) {
-                return usage(err, "another trace is using " + scratch + "; wait for it or set TMPDIR to another directory");
+                // Lock contention isn't a command-line mistake, so it gets its own message, not the full usage
+                // text; the exit code still reads as a usage error (something about this invocation, not a tool
+                // failure, prevented it from running).
+                err.println("trace: another trace is using " + scratch + "; wait for it or set TMPDIR to another directory");
+                return EXIT_USAGE;
             }
-            try {
+            // try-with-resources (not a manual release() in a finally) so that if work.run() throws and release()
+            // also fails, release()'s IOException is suppressed onto work's exception rather than replacing it.
+            try (FileLock heldLock = lock) {
                 return work.run();
-            } finally {
-                lock.release();
             }
         } catch (IOException e) {
-            throw new ProviderException("cannot lock scratch root " + scratch + ": " + e.getMessage(), e);
+            throw new ProviderException("cannot lock scratch root " + lockPath + ": " + ioReason(e, lockPath), e);
         }
+    }
+
+    /**
+     * {@code e.getMessage()}, falling back to the exception's simple class name when the message is missing or is
+     * just the path again (some {@link IOException} subtypes report nothing more useful than that), so the
+     * reported reason is never empty or redundant with the path already named alongside it. Mirrors
+     * {@code BazelDiffProvider}'s identical fallback for the same class of message.
+     */
+    private static String ioReason(IOException e, Path path) {
+        String message = e.getMessage();
+        return (message == null || message.equals(path.toString())) ? e.getClass().getSimpleName() : message;
     }
 
     /**
@@ -388,7 +404,7 @@ public final class Cli {
         try {
             tmp = Files.createTempFile(parent, "trace-", ".tsv.tmp");
         } catch (IOException e) {
-            throw new ProviderException("cannot write " + target + ": " + e.getMessage(), e);
+            throw new ProviderException("cannot write " + target + ": " + ioReason(e, parent), e);
         }
         try {
             Files.writeString(tmp, content);
@@ -399,7 +415,7 @@ public final class Cli {
             } catch (IOException ignored) {
                 // best effort
             }
-            throw new ProviderException("cannot write " + target + ": " + e.getMessage(), e);
+            throw new ProviderException("cannot write " + target + ": " + ioReason(e, target), e);
         }
     }
 

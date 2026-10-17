@@ -8746,6 +8746,188 @@ Run `./gradlew :tools:tracer:test`: 228 tests (227 going into this commit, plus
 
 ---
 
+#### Commit O — `fix(tracer): tidy scratch-lock handling and IO error messages`
+
+Why: `withScratchLock` released the `FileLock` with a manual `lock.release()` in a `finally`, so if the locked
+work (the range walk or `--at`) threw and `release()` also threw, the second exception replaced the first —
+masking the real failure. Lock contention also went through the shared `usage()` helper, printing the full
+usage block for something that isn't a command-line mistake. Separately, three `IOException` messages
+(`Cli.java:247, 265, 351` before this commit) just echoed `e.getMessage()`, which for some `IOException`
+subtypes is nothing more than the path already named alongside it.
+
+Fix: hold the `FileLock` in its own try-with-resources so a failure in `release()` is suppressed onto the
+work's own exception instead of replacing it (the `FileLock lock; try { lock = ch.tryLock(); } catch
+(OverlappingFileLockException e) { lock = null; }` shape, feeding one `if (lock == null)` path, was already
+exactly this; what changes is wrapping the non-null `lock` itself in `try (FileLock heldLock = lock) { ... }`
+instead of a manual `finally`). Lock contention now prints just its own message and returns `EXIT_USAGE`
+directly, skipping the usage block. A new `ioReason(IOException, Path)` helper mirrors
+`BazelDiffProvider.java:122-123`'s fallback to the exception's simple class name when the message is missing or
+is just the path again, applied everywhere `Cli` builds a message from an `IOException`.
+
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index ad6df2b..dd0e7da 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -251,9 +251,10 @@ public final class Cli {
+         try {
+             Files.createDirectories(scratch);
+         } catch (IOException e) {
+-            throw new ProviderException("cannot create scratch root " + scratch + ": " + e.getMessage(), e);
++            throw new ProviderException("cannot create scratch root " + scratch + ": " + ioReason(e, scratch), e);
+         }
+-        try (FileChannel channel = FileChannel.open(scratch.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
++        Path lockPath = scratch.resolve(".lock");
++        try (FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+             FileLock lock;
+             try {
+                 lock = channel.tryLock();
+@@ -261,18 +262,33 @@ public final class Cli {
+                 lock = null;
+             }
+             if (lock == null) {
+-                return usage(err, "another trace is using " + scratch + "; wait for it or set TMPDIR to another directory");
++                // Lock contention isn't a command-line mistake, so it gets its own message, not the full usage
++                // text; the exit code still reads as a usage error (something about this invocation, not a tool
++                // failure, prevented it from running).
++                err.println("trace: another trace is using " + scratch + "; wait for it or set TMPDIR to another directory");
++                return EXIT_USAGE;
+             }
+-            try {
++            // try-with-resources (not a manual release() in a finally) so that if work.run() throws and release()
++            // also fails, release()'s IOException is suppressed onto work's exception rather than replacing it.
++            try (FileLock heldLock = lock) {
+                 return work.run();
+-            } finally {
+-                lock.release();
+             }
+         } catch (IOException e) {
+-            throw new ProviderException("cannot lock scratch root " + scratch + ": " + e.getMessage(), e);
++            throw new ProviderException("cannot lock scratch root " + lockPath + ": " + ioReason(e, lockPath), e);
+         }
+     }
+ 
++    /**
++     * {@code e.getMessage()}, falling back to the exception's simple class name when the message is missing or is
++     * just the path again (some {@link IOException} subtypes report nothing more useful than that), so the
++     * reported reason is never empty or redundant with the path already named alongside it. Mirrors
++     * {@code BazelDiffProvider}'s identical fallback for the same class of message.
++     */
++    private static String ioReason(IOException e, Path path) {
++        String message = e.getMessage();
++        return (message == null || message.equals(path.toString())) ? e.getClass().getSimpleName() : message;
++    }
++
+     /**
+      * Checked before any worktree is created or any git command beyond option parsing runs, so a bad
+      * {@code --tsv-out} path fails fast instead of after a whole range walk has already run.
+@@ -388,7 +404,7 @@ public final class Cli {
+         try {
+             tmp = Files.createTempFile(parent, "trace-", ".tsv.tmp");
+         } catch (IOException e) {
+-            throw new ProviderException("cannot write " + target + ": " + e.getMessage(), e);
++            throw new ProviderException("cannot write " + target + ": " + ioReason(e, parent), e);
+         }
+         try {
+             Files.writeString(tmp, content);
+@@ -399,7 +415,7 @@ public final class Cli {
+             } catch (IOException ignored) {
+                 // best effort
+             }
+-            throw new ProviderException("cannot write " + target + ": " + e.getMessage(), e);
++            throw new ProviderException("cannot write " + target + ": " + ioReason(e, target), e);
+         }
+     }
+ 
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index 4e3e858..9f6289c 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -248,6 +248,7 @@ class CliTest {
+             // what must never happen while another run holds the lock is worktree work or a scratch sweep.
+             assertFalse(git.ran("git worktree"), "no worktree work while the scratch root is locked");
+             assertFalse(err().contains("stale scratch file"), "no sweep while the scratch root is locked");
++            assertFalse(err().contains("usage: trace"), "lock contention is not a command-line mistake; no usage text: " + err());
+         }
+     }
+ 
+@@ -304,6 +305,24 @@ class CliTest {
+         assertEquals(Cli.EXIT_CHANGED, second, err());
+     }
+ 
++    @Test void scratchRootThatIsAnExistingFileIsAToolFailure() throws Exception {
++        Files.writeString(scratch, "not a directory");
++
++        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
++
++        assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
++        assertTrue(err().contains(scratch.toString()), err());
++    }
++
++    @Test void lockPathThatIsADirectoryIsAToolFailure() throws Exception {
++        Files.createDirectories(scratch.resolve(".lock"));
++
++        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
++
++        assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
++        assertTrue(err().contains(scratch.resolve(".lock").toString()), err());
++    }
++
+     @Test void lockFileSurvivesScratchSweep() throws Exception {
+         Files.createDirectories(scratch);
+         Path lock = Files.createFile(scratch.resolve(".lock"));
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 22d6c03..768ddd0 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -152,7 +152,13 @@ the first is still going fails fast as a usage error ("another trace is using `<
+ live `wt-*` worktrees and hash files out from under it. (Its own revision resolution still runs first, same as
+ any other invocation — that's read-only git against the repo, not the scratch root, so it's harmless even when
+ the lock is about to be refused.) `.lock` itself is never swept: `WorktreePool`'s sweep only touches `wt-*`
+-directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/`*.impacted.txt` files.
++directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/`*.impacted.txt` files. Lock contention gets
++its own one-line message on stderr, not the full usage text — it isn't a command-line mistake — though the exit
++code still reads as a usage error (1). The held `FileLock` is released via try-with-resources rather than a
++manual `release()` in a `finally`, so if the locked work also fails, `release()`'s own `IOException` is
++suppressed onto that failure instead of replacing it. Any `IOException` naming only the path again (a quirk of
++some `IOException` subtypes) falls back to the exception's class name instead of repeating the path a second
++time, the same fallback `BazelDiffProvider` already used.
+ 
+ ### Process timeouts and detached children
+ On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/tracer.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+fix(tracer): tidy scratch-lock handling and IO error messages
+
+A manual lock.release() in a finally could mask the locked work's own
+exception if release() itself failed; hold the FileLock in its own
+try-with-resources instead, so release()'s failure is suppressed onto
+the real one. Lock contention printed the full usage block for
+something that isn't a command-line mistake; print just its message.
+Three IOException messages echoed e.getMessage(), which for some
+IOException subtypes is just the path again; fall back to the
+exception's class name the same way BazelDiffProvider already does.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: 230 tests (228 going into this commit, plus
+`scratchRootThatIsAnExistingFileIsAToolFailure` and `lockPathThatIsADirectoryIsAToolFailure`).
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**

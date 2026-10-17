@@ -248,6 +248,7 @@ class CliTest {
             // what must never happen while another run holds the lock is worktree work or a scratch sweep.
             assertFalse(git.ran("git worktree"), "no worktree work while the scratch root is locked");
             assertFalse(err().contains("stale scratch file"), "no sweep while the scratch root is locked");
+            assertFalse(err().contains("usage: trace"), "lock contention is not a command-line mistake; no usage text: " + err());
         }
     }
 
@@ -302,6 +303,24 @@ class CliTest {
 
         int second = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
         assertEquals(Cli.EXIT_CHANGED, second, err());
+    }
+
+    @Test void scratchRootThatIsAnExistingFileIsAToolFailure() throws Exception {
+        Files.writeString(scratch, "not a directory");
+
+        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
+
+        assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
+        assertTrue(err().contains(scratch.toString()), err());
+    }
+
+    @Test void lockPathThatIsADirectoryIsAToolFailure() throws Exception {
+        Files.createDirectories(scratch.resolve(".lock"));
+
+        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
+
+        assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
+        assertTrue(err().contains(scratch.resolve(".lock").toString()), err());
     }
 
     @Test void lockFileSurvivesScratchSweep() throws Exception {
