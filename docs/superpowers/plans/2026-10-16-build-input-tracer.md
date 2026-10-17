@@ -4012,6 +4012,12 @@ there afterwards to stop the server and free the disk; that cleanup failure is
 swallowed rather than masking the real hashing result."
 ```
 
+A later review round added four more fixup commits (bazelError, a testable binary override, impacted-target
+validation, a hardened fetch script, a doc correction) plus one extra commit, `build(bazel): record the module
+extensions bazel-diff's mod graph evaluates`, committing the `MODULE.bazel.lock` growth (`bazel mod graph`
+evaluating `rules_android`'s `apksig_extension`/`com_android_dex_extension`, ~36 lines) that bazel-diff's first
+real run triggers — see `docs/bazel-build.md`'s bazel-diff section for why.
+
 ---
 ### Task 9: RevisionRange and WorktreePool (git)
 

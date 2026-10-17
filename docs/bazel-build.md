@@ -41,3 +41,10 @@ cache is warm, and fails with a clear "download is disabled" error when it is co
 Override with `BAZEL_DIFF=/path/to/binary`. The tracer runs `generate-hashes -w <worktree> -b bazel --fineGrainedHashExternalRepos=@maven`
 per commit and `get-impacted-targets` per adjacent pair, then `bazel clean --expunge` in the worktree so each throwaway
 output base is removed. Building bazel-diff from the Bazel Central Registry module was rejected: it compiles Rust via rules_rust.
+
+bazel-diff's `generate-hashes` runs `bazel mod graph` first, which evaluates two module extensions
+(`rules_android`'s `apksig_extension` and `com_android_dex_extension`) that no target in this repo otherwise reaches,
+adding ~36 lines to `MODULE.bazel.lock`; `bazel build`/`test`/`query` alone never touch them. Once that fuller lockfile
+is committed it is stable — repeated `generate-hashes` and `bazel test //...` runs add nothing further. Re-run
+`bazel mod graph` (and re-commit `MODULE.bazel.lock`) after any `MODULE.bazel` change, or bazel-diff's hashes can
+drift from what `bazel build`/`test` see.
