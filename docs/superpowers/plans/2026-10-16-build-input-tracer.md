@@ -9592,6 +9592,173 @@ to confirm the lockfile didn't drift.
 
 ---
 
+#### Commit U — `fix(tracer): compare the scratch root's owner by uid, not user name`
+
+Why: `checkScratchRootIsPrivate` compared `Files.getOwner(scratch).getName()` with `System.getProperty("user.name")`.
+For a uid with no passwd entry (common with `docker run -u $(id -u)`), the JVM reports `user.name` as `"?"` while
+`getOwner()` still resolves to the numeric uid — so the very first run creates the root fine, and every later run
+on it fails with a false "not private to you" (reproduced by re-review).
+
+Before writing this, confirmed `com.sun.security.auth.module.UnixSystem` is not deprecated and raises no warning
+under either toolchain: `javap`/reflection show no `@Deprecated` on the class or `getUid()`; `javac -Xlint:all`
+is silent; `jdk.security.auth` unconditionally exports `com.sun.security.auth.module` (`java --describe-module
+jdk.security.auth`), so no `--add-exports` is needed; `bazel build //tools/tracer:tracer_lib` and
+`bazel test //tools/tracer:CliTest` both compile and pass clean under the `remotejdk_21` toolchain.
+
+Fix: compare uids — `Files.getAttribute(scratch, "unix:uid")` (an `Integer`) against `new
+UnixSystem().getUid()` (a `long`) — instead of names. Added a package-private `Cli` constructor overload taking
+a `LongSupplier currentUid` (the public one defaults to `() -> new UnixSystem().getUid()`), so the
+owner-mismatch branch finally has a test: a fake supplier that can never match the real file's uid, no root
+needed.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index a5beafe..a958662 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -1,5 +1,6 @@
+ package io.joeyang.tracer.cli;
+ 
++import com.sun.security.auth.module.UnixSystem;
+ import java.io.IOException;
+ import java.io.PrintStream;
+ import java.nio.channels.FileChannel;
+@@ -17,6 +18,7 @@ import java.util.List;
+ import java.util.Optional;
+ import java.util.Set;
+ import java.util.function.Function;
++import java.util.function.LongSupplier;
+ import java.util.function.Supplier;
+ import java.util.regex.Pattern;
+ import java.util.stream.Stream;
+@@ -169,13 +171,21 @@ public final class Cli {
+     private final Path scratch;
+     private final KeyProvider keys;
+     private final ImpactProvider impacts; // null when --no-bazel
++    private final LongSupplier currentUid;
+ 
+     Cli(ProcessRunner runner, Path repo, Path scratch, KeyProvider keys, ImpactProvider impacts) {
++        this(runner, repo, scratch, keys, impacts, () -> new UnixSystem().getUid());
++    }
++
++    // Package-private seam: lets tests simulate an ownership mismatch on the scratch root (checkScratchRootIsPrivate)
++    // without needing root to chown a file to someone else.
++    Cli(ProcessRunner runner, Path repo, Path scratch, KeyProvider keys, ImpactProvider impacts, LongSupplier currentUid) {
+         this.runner = runner;
+         this.repo = repo;
+         this.scratch = scratch;
+         this.keys = keys;
+         this.impacts = impacts;
++        this.currentUid = currentUid;
+     }
+ 
+     // Package-private and parameterized by lookup functions so the TMPDIR-vs-fallback behaviour is
+@@ -306,7 +316,11 @@ public final class Cli {
+             Set<PosixFilePermission> perms = Files.getPosixFilePermissions(scratch);
+             boolean groupOrOtherWrite = perms.contains(PosixFilePermission.GROUP_WRITE)
+                     || perms.contains(PosixFilePermission.OTHERS_WRITE);
+-            boolean notOwnedByMe = !Files.getOwner(scratch).getName().equals(System.getProperty("user.name"));
++            // Compared by uid, not by Files.getOwner().getName(): for a uid with no passwd entry (e.g.
++            // "docker run -u $(id -u)"), the JVM reports user.name as "?" while getOwner() still resolves to
++            // the numeric uid, so a name comparison would wrongly call every later run "not private to you".
++            long owner = ((Number) Files.getAttribute(scratch, "unix:uid")).longValue();
++            boolean notOwnedByMe = owner != currentUid.getAsLong();
+             if (groupOrOtherWrite || notOwnedByMe) {
+                 throw new UsageException("scratch root " + scratch
+                         + " is not private to you; remove it or set TMPDIR to a private directory");
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index 967b531..3fd123d 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -17,6 +17,7 @@ import java.nio.file.attribute.PosixFilePermission;
+ import java.nio.file.attribute.PosixFilePermissions;
+ import java.util.Map;
+ import java.util.Set;
++import java.util.function.LongSupplier;
+ import java.util.stream.Stream;
+ import org.junit.jupiter.api.BeforeEach;
+ import org.junit.jupiter.api.Test;
+@@ -79,6 +80,12 @@ class CliTest {
+                 new PrintStream(out, true, StandardCharsets.UTF_8), new PrintStream(err, true, StandardCharsets.UTF_8));
+     }
+ 
++    /** For tests that need to simulate an ownership mismatch without needing root to chown a file. */
++    int run(LongSupplier currentUid, KeyProvider k, ImpactProvider i, String... args) throws UsageException {
++        return new Cli(git, repo, scratch, k, i, currentUid).run(Cli.Options.parse(args),
++                new PrintStream(out, true, StandardCharsets.UTF_8), new PrintStream(err, true, StandardCharsets.UTF_8));
++    }
++
+     /** Pre-creates {@code scratch} the same way Cli itself would, so a fixture testing something else doesn't trip the privacy check. */
+     void createPrivateScratch() throws IOException {
+         Files.createDirectory(scratch, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+@@ -366,6 +373,16 @@ class CliTest {
+         assertEquals(PosixFilePermissions.fromString("rwx------"), Files.getPosixFilePermissions(scratch));
+     }
+ 
++    @Test void scratchRootOwnedByAnotherUidIsAUsageError() throws Exception {
++        createPrivateScratch(); // owned by this process's real uid
++
++        int code = run(() -> -1L, keys, impacts, "appA", "--from", "base", "--to", "tip");
++
++        assertEquals(Cli.EXIT_USAGE, code, err());
++        assertTrue(err().contains(scratch.toString()) && err().contains("not private"), err());
++        assertFalse(git.ran("git worktree"), "no worktree work when the scratch root isn't private");
++    }
++
+     @Test void scratchRootThatIsAnExistingFileIsAToolFailure() throws Exception {
+         Files.writeString(scratch, "not a directory");
+ 
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 3da4800..892c339 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -175,7 +175,11 @@ could pre-create it and tamper with the worktrees whose `gradlew` this tool exec
+ every run. `Cli` creates a fresh root `rwx------`; an existing one must already be owned by the current user
+ with no group or other write permission, or the run refuses to touch it — exit 1, naming the path ("scratch
+ root `<path>` is not private to you; remove it or set `TMPDIR` to a private directory") — before any sweep,
+-lock or worktree work. The fixed path itself is unchanged; this only narrows who may use it.
++lock or worktree work. The fixed path itself is unchanged; this only narrows who may use it. Ownership is
++compared by uid (`unix:uid`, against `com.sun.security.auth.module.UnixSystem`'s uid), not by
++`Files.getOwner()`'s user name: a uid with no passwd entry (common for a container run as `-u $(id -u)`) makes
++the JVM report `user.name` as `"?"`, so a name comparison would call every later run on the same root "not
++private to you" even though the same user created it.
+ 
+ ### Process timeouts and detached children
+ On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/tracer.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+fix(tracer): compare the scratch root's owner by uid, not user name
+
+checkScratchRootIsPrivate compared Files.getOwner().getName() with
+user.name. For a uid with no passwd entry (e.g. docker run -u
+$(id -u)), the JVM sets user.name to "?" while getOwner() still
+resolves to the numeric uid, so every run after the first one that
+created the root failed with a false "not private to you". Compare
+uids instead, via unix:uid and UnixSystem's getUid(). Confirmed
+UnixSystem isn't deprecated and compiles/runs clean under both the
+Gradle and Bazel (remotejdk_21) toolchains before relying on it.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: 237 tests (236 going into this commit, plus
+`scratchRootOwnedByAnotherUidIsAUsageError`). Run `bazel build //tools/tracer:tracer_lib` and
+`bazel test //...`: compiles and 23/23 pass, confirming `UnixSystem` is fine under `remotejdk_21`. Run
+`git diff --exit-code MODULE.bazel.lock`: clean.
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**

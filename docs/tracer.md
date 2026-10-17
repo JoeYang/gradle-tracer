@@ -175,7 +175,11 @@ could pre-create it and tamper with the worktrees whose `gradlew` this tool exec
 every run. `Cli` creates a fresh root `rwx------`; an existing one must already be owned by the current user
 with no group or other write permission, or the run refuses to touch it — exit 1, naming the path ("scratch
 root `<path>` is not private to you; remove it or set `TMPDIR` to a private directory") — before any sweep,
-lock or worktree work. The fixed path itself is unchanged; this only narrows who may use it.
+lock or worktree work. The fixed path itself is unchanged; this only narrows who may use it. Ownership is
+compared by uid (`unix:uid`, against `com.sun.security.auth.module.UnixSystem`'s uid), not by
+`Files.getOwner()`'s user name: a uid with no passwd entry (common for a container run as `-u $(id -u)`) makes
+the JVM report `user.name` as `"?"`, so a name comparison would call every later run on the same root "not
+private to you" even though the same user created it.
 
 ### Process timeouts and detached children
 On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it

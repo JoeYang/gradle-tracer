@@ -17,6 +17,7 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.LongSupplier;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -76,6 +77,12 @@ class CliTest {
     /** For tests that need a worktree-level failure the shared {@code git} fixture's catch-all can't script. */
     int run(ProcessRunner runner, KeyProvider k, ImpactProvider i, String... args) throws UsageException {
         return new Cli(runner, repo, scratch, k, i).run(Cli.Options.parse(args),
+                new PrintStream(out, true, StandardCharsets.UTF_8), new PrintStream(err, true, StandardCharsets.UTF_8));
+    }
+
+    /** For tests that need to simulate an ownership mismatch without needing root to chown a file. */
+    int run(LongSupplier currentUid, KeyProvider k, ImpactProvider i, String... args) throws UsageException {
+        return new Cli(git, repo, scratch, k, i, currentUid).run(Cli.Options.parse(args),
                 new PrintStream(out, true, StandardCharsets.UTF_8), new PrintStream(err, true, StandardCharsets.UTF_8));
     }
 
@@ -364,6 +371,16 @@ class CliTest {
         run(keys, impacts, "appA", "--from", "base", "--to", "tip");
 
         assertEquals(PosixFilePermissions.fromString("rwx------"), Files.getPosixFilePermissions(scratch));
+    }
+
+    @Test void scratchRootOwnedByAnotherUidIsAUsageError() throws Exception {
+        createPrivateScratch(); // owned by this process's real uid
+
+        int code = run(() -> -1L, keys, impacts, "appA", "--from", "base", "--to", "tip");
+
+        assertEquals(Cli.EXIT_USAGE, code, err());
+        assertTrue(err().contains(scratch.toString()) && err().contains("not private"), err());
+        assertFalse(git.ran("git worktree"), "no worktree work when the scratch root isn't private");
     }
 
     @Test void scratchRootThatIsAnExistingFileIsAToolFailure() throws Exception {

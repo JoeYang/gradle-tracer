@@ -1,5 +1,6 @@
 package io.joeyang.tracer.cli;
 
+import com.sun.security.auth.module.UnixSystem;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.channels.FileChannel;
@@ -17,6 +18,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -169,13 +171,21 @@ public final class Cli {
     private final Path scratch;
     private final KeyProvider keys;
     private final ImpactProvider impacts; // null when --no-bazel
+    private final LongSupplier currentUid;
 
     Cli(ProcessRunner runner, Path repo, Path scratch, KeyProvider keys, ImpactProvider impacts) {
+        this(runner, repo, scratch, keys, impacts, () -> new UnixSystem().getUid());
+    }
+
+    // Package-private seam: lets tests simulate an ownership mismatch on the scratch root (checkScratchRootIsPrivate)
+    // without needing root to chown a file to someone else.
+    Cli(ProcessRunner runner, Path repo, Path scratch, KeyProvider keys, ImpactProvider impacts, LongSupplier currentUid) {
         this.runner = runner;
         this.repo = repo;
         this.scratch = scratch;
         this.keys = keys;
         this.impacts = impacts;
+        this.currentUid = currentUid;
     }
 
     // Package-private and parameterized by lookup functions so the TMPDIR-vs-fallback behaviour is
@@ -306,7 +316,11 @@ public final class Cli {
             Set<PosixFilePermission> perms = Files.getPosixFilePermissions(scratch);
             boolean groupOrOtherWrite = perms.contains(PosixFilePermission.GROUP_WRITE)
                     || perms.contains(PosixFilePermission.OTHERS_WRITE);
-            boolean notOwnedByMe = !Files.getOwner(scratch).getName().equals(System.getProperty("user.name"));
+            // Compared by uid, not by Files.getOwner().getName(): for a uid with no passwd entry (e.g.
+            // "docker run -u $(id -u)"), the JVM reports user.name as "?" while getOwner() still resolves to
+            // the numeric uid, so a name comparison would wrongly call every later run "not private to you".
+            long owner = ((Number) Files.getAttribute(scratch, "unix:uid")).longValue();
+            boolean notOwnedByMe = owner != currentUid.getAsLong();
             if (groupOrOtherWrite || notOwnedByMe) {
                 throw new UsageException("scratch root " + scratch
                         + " is not private to you; remove it or set TMPDIR to a private directory");
