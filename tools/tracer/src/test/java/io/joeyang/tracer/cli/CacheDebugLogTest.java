@@ -2,6 +2,7 @@ package io.joeyang.tracer.cli;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -91,6 +92,66 @@ class CacheDebugLogTest {
     @Test void nonCacheableReasonIsReportedForTheRightTaskOnly() {
         assertEquals(Optional.of("Not worth caching [NOT_CACHEABLE]"), CacheDebugLog.nonCacheableReason(FIXTURE, ":core:jar"));
         assertEquals(Optional.empty(), CacheDebugLog.nonCacheableReason(FIXTURE, TASK));
+    }
+
+    @Test void dirAndMissingEntriesAreNotGarbageKeys() {
+        String log = """
+                > Task :app:appA:fingerprint
+                Appending implementation to build cache key: io.joeyang.tracer.buildlogic.FingerprintTask_Decorated@0001
+                Appending input file fingerprints for 'rootSpec$1' to build cache key: aaaa - RELATIVE_PATH{/w/build/classes/java/main/io='io' / DIR, /w/build/deleted.class='deleted.class' / MISSING, /w/build/classes/java/main/io/Real.class='io/Real.class' / 3333}
+                Build cache key for task ':app:appA:fingerprint' is b5a1bb8d226bf944a43ec45392201d50
+                """;
+        TaskKey key = CacheDebugLog.parse(log, ":app:appA:fingerprint").orElseThrow();
+        Map<String, String> entries = key.fileFingerprints().get("rootSpec$1");
+        assertEquals(3, entries.size());
+        assertEquals("DIR", entries.get("/w/build/classes/java/main/io"));
+        assertEquals("MISSING", entries.get("/w/build/deleted.class"));
+        assertEquals("3333", entries.get("/w/build/classes/java/main/io/Real.class"));
+    }
+
+    @Test void aQuoteInsideANormalizedPathDoesNotMergeTwoEntries() {
+        String log = """
+                > Task :app:appA:fingerprint
+                Appending implementation to build cache key: io.joeyang.tracer.buildlogic.FingerprintTask_Decorated@0001
+                Appending input file fingerprints for 'stableSources' to build cache key: aaaa - RELATIVE_PATH{/w/src/io/it's/A.java='io/it's/A.java' / 1111, /w/src/io/B.java='io/B.java' / 2222}
+                Build cache key for task ':app:appA:fingerprint' is b5a1bb8d226bf944a43ec45392201d50
+                """;
+        TaskKey key = CacheDebugLog.parse(log, ":app:appA:fingerprint").orElseThrow();
+        Map<String, String> entries = key.fileFingerprints().get("stableSources");
+        assertEquals(2, entries.size());
+        assertEquals("1111", entries.get("/w/src/io/it's/A.java"));
+        assertEquals("2222", entries.get("/w/src/io/B.java"));
+    }
+
+    @Test void unknownNormalizationTokenFailsLoudlyInsteadOfDroppingTheProperty() {
+        String log = """
+                > Task :app:appA:fingerprint
+                Appending implementation to build cache key: io.joeyang.tracer.buildlogic.FingerprintTask_Decorated@0001
+                Appending input file fingerprints for 'stableSources' to build cache key: aaaa - relativePath{/w/src/A.java='A.java' / 1111}
+                Build cache key for task ':app:appA:fingerprint' is b5a1bb8d226bf944a43ec45392201d50
+                """;
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> CacheDebugLog.parse(log, ":app:appA:fingerprint"));
+        assertTrue(e.getMessage().contains("unrecognised cache debug output"), e.getMessage());
+        assertTrue(e.getMessage().contains("relativePath{/w/src/A.java='A.java' / 1111}"), e.getMessage());
+    }
+
+    @Test void unknownValueFingerprintShapeFailsLoudly() {
+        String log = """
+                > Task :app:appA:fingerprint
+                Appending implementation to build cache key: io.joeyang.tracer.buildlogic.FingerprintTask_Decorated@0001
+                Appending input value fingerprint for 'options.release' to build cache key: not-a-hex-hash
+                Build cache key for task ':app:appA:fingerprint' is b5a1bb8d226bf944a43ec45392201d50
+                """;
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> CacheDebugLog.parse(log, ":app:appA:fingerprint"));
+        assertTrue(e.getMessage().contains("unrecognised cache debug output"), e.getMessage());
+        assertTrue(e.getMessage().contains("options.release"), e.getMessage());
+    }
+
+    @Test void realFixtureRootSpecHasAllThirteenEntries() throws IOException {
+        // rootSpec$1 only ever appears on a Jar task's input, and Jar is non-cacheable, so this property
+        // never comes back through parse(); fileFingerprintsFor exercises the same entry parser directly.
+        Map<String, Map<String, String>> files = CacheDebugLog.fileFingerprintsFor(resource("/cache-debug/appA-compileJava.log"), ":build-logic:jar");
+        assertEquals(13, files.get("rootSpec$1").size());
     }
 
     private static String resource(String name) throws IOException {

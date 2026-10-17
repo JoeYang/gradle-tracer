@@ -42,6 +42,7 @@ public final class GradleKeyProvider implements KeyProvider {
         return CacheDebugLog.parse(output, taskPath).orElseThrow(() -> new ProviderException(
                 CacheDebugLog.nonCacheableReason(output, taskPath)
                         .map(reason -> taskPath + " is not cacheable (" + reason + "), so it has no cache key; use compileJava or fingerprint")
-                        .orElse("gradle printed no cache key for " + taskPath + " (is org.gradle.caching=true at this commit?)")));
+                        .orElse("gradle printed no cache key for " + taskPath
+                                + " (unrecognised cache debug output, or the task did not print a key)")));
     }
 }

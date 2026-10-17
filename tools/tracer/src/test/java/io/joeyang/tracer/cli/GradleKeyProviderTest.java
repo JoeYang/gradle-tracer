@@ -72,6 +72,7 @@ class GradleKeyProviderTest {
         ProviderException e = assertThrows(ProviderException.class,
                 () -> new GradleKeyProvider(runner, false, Duration.ofMinutes(1)).keyFor(worktree, TASK));
         assertTrue(e.getMessage().contains("no cache key"), e.getMessage());
+        assertTrue(e.getMessage().contains("unrecognised cache debug output"), e.getMessage());
     }
 
     @Test void nonCacheableTaskIsExplainedNotMisreported() {

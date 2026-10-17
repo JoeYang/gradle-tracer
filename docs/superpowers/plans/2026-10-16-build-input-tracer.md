@@ -2762,6 +2762,7 @@ package io.joeyang.tracer.cli;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -2853,6 +2854,66 @@ class CacheDebugLogTest {
         assertEquals(Optional.empty(), CacheDebugLog.nonCacheableReason(FIXTURE, TASK));
     }
 
+    @Test void dirAndMissingEntriesAreNotGarbageKeys() {
+        String log = """
+                > Task :app:appA:fingerprint
+                Appending implementation to build cache key: io.joeyang.tracer.buildlogic.FingerprintTask_Decorated@0001
+                Appending input file fingerprints for 'rootSpec$1' to build cache key: aaaa - RELATIVE_PATH{/w/build/classes/java/main/io='io' / DIR, /w/build/deleted.class='deleted.class' / MISSING, /w/build/classes/java/main/io/Real.class='io/Real.class' / 3333}
+                Build cache key for task ':app:appA:fingerprint' is b5a1bb8d226bf944a43ec45392201d50
+                """;
+        TaskKey key = CacheDebugLog.parse(log, ":app:appA:fingerprint").orElseThrow();
+        Map<String, String> entries = key.fileFingerprints().get("rootSpec$1");
+        assertEquals(3, entries.size());
+        assertEquals("DIR", entries.get("/w/build/classes/java/main/io"));
+        assertEquals("MISSING", entries.get("/w/build/deleted.class"));
+        assertEquals("3333", entries.get("/w/build/classes/java/main/io/Real.class"));
+    }
+
+    @Test void aQuoteInsideANormalizedPathDoesNotMergeTwoEntries() {
+        String log = """
+                > Task :app:appA:fingerprint
+                Appending implementation to build cache key: io.joeyang.tracer.buildlogic.FingerprintTask_Decorated@0001
+                Appending input file fingerprints for 'stableSources' to build cache key: aaaa - RELATIVE_PATH{/w/src/io/it's/A.java='io/it's/A.java' / 1111, /w/src/io/B.java='io/B.java' / 2222}
+                Build cache key for task ':app:appA:fingerprint' is b5a1bb8d226bf944a43ec45392201d50
+                """;
+        TaskKey key = CacheDebugLog.parse(log, ":app:appA:fingerprint").orElseThrow();
+        Map<String, String> entries = key.fileFingerprints().get("stableSources");
+        assertEquals(2, entries.size());
+        assertEquals("1111", entries.get("/w/src/io/it's/A.java"));
+        assertEquals("2222", entries.get("/w/src/io/B.java"));
+    }
+
+    @Test void unknownNormalizationTokenFailsLoudlyInsteadOfDroppingTheProperty() {
+        String log = """
+                > Task :app:appA:fingerprint
+                Appending implementation to build cache key: io.joeyang.tracer.buildlogic.FingerprintTask_Decorated@0001
+                Appending input file fingerprints for 'stableSources' to build cache key: aaaa - relativePath{/w/src/A.java='A.java' / 1111}
+                Build cache key for task ':app:appA:fingerprint' is b5a1bb8d226bf944a43ec45392201d50
+                """;
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> CacheDebugLog.parse(log, ":app:appA:fingerprint"));
+        assertTrue(e.getMessage().contains("unrecognised cache debug output"), e.getMessage());
+        assertTrue(e.getMessage().contains("relativePath{/w/src/A.java='A.java' / 1111}"), e.getMessage());
+    }
+
+    @Test void unknownValueFingerprintShapeFailsLoudly() {
+        String log = """
+                > Task :app:appA:fingerprint
+                Appending implementation to build cache key: io.joeyang.tracer.buildlogic.FingerprintTask_Decorated@0001
+                Appending input value fingerprint for 'options.release' to build cache key: not-a-hex-hash
+                Build cache key for task ':app:appA:fingerprint' is b5a1bb8d226bf944a43ec45392201d50
+                """;
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> CacheDebugLog.parse(log, ":app:appA:fingerprint"));
+        assertTrue(e.getMessage().contains("unrecognised cache debug output"), e.getMessage());
+        assertTrue(e.getMessage().contains("options.release"), e.getMessage());
+    }
+
+    @Test void realFixtureRootSpecHasAllThirteenEntries() throws IOException {
+        // rootSpec$1 only ever appears on a Jar task's input, and Jar is non-cacheable, so this property
+        // never comes back through parse(); fileFingerprintsFor exercises the same entry parser directly.
+        Map<String, Map<String, String>> files = CacheDebugLog.fileFingerprintsFor(resource("/cache-debug/appA-compileJava.log"), ":build-logic:jar");
+        assertEquals(13, files.get("rootSpec$1").size());
+    }
+
     private static String resource(String name) throws IOException {
         try (InputStream in = CacheDebugLogTest.class.getResourceAsStream(name)) {
             if (in == null) {
@@ -2940,6 +3001,7 @@ class GradleKeyProviderTest {
         ProviderException e = assertThrows(ProviderException.class,
                 () -> new GradleKeyProvider(runner, false, Duration.ofMinutes(1)).keyFor(worktree, TASK));
         assertTrue(e.getMessage().contains("no cache key"), e.getMessage());
+        assertTrue(e.getMessage().contains("unrecognised cache debug output"), e.getMessage());
     }
 
     @Test void nonCacheableTaskIsExplainedNotMisreported() {
@@ -2972,76 +3034,112 @@ import java.util.regex.Pattern;
 /**
  * Parses the lines Gradle prints with {@code -Dorg.gradle.caching.debug=true}. Lines belong to the task
  * announced by the preceding {@code > Task <path>} header (hence {@code --no-parallel}); a
- * {@code Build cache key for task '<path>' is <hash>} line closes the block.
+ * {@code Build cache key for task '<path>' is <hash>} line, or a {@code Non-cacheable because ...} line,
+ * closes the block. Any {@code Appending ...} line inside the target task's block that does not match one
+ * of the shapes below is treated as unrecognised rather than silently dropped or mis-split (spec §9): a
+ * Gradle upgrade that changes the format must fail loudly instead of producing a wrong, "clean" verdict.
  */
 final class CacheDebugLog {
     private static final Pattern TASK_HEADER = Pattern.compile("^> Task (\\S+)");
     private static final Pattern IMPLEMENTATION = Pattern.compile("^Appending implementation to build cache key: (.+)$");
+    private static final Pattern ADDITIONAL_IMPLEMENTATION =
+            Pattern.compile("^Appending additional implementation to build cache key: .+$");
     private static final Pattern VALUE = Pattern.compile("^Appending input value fingerprint for '([^']+)' to build cache key: ([0-9a-f]+)$");
     private static final Pattern FILES = Pattern.compile("^Appending input file fingerprints for '([^']+)' to build cache key: [0-9a-f]+ - [A-Z_]+\\{(.*)\\}$");
-    private static final Pattern ENTRY = Pattern.compile("(.+?)=(?:'[^']*'|IGNORED) / ([0-9a-f]+)(?:, |$)");
+    private static final Pattern OUTPUT_PROPERTY = Pattern.compile("^Appending output property name to build cache key: .+$");
+    /** A single already-isolated {@code <path>=<'normalized'|IGNORED> / <hash|DIR|MISSING>} entry. */
+    private static final Pattern ENTRY = Pattern.compile("^/.+=(?:'.*'|IGNORED) / (?:[0-9a-f]+|DIR|MISSING)$");
     private static final Pattern KEY = Pattern.compile("^Build cache key for task '([^']+)' is ([0-9a-f]+)$");
     private static final Pattern NON_CACHEABLE = Pattern.compile("^Non-cacheable because (.+)$");
 
     private CacheDebugLog() {}
 
     static Optional<TaskKey> parse(String output, String taskPath) {
-        String implementation = "";
-        Map<String, String> values = new LinkedHashMap<>();
-        Map<String, Map<String, String>> files = new LinkedHashMap<>();
-        for (String raw : output.split("\\R")) {
-            String line = raw.strip();
-            Matcher m;
-            if (TASK_HEADER.matcher(line).find()) {
-                implementation = "";
-                values = new LinkedHashMap<>();
-                files = new LinkedHashMap<>();
-            } else if ((m = IMPLEMENTATION.matcher(line)).matches()) {
-                implementation = m.group(1);
-            } else if ((m = VALUE.matcher(line)).matches()) {
-                values.put(m.group(1), m.group(2));
-            } else if ((m = FILES.matcher(line)).matches()) {
-                files.put(m.group(1), entries(m.group(2)));
-            } else if ((m = KEY.matcher(line)).matches()) {
-                if (m.group(1).equals(taskPath)) {
-                    return Optional.of(new TaskKey(taskPath, m.group(2), files, values, implementation));
-                }
-                implementation = "";
-                values = new LinkedHashMap<>();
-                files = new LinkedHashMap<>();
-            }
+        Block block = blockFor(output, taskPath);
+        if (block.key() == null) {
+            return Optional.empty();
         }
-        return Optional.empty();
+        return Optional.of(new TaskKey(taskPath, block.key(), block.files(), block.values(), block.implementation()));
     }
 
     /** The reason Gradle printed instead of a key for {@code taskPath} (e.g. "Not worth caching [NOT_CACHEABLE]" for jar tasks). */
     static Optional<String> nonCacheableReason(String output, String taskPath) {
-        String current = null;
+        return Optional.ofNullable(blockFor(output, taskPath).nonCacheableReason());
+    }
+
+    /**
+     * Per-file fingerprints for {@code taskPath}, including a task that never prints a key (e.g. a jar
+     * task). Exposed so tests can exercise entry parsing directly against properties, such as a {@code Jar}
+     * task's {@code rootSpec$1}, that only ever appear on non-cacheable tasks.
+     */
+    static Map<String, Map<String, String>> fileFingerprintsFor(String output, String taskPath) {
+        return blockFor(output, taskPath).files();
+    }
+
+    private record Block(String implementation, Map<String, Map<String, String>> files,
+                          Map<String, String> values, String key, String nonCacheableReason) {}
+
+    private static Block blockFor(String output, String taskPath) {
+        String implementation = "";
+        Map<String, String> values = new LinkedHashMap<>();
+        Map<String, Map<String, String>> files = new LinkedHashMap<>();
+        boolean inTarget = false;
         for (String raw : output.split("\\R")) {
             String line = raw.strip();
             Matcher header = TASK_HEADER.matcher(line);
             if (header.find()) {
-                current = header.group(1);
+                if (inTarget) {
+                    return new Block(implementation, files, values, null, null);
+                }
+                inTarget = header.group(1).equals(taskPath);
                 continue;
             }
-            Matcher m = NON_CACHEABLE.matcher(line);
-            if (m.matches() && taskPath.equals(current)) {
-                return Optional.of(m.group(1));
+            if (!inTarget) {
+                continue;
+            }
+            Matcher m;
+            if ((m = KEY.matcher(line)).matches()) {
+                return new Block(implementation, files, values, m.group(2), null);
+            }
+            if ((m = NON_CACHEABLE.matcher(line)).matches()) {
+                return new Block(implementation, files, values, null, m.group(1));
+            }
+            if ((m = IMPLEMENTATION.matcher(line)).matches()) {
+                implementation = m.group(1);
+            } else if (ADDITIONAL_IMPLEMENTATION.matcher(line).matches()) {
+                // A decorator/validation-action implementation hash; the primary one above is enough to spot a change.
+            } else if ((m = VALUE.matcher(line)).matches()) {
+                values.put(m.group(1), m.group(2));
+            } else if ((m = FILES.matcher(line)).matches()) {
+                files.put(m.group(1), entries(m.group(2), line));
+            } else if (OUTPUT_PROPERTY.matcher(line).matches()) {
+                // Does not affect the key material we track.
+            } else if (line.startsWith("Appending ")) {
+                throw unrecognised(line);
             }
         }
-        return Optional.empty();
+        return new Block(implementation, files, values, null, null);
     }
 
-    private static Map<String, String> entries(String body) {
+    private static Map<String, String> entries(String body, String originalLine) {
         Map<String, String> out = new LinkedHashMap<>();
         if (body.isEmpty() || body.equals("EMPTY")) {
             return out;
         }
-        Matcher m = ENTRY.matcher(body);
-        while (m.find()) {
-            out.put(m.group(1), m.group(2));
+        // Split before parsing each entry so a "'" inside a normalized path can never merge two entries:
+        // every entry boundary is ", " followed by the next entry's absolute path, which always starts with "/".
+        for (String entry : body.split(", (?=/)")) {
+            if (!ENTRY.matcher(entry).matches()) {
+                throw unrecognised(originalLine);
+            }
+            int lastSlashSeparator = entry.lastIndexOf(" / ");
+            out.put(entry.substring(0, entry.indexOf('=')), entry.substring(lastSlashSeparator + 3));
         }
         return out;
+    }
+
+    private static IllegalArgumentException unrecognised(String line) {
+        return new IllegalArgumentException("unrecognised cache debug output: " + line);
     }
 }
 ```
@@ -3092,7 +3190,8 @@ public final class GradleKeyProvider implements KeyProvider {
         return CacheDebugLog.parse(output, taskPath).orElseThrow(() -> new ProviderException(
                 CacheDebugLog.nonCacheableReason(output, taskPath)
                         .map(reason -> taskPath + " is not cacheable (" + reason + "), so it has no cache key; use compileJava or fingerprint")
-                        .orElse("gradle printed no cache key for " + taskPath + " (is org.gradle.caching=true at this commit?)")));
+                        .orElse("gradle printed no cache key for " + taskPath
+                                + " (unrecognised cache debug output, or the task did not print a key)")));
     }
 }
 ```
@@ -3100,7 +3199,7 @@ public final class GradleKeyProvider implements KeyProvider {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 43 tests at this point in the sequence (26 from Task 6 plus 17 here). Then `bazel test //tools/tracer/...` must also pass — the fixtures are on the Bazel test classpath through the `resources` attribute.
+Expected: `BUILD SUCCESSFUL`; 48 tests at this point in the sequence (26 from Task 6 plus 22 here — 17 from the original parser/provider tests plus 5 added by review fixes for `/ DIR`, `/ MISSING`, a quoted path, an unknown normalization token, and `rootSpec$1`'s real entry count). Then `bazel test //tools/tracer/...` must also pass — the fixtures are on the Bazel test classpath through the `resources` attribute.
 
 - [ ] **Step 6: Document and commit**
 
