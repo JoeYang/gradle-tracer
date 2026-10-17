@@ -4113,16 +4113,16 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class RevisionRangeTest {
-    static final String A = "a".repeat(40), B = "b".repeat(40), C = "c".repeat(40);
+    static final String A = "a".repeat(40), B = "b".repeat(40), C = "c".repeat(40), D = "d".repeat(40);
     final Path repo = Path.of("/repo");
 
     @Test void returnsBaseThenCommitsOldestFirst() throws Exception {
         FakeProcessRunner git = new FakeProcessRunner()
                 .on("git rev-parse --verify --quiet v1^{commit}", 0, A + "\n", "")
                 .on("git rev-parse --verify --quiet HEAD^{commit}", 0, C + "\n", "")
-                .on("git log -1 --format=%H%x1f%s " + A, 0, A + "\u001fbaseline\n", "")
-                .on("git log --reverse --first-parent --format=%H%x1f%s " + A + ".." + C, 0,
-                        B + "\u001fcore: add shout\n" + C + "\u001fdeps: bump gson\n", "");
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + A, 0, A + "\u001f\u001fbaseline\n", "")
+                .on("git log --reverse --first-parent --format=%H%x1f%P%x1f%s " + A + ".." + C, 0,
+                        B + "\u001f" + A + "\u001fcore: add shout\n" + C + "\u001f" + B + "\u001fdeps: bump gson\n", "");
 
         List<Commit> commits = new RevisionRange(git, repo).resolve("v1", "HEAD");
 
@@ -4142,8 +4142,8 @@ class RevisionRangeTest {
         FakeProcessRunner git = new FakeProcessRunner()
                 .on("git rev-parse --verify --quiet A^{commit}", 0, A + "\n", "")
                 .on("git rev-parse --verify --quiet B^{commit}", 0, A + "\n", "")
-                .on("git log -1 --format=%H%x1f%s " + A, 0, A + "\u001fbaseline\n", "")
-                .on("git log --reverse --first-parent --format=%H%x1f%s " + A + ".." + A, 0, "", "");
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + A, 0, A + "\u001f\u001fbaseline\n", "")
+                .on("git log --reverse --first-parent --format=%H%x1f%P%x1f%s " + A + ".." + A, 0, "", "");
 
         UsageException e = assertThrows(UsageException.class, () -> new RevisionRange(git, repo).resolve("A", "B"));
         assertTrue(e.getMessage().contains("no commits"), e.getMessage());
@@ -4160,12 +4160,41 @@ class RevisionRangeTest {
         FakeProcessRunner git = new FakeProcessRunner()
                 .on("git rev-parse --verify --quiet v1^{commit}", 0, A + "\n", "")
                 .on("git rev-parse --verify --quiet HEAD^{commit}", 0, C + "\n", "")
-                .on("git log -1 --format=%H%x1f%s " + A, 0, A + "\u001fbaseline\n", "")
-                .on("git log --reverse --first-parent --format=%H%x1f%s " + A + ".." + C, 0,
-                        "not-a-valid-sha\u001fwhatever\n", "");
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + A, 0, A + "\u001f\u001fbaseline\n", "")
+                .on("git log --reverse --first-parent --format=%H%x1f%P%x1f%s " + A + ".." + C, 0,
+                        "not-a-valid-sha\u001f" + A + "\u001fwhatever\n", "");
 
         ProviderException e = assertThrows(ProviderException.class, () -> new RevisionRange(git, repo).resolve("v1", "HEAD"));
         assertTrue(e.getMessage().contains("not-a-valid-sha"), e.getMessage());
+    }
+
+    // A side-branch commit merged into 'to' is not an ancestor of 'from' on the first-parent line: the first row's
+    // own first parent must equal the resolved 'from', not just appear somewhere in 'to's history.
+    @Test void sideBranchStartIsRejected() {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git rev-parse --verify --quiet v1^{commit}", 0, A + "\n", "")
+                .on("git rev-parse --verify --quiet HEAD^{commit}", 0, C + "\n", "")
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + A, 0, A + "\u001f\u001fbaseline\n", "")
+                .on("git log --reverse --first-parent --format=%H%x1f%P%x1f%s " + A + ".." + C, 0,
+                        // B's first parent is D, not A: 'from' (A) is not on 'to's first-parent line.
+                        B + "\u001f" + D + "\u001fside branch work\n" + C + "\u001f" + B + "\u001fmerge\n", "");
+
+        UsageException e = assertThrows(UsageException.class, () -> new RevisionRange(git, repo).resolve("v1", "HEAD"));
+        assertTrue(e.getMessage().contains(B) && e.getMessage().contains(A), e.getMessage());
+    }
+
+    // A root commit's %P is the empty string; parsing it must not crash, and it correctly fails the chain check
+    // (an empty parent can never equal the 40-hex sha it is compared against) rather than being silently accepted.
+    @Test void rootCommitWithEmptyParentFieldIsRejectedNotCrashed() {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git rev-parse --verify --quiet v1^{commit}", 0, A + "\n", "")
+                .on("git rev-parse --verify --quiet HEAD^{commit}", 0, C + "\n", "")
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + A, 0, A + "\u001f\u001fbaseline\n", "")
+                .on("git log --reverse --first-parent --format=%H%x1f%P%x1f%s " + A + ".." + C, 0,
+                        C + "\u001f\u001froot commit\n", "");
+
+        UsageException e = assertThrows(UsageException.class, () -> new RevisionRange(git, repo).resolve("v1", "HEAD"));
+        assertTrue(e.getMessage().contains(C), e.getMessage());
     }
 }
 ```
@@ -4286,7 +4315,9 @@ import java.util.List;
 /** Turns {@code --from/--to} into an ordered commit list: the base commit first, then every first-parent commit in from..to. */
 public final class RevisionRange {
     private static final Duration TIMEOUT = Duration.ofSeconds(30);
-    private static final String FORMAT = "--format=%H%x1f%s";
+    // %P is every parent sha, space-separated; for a root commit it is empty. Only the first token (the first
+    // parent) matters here, since the walk follows --first-parent.
+    private static final String FORMAT = "--format=%H%x1f%P%x1f%s";
 
     private final ProcessRunner git;
     private final Path repo;
@@ -4305,8 +4336,18 @@ public final class RevisionRange {
         if (!log.ok()) {
             throw new ProviderException("git log failed: " + log.firstErrorLine());
         }
+        // 'from' must be an ancestor of 'to' on its first-parent line: a side-branch commit merged into 'to' (or
+        // any other commit not actually on that line) would otherwise pair up with an unrelated predecessor and
+        // silently compare the wrong build inputs.
+        String previousSha = fromSha;
         for (String line : log.stdout().lines().filter(l -> !l.isBlank()).toList()) {
-            commits.add(parse(line));
+            Row row = parseRow(line);
+            if (!row.firstParent().equals(previousSha)) {
+                throw new UsageException("commit '" + row.commit().sha() + "' is not a first-parent descendant of '"
+                        + previousSha + "'; 'from' must be an ancestor of 'to' on its first-parent history");
+            }
+            commits.add(row.commit());
+            previousSha = row.commit().sha();
         }
         if (commits.size() == 1) {
             throw new UsageException("no commits between '" + from + "' and '" + to + "'");
@@ -4330,14 +4371,25 @@ public final class RevisionRange {
         }
     }
 
+    /** One parsed {@code git log} row: the commit plus its first parent, used only to validate the first-parent chain. */
+    private record Row(Commit commit, String firstParent) {}
+
     // Amendment (code review): Commit's compact constructor throws an unchecked IllegalArgumentException for a sha
     // that isn't 40 lowercase hex chars. The CLI's walk (Task 13) catches only UsageException and ProviderException,
     // so a SHA-256 repo or a stray `git log` output line would otherwise escape as a stack trace with exit code 1
     // (the usage-error code) instead of the ProviderException exit code. Translate it here, naming the bad line.
     private static Commit parse(String line) throws ProviderException {
-        String[] parts = line.split("\u001f", 2);
+        return parseRow(line).commit();
+    }
+
+    private static Row parseRow(String line) throws ProviderException {
+        String[] parts = line.split("\u001f", 3);
+        if (parts.length < 3) {
+            throw new ProviderException("unexpected git log line: '" + line + "': expected sha, parents, subject");
+        }
+        String firstParent = parts[1].isBlank() ? "" : parts[1].split(" ", 2)[0];
         try {
-            return new Commit(parts[0], parts.length > 1 ? parts[1] : "");
+            return new Row(new Commit(parts[0], parts[2]), firstParent);
         } catch (IllegalArgumentException e) {
             throw new ProviderException("unexpected git log line: '" + line + "': " + e.getMessage(), e);
         }
@@ -4477,7 +4529,7 @@ public final class WorktreePool implements AutoCloseable {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 89 tests at this point in the sequence (bumped from 74 by the Task 8 review rounds' 14 added tests, plus 1 for the code-review amendment's `malformedLogLineIsAProviderErrorNamingTheLine`).
+Expected: `BUILD SUCCESSFUL`; 91 tests at this point in the sequence (bumped from 74 by the Task 8 review rounds' 14 added tests, plus 1 for the code-review amendment's `malformedLogLineIsAProviderErrorNamingTheLine` and 2 for the quality-review fix's `sideBranchStartIsRejected`/`rootCommitWithEmptyParentFieldIsRejectedNotCrashed`).
 
 - [ ] **Step 5: Document and commit**
 
@@ -4924,7 +4976,7 @@ public final class TableRenderer {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 104 tests at this point in the sequence (bumped from 90 by the Task 8 review rounds' 14 added tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
+Expected: `BUILD SUCCESSFUL`; 106 tests at this point in the sequence (bumped from 92 by the Task 8 review rounds' 14 added tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
 
 - [ ] **Step 5: Document and commit**
 
@@ -5083,7 +5135,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 109 tests at this point in the sequence (bumped from 95 by the Task 8 review rounds' 14 added tests); the timeout test finishes in well under a second.
+Expected: `BUILD SUCCESSFUL`; 111 tests at this point in the sequence (bumped from 97 by the Task 8 review rounds' 14 added tests); the timeout test finishes in well under a second.
 
 - [ ] **Step 5: Commit**
 
@@ -5304,7 +5356,7 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 121 tests at this point in the sequence (bumped from 107 by the Task 8 review rounds' 14 added tests; the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 123 tests at this point in the sequence (bumped from 109 by the Task 8 review rounds' 14 added tests; the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -5351,7 +5403,7 @@ Append inside `RevisionRangeTest`:
     @Test void resolveOneReturnsTheCommit() throws Exception {
         FakeProcessRunner git = new FakeProcessRunner()
                 .on("git rev-parse --verify --quiet HEAD^{commit}", 0, B + "\n", "")
-                .on("git log -1 --format=%H%x1f%s " + B, 0, B + "\u001fcore: add shout\n", "");
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + B, 0, B + "\u001f\u001fcore: add shout\n", "");
 
         assertEquals(new Commit(B, "core: add shout"), new RevisionRange(git, repo).resolveOne("HEAD"));
     }
@@ -5403,10 +5455,10 @@ class CliTest {
         git = new FakeProcessRunner()
                 .on("git rev-parse --verify --quiet base^{commit}", 0, A + "\n", "")
                 .on("git rev-parse --verify --quiet tip^{commit}", 0, C + "\n", "")
-                .on("git log -1 --format=%H%x1f%s " + A, 0, A + "\u001fbaseline\n", "")
-                .on("git log -1 --format=%H%x1f%s " + C, 0, C + "\u001fdocs only\n", "")
-                .on("git log --reverse --first-parent --format=%H%x1f%s " + A + ".." + C, 0,
-                        B + "\u001fcore: add shout\n" + C + "\u001fdocs only\n", "")
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + A, 0, A + "\u001f\u001fbaseline\n", "")
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + C, 0, C + "\u001f" + B + "\u001fdocs only\n", "")
+                .on("git log --reverse --first-parent --format=%H%x1f%P%x1f%s " + A + ".." + C, 0,
+                        B + "\u001f" + A + "\u001fcore: add shout\n" + C + "\u001f" + B + "\u001fdocs only\n", "")
                 .on("git worktree", 0, "", "");
     }
 
@@ -5807,7 +5859,7 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 132 tests at this point in the sequence (bumped from 118 by the Task 8 review rounds' 14 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 134 tests at this point in the sequence (bumped from 120 by the Task 8 review rounds' 14 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 
