@@ -7869,7 +7869,7 @@ index d0ea4ff..62d8597 100644
 ```
 
 ```bash
-git add docs/tracer.md
+git add docs/tracer.md docs/superpowers/plans/2026-10-16-build-input-tracer.md
 git commit -F - <<'EOF'
 docs(tracer): correct the detached-child example and make the plan's commit commands copy-safe
 
@@ -7894,9 +7894,12 @@ Run `./gradlew :tools:tracer:test`: still 221 (docs-only commit). Run `bazel tes
 
 Why: spec review caught one more stale sentence while reviewing Commit G: `docs/tracer.md`'s Gradle-oracle
 section said project dependencies "appear as class directories on the compile classpath and as jars on the
-runtime classpath, which *later commits* use to name a culprit". That predates Task 13 — culprit naming was
-already implemented in `KeyComparator.displayName` by the time this was written, so "later commits" stopped
-being accurate once Task 13 landed. Name the method instead of a vague forward reference.
+runtime classpath, which *later commits* use to name a culprit". The sentence dates back to Task 7
+(`cfe5a5c`, written while culprit naming genuinely was future work); it went stale at Task 10 (`0492bd0`),
+which implemented that naming in `KeyComparator.displayName`, and nothing updated the sentence then. Name the
+method instead of a vague forward reference. (The 387190a commit that made this fix called the sentence "left
+stale by Task 13" in its subject line — that's the commit review round that *caught* it, not the one that made
+it stale; the staleness dates to Task 10, three tasks earlier.)
 
 This belongs conceptually inside Commit G (same root cause, same reviewer pass), but lands as its own commit
 instead of an amendment to G: the branch is shared with other agents and the no-amend rule applies regardless of
@@ -8006,7 +8009,7 @@ index d6a7fb0..8920e48 100644
 ```
 
 ```bash
-git add tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+git add tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java docs/superpowers/plans/2026-10-16-build-input-tracer.md
 git commit -F - <<'EOF'
 test(tracer): prove a bad revision creates no scratch root
 
@@ -8020,6 +8023,123 @@ EOF
 
 Run `./gradlew :tools:tracer:test`: 223 tests (221 going into this commit, plus `unknownToRevisionLeavesNoScratchRoot`
 and `emptyRangeLeavesNoScratchRoot`).
+
+---
+
+#### Commit J — `docs(tracer): fix four accuracy slips in the Task 13 docs and plan`
+
+Four accuracy fixes, all docs-only, found by a further spec review round:
+
+a. Spec §14's T4 row said the fix "enforced §9's single-run-per-scratch-root rule" — but §9 (read before writing
+   this) has no such rule; its only relevant row is "unknown `--from`/`--to`, unknown app, empty range | message
+   naming the bad value, exit 1, nothing created". T4 is reworded to cite only that, and to describe the
+   scratch-root lock as what it actually is: an implementation safeguard against two concurrent runs sharing a
+   root, not something §9 specifies.
+
+b. `docs/tracer.md`'s "`Cli.run` does its work in a fixed order" paragraph said `--tsv-out` is pre-checked
+   "before anything else beyond option parsing" — but `Cli.java:210` checks the app name against `app/<app>`
+   first, before the `--tsv-out` check ever runs. Reworded to state the real order: app check, then (for a
+   range) the `--tsv-out` pre-check, then revision resolution, then the scratch lock.
+
+c. This plan's Commit G and Commit I blocks each land a change to this very plan file in the same commit as a
+   code/docs change, but their `git add` lines only listed the other file(s) — self-reference is awkward to get
+   right while drafting a block that describes its own commit. Checked every Task 13 block's `git add` list
+   against `git show --name-only --format= <sha>` for the real commit (a quick script, not by eye); only G and I
+   were short a path, both missing this same plan file. Both are now fixed to list every file the real commit
+   touched.
+
+d. The 387190a commit that fixed `docs/tracer.md`'s stale "later commits use to name a culprit" sentence has the
+   subject "fix a Gradle-oracle sentence left stale by Task 13" — Task 13 is the review round that *caught* it,
+   not the one that made it stale. The sentence was written in Task 7 (`cfe5a5c`), when culprit naming genuinely
+   was future work, and went stale in Task 10 (`0492bd0`), which implemented that naming in
+   `KeyComparator.displayName` without updating this sentence. Commit G2's own "Why" paragraph in this plan
+   (which already named `KeyComparator.displayName` correctly) is corrected to say so, and now also calls out the
+   387190a subject's misattribution; `387190a`'s own commit message is left untouched — it's real history, not
+   rewritten here.
+
+nit. `docs/tracer.md`'s "Process timeouts and detached children" section said a Bazel server "had already
+   detached and been reparented *before* this invocation started it" — true of a *reused* Gradle daemon, not of
+   a Bazel server this run starts itself: that one detaches *during* the run, not before it. Reworded to give the
+   two cases their own, accurate reasons.
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index e57cdbd..0ff48ea 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -126,14 +126,14 @@ commit is compared against the last good key.
+ Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed (some row is
+ `BUILD-FAILED`), 3 at least one row is `CHANGED` — and 2 wins over 3 when both apply in the same range.
+ 
+-`Cli.run` does its work in a fixed order: `--tsv-out <file>` is pre-checked (parent directory must exist, be a
+-directory and be writable; the target must not already be a directory) before anything else beyond option
+-parsing; then the revision(s) are resolved (`RevisionRange.resolve` for a range, `resolveOne` for `--at`) — this
+-is read-only git, so it needs no lock, and a usage error here (unknown revision, empty range) exits 1 with no
+-scratch root or `.lock` file ever created; only once that succeeds does the scratch root get created, locked
+-(see "One run per scratch root" below), swept, and the worktree walk begin. Any violation along the way is a
+-usage error naming the offending path or revision, so a bad input fails immediately rather than after a whole
+-range walk has run.
++`Cli.run` does its work in a fixed order: the app name is checked against `app/<app>` first (a usage error here
++needs no scratch root or git at all); then, for a range, `--tsv-out <file>` is pre-checked (parent directory
++must exist, be a directory and be writable; the target must not already be a directory); then the revision(s)
++are resolved (`RevisionRange.resolve` for a range, `resolveOne` for `--at`) — this is read-only git, so it needs
++no lock, and a usage error here (unknown revision, empty range) exits 1 with no scratch root or `.lock` file
++ever created; only once that succeeds does the scratch root get created, locked (see "One run per scratch root"
++below), swept, and the worktree walk begin. Any violation along the way is a usage error naming the offending
++app, path or revision, so a bad input fails immediately rather than after a whole range walk has run.
+ 
+ ### One run per scratch root
+ Before any sweep or worktree work — for both the range walk and `--at`, and only after their revisions are
+@@ -149,8 +149,9 @@ directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/`*.impacted.tx
+ ### Process timeouts and detached children
+ On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it
+ started, then the direct child itself. A freshly spawned Gradle daemon is still a child of that process tree (its
+-parent is the `gradlew` client JVM `killTree` started), so it is killed along with everything else. What survives
+-is a process that had already detached and been reparented *before* this invocation started it: a Gradle daemon
+-reused from an earlier invocation, or a Bazel server (which daemonizes on start) — neither is a descendant of the
+-process `killTree` is walking, so it is never in scope to kill. This is by design: those servers are meant to
+-outlive the single invocation that happened to start or reuse them.
++parent is the `gradlew` client JVM `killTree` started), so it is killed along with everything else. Two kinds of
++process are never in scope to kill, for two different reasons: a Gradle daemon reused from an earlier invocation
++was already detached and reparented before this run even started it, so it was never this process tree's child to
++begin with; a Bazel server, which daemonizes as soon as it starts, detaches *during* this run, before `killTree`
++would ever need to act, so it is never a descendant of the client that launched it either. This is by design:
++those servers are meant to outlive the single invocation that happened to start or reuse them.
+```
+
+```diff
+diff --git a/docs/superpowers/specs/2026-10-16-build-input-tracer-design.md b/docs/superpowers/specs/2026-10-16-build-input-tracer-design.md
+index ed2697e..bc90d78 100644
+--- a/docs/superpowers/specs/2026-10-16-build-input-tracer-design.md
++++ b/docs/superpowers/specs/2026-10-16-build-input-tracer-design.md
+@@ -422,5 +422,5 @@ Design changes resulting from the review and from current versions:
+ | T1 | TestKit shares one build cache across test methods, so identical sample code came back `FROM_CACHE` where `SUCCESS` was asserted (found while implementing Task 1) | fixed: each TestKit project gets its own local build cache; the later TestKit tests already assumed this | plan Tasks 1, 5 |
+ | T2 | §6 gave `ProcessRunner` an `env` parameter the implemented interface never had and no provider needs (every command's environment is just the parent process's) | fixed: §6 now matches `ProcessRunner.run(Path, Duration, List<String>)` as coded in Task 6 | §6 |
+ | T3 | F14's "last `/src/` occurrence wins" was itself wrong: a worktree root that happens to contain `/src/` (e.g. a checkout under `~/src/...`) leaked into the culprit name and differed between commits, and a module's own nested `src` directory (`core/src/main/resources/src/x.txt`) matched the wrong occurrence; separately, `renderTsv` did not escape embedded tabs/CR/LF, `truncate`/`pad` worked by UTF-16 char and could split a surrogate pair, a culprit-less row kept trailing padding, and a task path with no app segment produced a summary reading "of ." (found by the Task 10 code-quality review) | fixed: the worktree root is stripped first (sharing `WorktreePool`'s `wt-<sha7>` naming), then the module boundary is the *first* `/src/` in what remains; "build logic" sorts first so it is never hidden by the culprit cap; TSV fields are tab/CR/LF-escaped; table columns are truncated/padded by code point; culprit-less rows are trimmed; `appName` falls back to the full task path. Supersedes F14's fix, not §5/§8's design intent | plan Task 10 |
+-| T4 | spec §9 says a bad revision exits 1 with nothing created; after Task 13 commit C, `Cli` created the scratch root and `<scratch>/.lock` before resolving `--from`/`--to`/`--at`, so an unknown revision left `.lock` behind (found by spec review) | fixed: revision resolution (read-only git, no lock needed) now runs before the scratch root is created or locked. §9's single-run-per-scratch-root rule is enforced by a `FileChannel` lock on `<scratch>/.lock`, taken after revision resolution; contention exits 1 | plan Task 13 (commit E) |
++| T4 | §9 says a bad revision exits 1 with nothing created; after Task 13 commit C, `Cli` created the scratch root and `<scratch>/.lock` before resolving `--from`/`--to`/`--at`, so an unknown revision left `.lock` behind, violating that row (found by spec review) | fixed: revision resolution (read-only git, no lock needed) now runs before the scratch root is created or locked, restoring §9's "nothing created" guarantee. (The scratch-root lock itself, a `FileChannel` lock on `<scratch>/.lock` guarding against two concurrent runs sharing a root, is an implementation safeguard added in commit C — §9 doesn't specify it; taking it after revision resolution is what keeps the two consistent.) | plan Task 13 (commit E) |
+ 
+```
+
+```bash
+git add docs/tracer.md \
+        docs/superpowers/specs/2026-10-16-build-input-tracer-design.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+docs(tracer): fix four accuracy slips in the Task 13 docs and plan
+
+Spec review's second pass found: T4 cited a §9 rule that doesn't
+exist (the lock is an implementation safeguard, not a spec rule);
+tracer.md's option-order paragraph skipped the unknown-app check that
+actually runs first; two plan commit blocks (G, I) listed an
+incomplete git add for their own self-referential plan-file change;
+and a commit subject blamed Task 13 for staleness that actually dates
+to Task 10. Plus a nit: a Bazel server detaches during its own run,
+not before it starts, unlike a reused Gradle daemon.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: still 223 (docs-only commit).
 
 ---
 

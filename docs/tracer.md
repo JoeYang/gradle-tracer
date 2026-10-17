@@ -126,14 +126,14 @@ commit is compared against the last good key.
 Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed (some row is
 `BUILD-FAILED`), 3 at least one row is `CHANGED` — and 2 wins over 3 when both apply in the same range.
 
-`Cli.run` does its work in a fixed order: `--tsv-out <file>` is pre-checked (parent directory must exist, be a
-directory and be writable; the target must not already be a directory) before anything else beyond option
-parsing; then the revision(s) are resolved (`RevisionRange.resolve` for a range, `resolveOne` for `--at`) — this
-is read-only git, so it needs no lock, and a usage error here (unknown revision, empty range) exits 1 with no
-scratch root or `.lock` file ever created; only once that succeeds does the scratch root get created, locked
-(see "One run per scratch root" below), swept, and the worktree walk begin. Any violation along the way is a
-usage error naming the offending path or revision, so a bad input fails immediately rather than after a whole
-range walk has run.
+`Cli.run` does its work in a fixed order: the app name is checked against `app/<app>` first (a usage error here
+needs no scratch root or git at all); then, for a range, `--tsv-out <file>` is pre-checked (parent directory
+must exist, be a directory and be writable; the target must not already be a directory); then the revision(s)
+are resolved (`RevisionRange.resolve` for a range, `resolveOne` for `--at`) — this is read-only git, so it needs
+no lock, and a usage error here (unknown revision, empty range) exits 1 with no scratch root or `.lock` file
+ever created; only once that succeeds does the scratch root get created, locked (see "One run per scratch root"
+below), swept, and the worktree walk begin. Any violation along the way is a usage error naming the offending
+app, path or revision, so a bad input fails immediately rather than after a whole range walk has run.
 
 ### One run per scratch root
 Before any sweep or worktree work — for both the range walk and `--at`, and only after their revisions are
@@ -149,8 +149,9 @@ directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/`*.impacted.tx
 ### Process timeouts and detached children
 On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it
 started, then the direct child itself. A freshly spawned Gradle daemon is still a child of that process tree (its
-parent is the `gradlew` client JVM `killTree` started), so it is killed along with everything else. What survives
-is a process that had already detached and been reparented *before* this invocation started it: a Gradle daemon
-reused from an earlier invocation, or a Bazel server (which daemonizes on start) — neither is a descendant of the
-process `killTree` is walking, so it is never in scope to kill. This is by design: those servers are meant to
-outlive the single invocation that happened to start or reuse them.
+parent is the `gradlew` client JVM `killTree` started), so it is killed along with everything else. Two kinds of
+process are never in scope to kill, for two different reasons: a Gradle daemon reused from an earlier invocation
+was already detached and reparented before this run even started it, so it was never this process tree's child to
+begin with; a Bazel server, which daemonizes as soon as it starts, detaches *during* this run, before `killTree`
+would ever need to act, so it is never a descendant of the client that launched it either. This is by design:
+those servers are meant to outlive the single invocation that happened to start or reuse them.
