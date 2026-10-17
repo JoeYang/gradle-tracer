@@ -137,8 +137,11 @@ file, if any, is left untouched — see "The scratch root must be private" and t
 an unexpected runtime exception — e.g. `UncheckedIOException` from a provider or from a filesystem call —
 caught in `Cli.run` and reported as "internal error: `<class>`: `<message>`" rather than escaping as a raw
 stack trace; or the thread being interrupted mid-walk, reported as "interrupted" and aborting the range
-immediately instead of limping through every remaining commit with the interrupt flag still set — 3 at least
-one row is `CHANGED`. 2 wins over 3 when both apply in the same range.
+immediately instead of limping through every remaining commit with the interrupt flag still set. The flag is
+checked both after a failed key lookup and at the top of every iteration, since an interrupted bazel-diff call
+degrades silently (as an ordinary bazel-diff failure, below) with the flag still set — the top-of-iteration
+check is what catches that case before the next checkout, rather than letting it fail there with an unrelated
+error — 3 at least one row is `CHANGED`. 2 wins over 3 when both apply in the same range.
 
 `Cli.run` does its work in a fixed order: the app name is checked against `app/<app>` first (a usage error here
 needs no scratch root or git at all); then, for a range, `--tsv-out <file>` is pre-checked (parent directory

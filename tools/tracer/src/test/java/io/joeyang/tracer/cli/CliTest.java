@@ -510,6 +510,30 @@ class CliTest {
         }
     }
 
+    @Test void interruptedBazelDiffAbortsTheWalkAtTheNextCommit() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger hashCalls = new java.util.concurrent.atomic.AtomicInteger();
+        ImpactProvider interrupting = new ImpactProvider() {
+            @Override public Path hashes(Path worktree, Path output) throws ProviderException {
+                hashCalls.incrementAndGet();
+                Thread.currentThread().interrupt();
+                throw new ProviderException("boom");
+            }
+            @Override public Set<String> impactedTargets(Path p, Path c) { return Set.of(); }
+        };
+        try {
+            int code = run(keys, interrupting, "appA", "--from", "base", "--to", "tip");
+
+            assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
+            assertTrue(err().contains("interrupted"), err());
+            // The interrupted hashes() call itself degrades (silently, as a normal bazel-diff failure); the
+            // walk only stops at the top of the *next* iteration, before that commit's checkout or any of its
+            // provider calls.
+            assertEquals(1, hashCalls.get(), "no further bazel-diff calls once the flag is seen");
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
     @Test void staleScratchFilesAreSweptAndNewOnesRemoved() throws Exception {
         createPrivateScratch();
         Path stale = Files.writeString(scratch.resolve("hashes-stale.json"), "{}");

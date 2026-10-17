@@ -10261,6 +10261,121 @@ Run `./gradlew :tools:tracer:test`: still 240 (two existing tests tightened, non
 
 ---
 
+#### Commit Y — `fix(tracer): check for interrupts at the top of each commit`
+
+Why: Commit N only checked `Thread.currentThread().isInterrupted()` after a failed *key* lookup. An
+interrupted bazel-diff call degrades silently — like any other bazel-diff failure, it becomes `NOT_AVAILABLE`
+with a warning, not an abort — so the flag could stay set going into the next commit with nothing having
+reported "interrupted" yet. That next commit's own checkout (or anything else needing a process) would then
+fail for an unrelated-looking reason, with the real cause (the interrupt) never surfaced.
+
+Fix: check the flag at the top of every iteration too, before that commit's checkout or any of its provider
+calls, aborting with the same `ProviderException("interrupted")` path N already added.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index f354e7a..7b12b70 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -404,6 +404,15 @@ public final class Cli {
+                 Path previousHashes = null;
+                 boolean bazelAlive = impacts != null;
+                 for (Commit commit : commits) {
++                    // Checked here too, not only after a failed key lookup: an interrupted bazel-diff call
++                    // degrades silently (as an ordinary bazel-diff failure, below), so the flag can still be set
++                    // going into the next commit even though nothing in the previous iteration reported it as
++                    // "interrupted". Catching it here, before this commit's checkout or any of its provider
++                    // calls, is what stops it reaching the next checkout and failing there with a confusing
++                    // unrelated error instead.
++                    if (Thread.currentThread().isInterrupted()) {
++                        throw new ProviderException("interrupted");
++                    }
+                     Path worktree = pool.checkout(commit);
+                     Optional<TaskKey> key = Optional.empty();
+                     Optional<String> error = Optional.empty();
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index 6eb6733..93b5586 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -510,6 +510,30 @@ class CliTest {
+         }
+     }
+ 
++    @Test void interruptedBazelDiffAbortsTheWalkAtTheNextCommit() throws Exception {
++        java.util.concurrent.atomic.AtomicInteger hashCalls = new java.util.concurrent.atomic.AtomicInteger();
++        ImpactProvider interrupting = new ImpactProvider() {
++            @Override public Path hashes(Path worktree, Path output) throws ProviderException {
++                hashCalls.incrementAndGet();
++                Thread.currentThread().interrupt();
++                throw new ProviderException("boom");
++            }
++            @Override public Set<String> impactedTargets(Path p, Path c) { return Set.of(); }
++        };
++        try {
++            int code = run(keys, interrupting, "appA", "--from", "base", "--to", "tip");
++
++            assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
++            assertTrue(err().contains("interrupted"), err());
++            // The interrupted hashes() call itself degrades (silently, as a normal bazel-diff failure); the
++            // walk only stops at the top of the *next* iteration, before that commit's checkout or any of its
++            // provider calls.
++            assertEquals(1, hashCalls.get(), "no further bazel-diff calls once the flag is seen");
++        } finally {
++            Thread.interrupted();
++        }
++    }
++
+     @Test void staleScratchFilesAreSweptAndNewOnesRemoved() throws Exception {
+         createPrivateScratch();
+         Path stale = Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index ab041b9..ee3b88e 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -137,8 +137,11 @@ file, if any, is left untouched — see "The scratch root must be private" and t
+ an unexpected runtime exception — e.g. `UncheckedIOException` from a provider or from a filesystem call —
+ caught in `Cli.run` and reported as "internal error: `<class>`: `<message>`" rather than escaping as a raw
+ stack trace; or the thread being interrupted mid-walk, reported as "interrupted" and aborting the range
+-immediately instead of limping through every remaining commit with the interrupt flag still set — 3 at least
+-one row is `CHANGED`. 2 wins over 3 when both apply in the same range.
++immediately instead of limping through every remaining commit with the interrupt flag still set. The flag is
++checked both after a failed key lookup and at the top of every iteration, since an interrupted bazel-diff call
++degrades silently (as an ordinary bazel-diff failure, below) with the flag still set — the top-of-iteration
++check is what catches that case before the next checkout, rather than letting it fail there with an unrelated
++error — 3 at least one row is `CHANGED`. 2 wins over 3 when both apply in the same range.
+ 
+ `Cli.run` does its work in a fixed order: the app name is checked against `app/<app>` first (a usage error here
+ needs no scratch root or git at all); then, for a range, `--tsv-out <file>` is pre-checked (parent directory
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/tracer.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+fix(tracer): check for interrupts at the top of each commit
+
+Commit N only checked isInterrupted() after a failed key lookup, but
+an interrupted bazel-diff call degrades silently as an ordinary
+bazel-diff failure, leaving the flag set with nothing having reported
+"interrupted" yet; the next commit's checkout then failed for an
+unrelated-looking reason. Check the flag at the top of every
+iteration too, before that commit's checkout or any provider call.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: 241 tests (240 going into this commit, plus
+`interruptedBazelDiffAbortsTheWalkAtTheNextCommit`).
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**

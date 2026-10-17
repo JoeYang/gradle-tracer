@@ -404,6 +404,15 @@ public final class Cli {
                 Path previousHashes = null;
                 boolean bazelAlive = impacts != null;
                 for (Commit commit : commits) {
+                    // Checked here too, not only after a failed key lookup: an interrupted bazel-diff call
+                    // degrades silently (as an ordinary bazel-diff failure, below), so the flag can still be set
+                    // going into the next commit even though nothing in the previous iteration reported it as
+                    // "interrupted". Catching it here, before this commit's checkout or any of its provider
+                    // calls, is what stops it reaching the next checkout and failing there with a confusing
+                    // unrelated error instead.
+                    if (Thread.currentThread().isInterrupted()) {
+                        throw new ProviderException("interrupted");
+                    }
                     Path worktree = pool.checkout(commit);
                     Optional<TaskKey> key = Optional.empty();
                     Optional<String> error = Optional.empty();
