@@ -3295,12 +3295,24 @@ Append to `docs/tracer.md`, then make **Commit B** — `GradleKeyProvider`, `Gra
 (`--offline` when asked) and `CacheDebugLog` parses, per task block:
 - `Appending implementation to build cache key: <class>@<hash>` → implementation hash (changes with build logic)
 - `Appending input value fingerprint for '<property>' ...: <hash>` → scalar inputs such as `options.compilerArgs`
-- `Appending input file fingerprints for '<property>' ...: <hash> - <NORMALIZATION>{<path>=<'normalized'|IGNORED> / <hash>, ...}` → per-file hashes
-- `Build cache key for task '<path>' is <hash>` → the key
-Project dependencies appear as class directories on the compile classpath and as jars on the runtime classpath, which is why
-culprits read `core classes` under `compileJava` and `core.jar` under `fingerprint`. A task that prints `Non-cacheable because ...`
-(jar, installDist, …) has no key; the provider reports the reason instead of a silent `clean`. An UP-TO-DATE task prints the
-key line without input lines; the tracer always runs in a fresh worktree, so the inputs are present whenever the key changed.
+- `Appending input file fingerprints for '<property>' ...: <hash> - <NORMALIZATION>{<path>=<'normalized'|IGNORED> / <hash|DIR|MISSING>, ...}` → per-file hashes
+  (a directory or a deleted file prints `DIR`/`MISSING` in place of a hash; project dependencies otherwise appear as class
+  directories on the compile classpath and as jars on the runtime classpath, which later commits use to name a culprit like
+  `core classes` under `compileJava` versus `core.jar` under `fingerprint`)
+- `Build cache key for task '<path>' is <hash>` → the key, which closes the block
+- `Non-cacheable because <reason>` (jar, installDist, …) also closes the block with no key; the provider reports the reason
+  instead of a silent `clean`
+Any other `Appending ...` line inside the task's own block — a normalization token outside the known set, a malformed
+`{...}` entry, anything a future Gradle version prints differently — fails parsing immediately with "unrecognised cache
+debug output" naming the line, per spec §9, rather than silently dropping or mis-splitting it into a wrong key. An
+UP-TO-DATE task prints the key line without input lines; the tracer always runs in a fresh worktree, so the inputs are
+present whenever the key changed.
+
+When `gradlew` exits non-zero, the provider looks for Gradle's own `* What went wrong:` header and reports the first
+non-blank line after it (falling back to the first non-blank stderr/stdout line when Gradle didn't print that header),
+naming the task path in the message either way — so a real compile error or an unknown task reads as the actual cause
+instead of the generic "FAILURE: Build failed with an exception." banner. Computing *which* culprit changed between two
+commits' `TaskKey`s, and the `./trace` revision-range walk that drives this provider, arrive in later commits.
 ```
 
 ```bash
