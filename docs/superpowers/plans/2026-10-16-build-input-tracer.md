@@ -6143,8 +6143,9 @@ class CliOptionsTest {
         assertEquals(Path.of("/fallback", "gradle-tracer"), root);
     }
 
-    // ./trace changes directory before main() runs, so a relative TMPDIR must resolve against the CWD
-    // at call time rather than staying relative.
+    // Child processes such as <worktree>/gradlew run inside the worktree, so a relative root would
+    // resolve differently there; resolve it once against the JVM's working directory (the repo root
+    // after ./trace's cd).
     @Test void defaultScratchRootIsAbsoluteEvenForARelativeTmpdir() {
         Path root = Cli.defaultScratchRoot(name -> "TMPDIR".equals(name) ? "rel/dir" : null, () -> "/fallback");
         assertTrue(root.isAbsolute(), root.toString());
@@ -6219,11 +6220,13 @@ class CliOptionsTest {
     @Test void rejectsDotAsAppName() {
         UsageException e = fails(".");
         assertTrue(e.getMessage().contains("."), e.getMessage());
+        assertTrue(e.getMessage().contains("is not a valid app name"), e.getMessage());
     }
 
     @Test void rejectsDotDotAsAppName() {
         UsageException e = fails("..");
         assertTrue(e.getMessage().contains(".."), e.getMessage());
+        assertTrue(e.getMessage().contains("is not a valid app name"), e.getMessage());
     }
 
     @Test void rejectsPathTraversalAppName() {
@@ -6416,8 +6419,9 @@ public final class Cli {
     static Path defaultScratchRoot(Function<String, String> getenv, Supplier<String> javaIoTmpdir) {
         String tmpdir = getenv.apply("TMPDIR");
         String base = (tmpdir != null && !tmpdir.isBlank()) ? tmpdir : javaIoTmpdir.get();
-        // ./trace changes directory before main() runs, so a relative TMPDIR must be resolved against
-        // the CWD at call time instead of staying relative.
+        // Child processes such as <worktree>/gradlew run inside the worktree, so a relative root would
+        // resolve differently there; resolve it once against the JVM's working directory (the repo root
+        // after ./trace's cd).
         return Path.of(base, "gradle-tracer").toAbsolutePath().normalize();
     }
 
@@ -6468,27 +6472,29 @@ and `trace <app> --at REV [--task T] [--offline] [--keep-worktrees] [--timeout-m
 
 `<app>` must match `[A-Za-z0-9][A-Za-z0-9_-]*`; a blank, path-like (`.`, `..`, `../..`) or option-like (`-h`) name
 is a usage error naming the rejected value. Every value-taking option (`--from`, `--to`, `--at`, `--task`,
-`--tsv-out`, `--timeout-minutes`) rejects a value that is blank or starts with `-`, so a missing value can't
-silently swallow the next option: `--from --to y` fails naming `--from`, rather than failing later on `y` as an
-unknown option; a value missing at the end of the arguments fails the same way, naming the option. The one
-exception is `--timeout-minutes`: its values are validated as integers instead (see below). `--at` prints the
-key and its composition with no comparison, so it rejects `--tsv`, `--tsv-out` and `--no-bazel` alongside it,
-naming both flags in the error.
+`--tsv-out`) rejects a value that is blank or starts with `-`, so a missing value can't silently swallow the
+next option: `--from --to y` fails naming `--from`, rather than failing later on `y` as an unknown option; a
+value missing at the end of the arguments fails the same way, naming the option. The one exception is
+`--timeout-minutes`: its values are validated as integers instead (see below). `--at` prints the key and its
+composition with no comparison, so it rejects `--tsv`, `--tsv-out` and `--no-bazel` alongside it, naming both
+flags in the error.
 
 `Cli.defaultScratchRoot` computes one fixed scratch root, `$TMPDIR/gradle-tracer`, that worktrees and bazel-diff
 hash files will live under once the range walk is wired (never per pid — a fixed root is how the next run finds
 and sweeps a killed run's leftovers). On Linux the JVM does not read `$TMPDIR` into `java.io.tmpdir` (it is
 always `/tmp`), so it reads the `TMPDIR` environment variable directly and only falls back to `java.io.tmpdir`
 when it is unset or blank, keeping the documented path real; either way, the result is resolved to an absolute,
-normalized path, since `./trace` changes directory before `main` runs and a relative `TMPDIR` would otherwise
-resolve against the wrong directory.
+normalized path, since a child process such as `<worktree>/gradlew` runs inside the worktree, so a relative
+root would resolve differently there — it is resolved once against the JVM's working directory (the repo root
+after `./trace`'s `cd`) instead.
 
 `--timeout-minutes` values are validated as integers instead of the generic blank-or-dash check above. The
 value is checked against ASCII digits with an optional leading `-` before parsing: anything else, including a
-non-ASCII digit, is "needs a whole number"; a value that is all ASCII digits but too large to fit a `long`, or
-that overflows `Duration.ofMinutes`, is "too large"; and a value that parses but is zero or negative is "must
-be a positive integer". `DefaultProcessRunner` rejects a non-positive timeout with an unchecked exception, so
-the CLI validates it here as a usage error instead of ever passing one through.
+non-ASCII digit, is "needs a whole number"; a value that is all ASCII digits but too large to fit a `long`
+(including a negative one that is too long to fit), or that overflows `Duration.ofMinutes`, is "too large"; and
+a value that parses but is zero or negative is "must be a positive integer". `DefaultProcessRunner` rejects a
+non-positive timeout with an unchecked exception, so the CLI validates it here as a usage error instead of ever
+passing one through.
 ```
 
 ```bash
@@ -6517,13 +6523,20 @@ message; (2) `<app>` was validated only against a loose `--` prefix check, so `.
 blank name all reached the filesystem lookup — it must now match `[A-Za-z0-9][A-Za-z0-9_-]*`; (3) `--at` (spec:
 "print the key and its composition, no comparison") silently accepted `--tsv`, `--tsv-out` and `--no-bazel`,
 which make no sense without a comparison — each is now rejected by name alongside `--at`; (4)
-`defaultScratchRoot` could return a relative path for a relative `TMPDIR`, which `./trace`'s directory change
-would then resolve against the wrong CWD — it now returns an absolute, normalized path. A third round added
-missing-value tests for the remaining options (only `--at` had one before), tightened `docs/tracer.md` to
-describe the scratch root as something `defaultScratchRoot` computes rather than something already live, added
-the reason for the interim exit code to the intro paragraph, and rewrote every review-history code comment
-("Amendment (code review): ...", "Fix (code review round 2): ...") to state the reason for the code instead of
-the fact that review produced it.
+`defaultScratchRoot` could return a relative path for a relative `TMPDIR` — a child process such as
+`<worktree>/gradlew` runs inside the worktree, so a relative root would resolve differently there, and it now
+returns an absolute, normalized path, resolved once against the JVM's working directory instead. A third
+round added missing-value tests for the remaining options (only `--at` had one before), tightened
+`docs/tracer.md` to describe the scratch root as something `defaultScratchRoot` computes rather than something
+already live, added the reason for the interim exit code to the intro paragraph, and rewrote every
+review-history code comment ("Amendment (code review): ...", "Fix (code review round 2): ...") to state the
+reason for the code instead of the fact that review produced it. A fourth, small follow-up corrected the
+scratch-root rationale again — the earlier wording blamed `./trace`'s directory change, when the real reason is
+that a child process's working directory (the worktree, not the repo root) is what a relative path would
+otherwise resolve against — dropped `--timeout-minutes` from the list of options covered by the generic
+blank-or-dash check (it was already carved out as the one exception, so listing it there too was redundant),
+noted that an overlong negative value is also "too large", and strengthened the `.`/`..` app-name assertions to
+check the message names the pattern violation, not just that it contains the literal characters.
 
 ---
 
@@ -6884,6 +6897,8 @@ public final class Cli {
             try {
                 return Duration.ofMinutes(minutes);
             } catch (ArithmeticException e) {
+                // Duration.ofMinutes overflows for absurdly large inputs; map that to a usage error instead
+                // of letting ArithmeticException escape main().
                 throw new UsageException("--timeout-minutes is too large, got '" + value + "'");
             }
         }
@@ -6915,8 +6930,9 @@ public final class Cli {
     static Path defaultScratchRoot(Function<String, String> getenv, Supplier<String> javaIoTmpdir) {
         String tmpdir = getenv.apply("TMPDIR");
         String base = (tmpdir != null && !tmpdir.isBlank()) ? tmpdir : javaIoTmpdir.get();
-        // ./trace changes directory before main() runs, so a relative TMPDIR must be resolved against
-        // the CWD at call time instead of staying relative.
+        // Child processes such as <worktree>/gradlew run inside the worktree, so a relative root would
+        // resolve differently there; resolve it once against the JVM's working directory (the repo root
+        // after ./trace's cd).
         return Path.of(base, "gradle-tracer").toAbsolutePath().normalize();
     }
 

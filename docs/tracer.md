@@ -90,24 +90,26 @@ and `trace <app> --at REV [--task T] [--offline] [--keep-worktrees] [--timeout-m
 
 `<app>` must match `[A-Za-z0-9][A-Za-z0-9_-]*`; a blank, path-like (`.`, `..`, `../..`) or option-like (`-h`) name
 is a usage error naming the rejected value. Every value-taking option (`--from`, `--to`, `--at`, `--task`,
-`--tsv-out`, `--timeout-minutes`) rejects a value that is blank or starts with `-`, so a missing value can't
-silently swallow the next option: `--from --to y` fails naming `--from`, rather than failing later on `y` as an
-unknown option; a value missing at the end of the arguments fails the same way, naming the option. The one
-exception is `--timeout-minutes`: its values are validated as integers instead (see below). `--at` prints the
-key and its composition with no comparison, so it rejects `--tsv`, `--tsv-out` and `--no-bazel` alongside it,
-naming both flags in the error.
+`--tsv-out`) rejects a value that is blank or starts with `-`, so a missing value can't silently swallow the
+next option: `--from --to y` fails naming `--from`, rather than failing later on `y` as an unknown option; a
+value missing at the end of the arguments fails the same way, naming the option. The one exception is
+`--timeout-minutes`: its values are validated as integers instead (see below). `--at` prints the key and its
+composition with no comparison, so it rejects `--tsv`, `--tsv-out` and `--no-bazel` alongside it, naming both
+flags in the error.
 
 `Cli.defaultScratchRoot` computes one fixed scratch root, `$TMPDIR/gradle-tracer`, that worktrees and bazel-diff
 hash files will live under once the range walk is wired (never per pid — a fixed root is how the next run finds
 and sweeps a killed run's leftovers). On Linux the JVM does not read `$TMPDIR` into `java.io.tmpdir` (it is
 always `/tmp`), so it reads the `TMPDIR` environment variable directly and only falls back to `java.io.tmpdir`
 when it is unset or blank, keeping the documented path real; either way, the result is resolved to an absolute,
-normalized path, since `./trace` changes directory before `main` runs and a relative `TMPDIR` would otherwise
-resolve against the wrong directory.
+normalized path, since a child process such as `<worktree>/gradlew` runs inside the worktree, so a relative
+root would resolve differently there — it is resolved once against the JVM's working directory (the repo root
+after `./trace`'s `cd`) instead.
 
 `--timeout-minutes` values are validated as integers instead of the generic blank-or-dash check above. The
 value is checked against ASCII digits with an optional leading `-` before parsing: anything else, including a
-non-ASCII digit, is "needs a whole number"; a value that is all ASCII digits but too large to fit a `long`, or
-that overflows `Duration.ofMinutes`, is "too large"; and a value that parses but is zero or negative is "must
-be a positive integer". `DefaultProcessRunner` rejects a non-positive timeout with an unchecked exception, so
-the CLI validates it here as a usage error instead of ever passing one through.
+non-ASCII digit, is "needs a whole number"; a value that is all ASCII digits but too large to fit a `long`
+(including a negative one that is too long to fit), or that overflows `Duration.ofMinutes`, is "too large"; and
+a value that parses but is zero or negative is "must be a positive integer". `DefaultProcessRunner` rejects a
+non-positive timeout with an unchecked exception, so the CLI validates it here as a usage error instead of ever
+passing one through.

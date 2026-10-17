@@ -183,8 +183,9 @@ class CliOptionsTest {
         assertEquals(Path.of("/fallback", "gradle-tracer"), root);
     }
 
-    // ./trace changes directory before main() runs, so a relative TMPDIR must resolve against the CWD
-    // at call time rather than staying relative.
+    // Child processes such as <worktree>/gradlew run inside the worktree, so a relative root would
+    // resolve differently there; resolve it once against the JVM's working directory (the repo root
+    // after ./trace's cd).
     @Test void defaultScratchRootIsAbsoluteEvenForARelativeTmpdir() {
         Path root = Cli.defaultScratchRoot(name -> "TMPDIR".equals(name) ? "rel/dir" : null, () -> "/fallback");
         assertTrue(root.isAbsolute(), root.toString());
@@ -259,11 +260,13 @@ class CliOptionsTest {
     @Test void rejectsDotAsAppName() {
         UsageException e = fails(".");
         assertTrue(e.getMessage().contains("."), e.getMessage());
+        assertTrue(e.getMessage().contains("is not a valid app name"), e.getMessage());
     }
 
     @Test void rejectsDotDotAsAppName() {
         UsageException e = fails("..");
         assertTrue(e.getMessage().contains(".."), e.getMessage());
+        assertTrue(e.getMessage().contains("is not a valid app name"), e.getMessage());
     }
 
     @Test void rejectsPathTraversalAppName() {

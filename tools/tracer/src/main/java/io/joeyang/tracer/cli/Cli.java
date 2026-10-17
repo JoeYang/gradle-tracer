@@ -155,8 +155,9 @@ public final class Cli {
     static Path defaultScratchRoot(Function<String, String> getenv, Supplier<String> javaIoTmpdir) {
         String tmpdir = getenv.apply("TMPDIR");
         String base = (tmpdir != null && !tmpdir.isBlank()) ? tmpdir : javaIoTmpdir.get();
-        // ./trace changes directory before main() runs, so a relative TMPDIR must be resolved against
-        // the CWD at call time instead of staying relative.
+        // Child processes such as <worktree>/gradlew run inside the worktree, so a relative root would
+        // resolve differently there; resolve it once against the JVM's working directory (the repo root
+        // after ./trace's cd).
         return Path.of(base, "gradle-tracer").toAbsolutePath().normalize();
     }
 
