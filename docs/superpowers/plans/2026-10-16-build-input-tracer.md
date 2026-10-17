@@ -4085,7 +4085,8 @@ exit (asserting the message names the repo) and a `ProcessException` (asserting 
 It also corrected `docs/bazel-build.md`'s bazel-diff section: the measured hashes are identical with or without
 the extra `MODULE.bazel.lock` entries, so the real effect of letting the lockfile drift is a dirty `git status`,
 not drifting hashes as an earlier draft claimed; and `get-impacted-targets`, not just `generate-hashes`, also
-runs `bazel mod graph` in the repo checkout.
+runs `bazel mod graph` — `generate-hashes` in its `-w` workspace (the worktree being hashed), `get-impacted-targets`
+in the repo checkout, not both in the repo checkout as a later draft of this note first said.
 
 ---
 ### Task 9: RevisionRange and WorktreePool (git)

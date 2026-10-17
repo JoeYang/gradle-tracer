@@ -42,9 +42,10 @@ Override with `BAZEL_DIFF=/path/to/binary`. The tracer runs `generate-hashes -w 
 per commit and `get-impacted-targets` per adjacent pair, then `bazel clean --expunge` in the worktree so each throwaway
 output base is removed. Building bazel-diff from the Bazel Central Registry module was rejected: it compiles Rust via rules_rust.
 
-Both `generate-hashes` and `get-impacted-targets` run `bazel mod graph` first in the repo checkout, which evaluates
-two module extensions (`rules_android`'s `apksig_extension` and `com_android_dex_extension`) that no target in this
-repo otherwise reaches, adding ~36 lines to `MODULE.bazel.lock`; `bazel build`/`test`/`query` alone never touch them.
+Both commands run `bazel mod graph` first — `generate-hashes` in its `-w` workspace (the worktree being hashed),
+`get-impacted-targets` in the repo checkout — which evaluates two module extensions (`rules_android`'s
+`apksig_extension` and `com_android_dex_extension`) that no target in this repo otherwise reaches, adding ~36 lines
+to `MODULE.bazel.lock`; `bazel build`/`test`/`query` alone never touch them.
 Once that fuller lockfile is committed it is stable — repeated `generate-hashes`, `get-impacted-targets`, and
 `bazel test //...` runs add nothing further. The measured hashes themselves are identical with or without those
 extra entries; the actual effect of an uncommitted lockfile is a dirty `git status`, not drifting hashes. Re-run
