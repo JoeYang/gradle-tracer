@@ -2483,10 +2483,33 @@ Expected: `BUILD SUCCESSFUL`, 13 tests.
 0 no change in range · 1 usage error · 2 a tool failed (some row is BUILD-FAILED) · 3 at least one CHANGED
 ```
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Commit, split in two**
+
+A single commit of every file below would exceed the repo's 400-line hard
+maximum (the full set is ~415 hand-written lines), so this step is two
+commits instead of one, following the rule that interfaces and types go in
+their own commit before implementation.
+
+**Commit A — types and interfaces:**
 
 ```bash
-git add settings.gradle.kts tools/tracer docs/tracer.md
+git add settings.gradle.kts tools/tracer/build.gradle.kts tools/tracer/BUILD.bazel \
+  tools/tracer/gradle.lockfile \
+  tools/tracer/src/main/java/io/joeyang/tracer/cli/ProcessRunner.java \
+  tools/tracer/src/main/java/io/joeyang/tracer/cli/ProcessException.java \
+  tools/tracer/src/main/java/io/joeyang/tracer/cli/ProviderException.java \
+  tools/tracer/src/main/java/io/joeyang/tracer/cli/UsageException.java \
+  tools/tracer/src/main/java/io/joeyang/tracer/cli/Commit.java \
+  tools/tracer/src/main/java/io/joeyang/tracer/cli/TaskKey.java \
+  tools/tracer/src/main/java/io/joeyang/tracer/cli/Status.java \
+  tools/tracer/src/main/java/io/joeyang/tracer/cli/BazelStatus.java \
+  tools/tracer/src/main/java/io/joeyang/tracer/cli/Verdict.java \
+  tools/tracer/src/main/java/io/joeyang/tracer/cli/KeyProvider.java \
+  tools/tracer/src/main/java/io/joeyang/tracer/cli/ImpactProvider.java \
+  tools/tracer/src/test/java/io/joeyang/tracer/cli/CommitTest.java \
+  tools/tracer/src/test/java/io/joeyang/tracer/cli/TaskKeyTest.java \
+  tools/tracer/src/test/java/io/joeyang/tracer/cli/ProcessRunnerResultTest.java \
+  tools/tracer/src/test/java/io/joeyang/tracer/cli/FakeProcessRunner.java
 git commit -m "feat(tracer): add module skeleton with core types and interfaces
 
 Fixes the vocabulary before any behaviour: Commit, TaskKey (key plus the
@@ -2494,6 +2517,21 @@ per-input fingerprints the culprit column is derived from), Verdict,
 status enums, the ProcessRunner seam used for fault injection, and the
 two oracle interfaces. The CLI only prints usage so the module builds
 under both build systems from the first commit."
+```
+
+**Commit B — the Cli entry point and docs:**
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+  tools/tracer/src/test/java/io/joeyang/tracer/cli/CliUsageTest.java \
+  docs/tracer.md
+git commit -m "feat(tracer): add the Cli entry point and tracer docs
+
+Cli is the only class a user ever touches: it owns the usage contract
+(flags, exit codes) that every later task's behaviour builds on, and
+docs/tracer.md documents that contract plus the vocabulary from the
+previous commit. Kept separate from the type/interface commit so each
+commit stays under the repo's line-count limit."
 ```
 
 ---
