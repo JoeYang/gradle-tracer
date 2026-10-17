@@ -154,6 +154,24 @@ class BazelDiffProviderTest {
         assertFalse(runner.ran("bazel clean"), "must not try to clean up a Bazel server that never started: " + runner.calls);
     }
 
+    @Test void timeoutDuringGenerateHashesStillCleansUpTheWorktreeServer() {
+        FakeProcessRunner runner = new FakeProcessRunner()
+                .failWith(generate(), ProcessException.timeout(List.of(binary.toString()), Duration.ofMinutes(1)))
+                .on("bazel clean --expunge", 0, "", "");
+        assertThrows(ProviderException.class, () -> provider(runner, false).hashes(worktree, out));
+        assertTrue(runner.ran("bazel clean --expunge"),
+                "a timeout may have left a Bazel server running in the worktree, so it must still be cleaned up: " + runner.calls);
+    }
+
+    @Test void interruptionDuringGenerateHashesStillCleansUpTheWorktreeServer() {
+        FakeProcessRunner runner = new FakeProcessRunner()
+                .failWith(generate(), ProcessException.interrupted(List.of(binary.toString())))
+                .on("bazel clean --expunge", 0, "", "");
+        assertThrows(ProviderException.class, () -> provider(runner, false).hashes(worktree, out));
+        assertTrue(runner.ran("bazel clean --expunge"),
+                "an interrupted run may have left a Bazel server running in the worktree, so it must still be cleaned up: " + runner.calls);
+    }
+
     @Test void cleanupFailureIsIgnored() throws Exception {
         FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 0, "", "", () -> writeQuietly(out, "{}"))
                 .failWith("bazel clean", ProcessException.timeout(List.of("bazel"), Duration.ofSeconds(1)));

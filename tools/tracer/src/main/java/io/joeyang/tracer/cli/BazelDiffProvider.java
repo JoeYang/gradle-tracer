@@ -79,10 +79,19 @@ public final class BazelDiffProvider implements ImpactProvider {
         } catch (IOException e) {
             throw new ProviderException("cannot remove the stale hashes file " + output + ": " + e.getMessage(), e);
         }
-        boolean started = false;
+        boolean skipCleanup = false;
         try {
-            ProcessRunner.Result result = run(repo, command);
-            started = true;
+            ProcessRunner.Result result;
+            try {
+                result = run(repo, command);
+            } catch (ProviderException e) {
+                // Nothing to clean up only when bazel-diff never launched (e.g. the binary is missing): no Bazel server ran
+                // in the worktree. A timeout or interruption may well have started one, so cleanup must still run then.
+                if (e.getCause() instanceof ProcessException pe && pe.startFailed()) {
+                    skipCleanup = true;
+                }
+                throw e;
+            }
             if (!result.ok()) {
                 throw new ProviderException("bazel-diff generate-hashes failed for " + worktree + ": " + bazelError(result));
             }
@@ -91,8 +100,7 @@ public final class BazelDiffProvider implements ImpactProvider {
             }
             return output;
         } finally {
-            // Nothing to clean up if bazel-diff never started (e.g. the binary is missing): no Bazel server ran in the worktree.
-            if (started) {
+            if (!skipCleanup) {
                 cleanUpServer(worktree);
             }
         }

@@ -3682,6 +3682,24 @@ class BazelDiffProviderTest {
         assertFalse(runner.ran("bazel clean"), "must not try to clean up a Bazel server that never started: " + runner.calls);
     }
 
+    @Test void timeoutDuringGenerateHashesStillCleansUpTheWorktreeServer() {
+        FakeProcessRunner runner = new FakeProcessRunner()
+                .failWith(generate(), ProcessException.timeout(List.of(binary.toString()), Duration.ofMinutes(1)))
+                .on("bazel clean --expunge", 0, "", "");
+        assertThrows(ProviderException.class, () -> provider(runner, false).hashes(worktree, out));
+        assertTrue(runner.ran("bazel clean --expunge"),
+                "a timeout may have left a Bazel server running in the worktree, so it must still be cleaned up: " + runner.calls);
+    }
+
+    @Test void interruptionDuringGenerateHashesStillCleansUpTheWorktreeServer() {
+        FakeProcessRunner runner = new FakeProcessRunner()
+                .failWith(generate(), ProcessException.interrupted(List.of(binary.toString())))
+                .on("bazel clean --expunge", 0, "", "");
+        assertThrows(ProviderException.class, () -> provider(runner, false).hashes(worktree, out));
+        assertTrue(runner.ran("bazel clean --expunge"),
+                "an interrupted run may have left a Bazel server running in the worktree, so it must still be cleaned up: " + runner.calls);
+    }
+
     @Test void cleanupFailureIsIgnored() throws Exception {
         FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 0, "", "", () -> writeQuietly(out, "{}"))
                 .failWith("bazel clean", ProcessException.timeout(List.of("bazel"), Duration.ofSeconds(1)));
@@ -3869,10 +3887,19 @@ public final class BazelDiffProvider implements ImpactProvider {
         } catch (IOException e) {
             throw new ProviderException("cannot remove the stale hashes file " + output + ": " + e.getMessage(), e);
         }
-        boolean started = false;
+        boolean skipCleanup = false;
         try {
-            ProcessRunner.Result result = run(repo, command);
-            started = true;
+            ProcessRunner.Result result;
+            try {
+                result = run(repo, command);
+            } catch (ProviderException e) {
+                // Nothing to clean up only when bazel-diff never launched (e.g. the binary is missing): no Bazel server ran
+                // in the worktree. A timeout or interruption may well have started one, so cleanup must still run then.
+                if (e.getCause() instanceof ProcessException pe && pe.startFailed()) {
+                    skipCleanup = true;
+                }
+                throw e;
+            }
             if (!result.ok()) {
                 throw new ProviderException("bazel-diff generate-hashes failed for " + worktree + ": " + bazelError(result));
             }
@@ -3881,8 +3908,7 @@ public final class BazelDiffProvider implements ImpactProvider {
             }
             return output;
         } finally {
-            // Nothing to clean up if bazel-diff never started (e.g. the binary is missing): no Bazel server ran in the worktree.
-            if (started) {
+            if (!skipCleanup) {
                 cleanUpServer(worktree);
             }
         }
@@ -4017,6 +4043,12 @@ validation, a hardened fetch script, a doc correction) plus one extra commit, `b
 extensions bazel-diff's mod graph evaluates`, committing the `MODULE.bazel.lock` growth (`bazel mod graph`
 evaluating `rules_android`'s `apksig_extension`/`com_android_dex_extension`, ~36 lines) that bazel-diff's first
 real run triggers — see `docs/bazel-build.md`'s bazel-diff section for why.
+
+A re-review round found that a timed-out or interrupted `generate-hashes` left `started` false, skipping
+`bazel clean --expunge` in exactly the case most likely to leave a Bazel server running. The fix adds an
+additive `startFailed()` accessor to `tools/tracer/src/main/java/io/joeyang/tracer/cli/ProcessException.java`
+(defined for Task 6, not reproduced here) distinguishing "could not launch" (`cannotStart`, cleanup skipped —
+there is nothing to clean up) from "ran but did not finish" (`timeout`/`interrupted`, cleanup still runs).
 
 ---
 ### Task 9: RevisionRange and WorktreePool (git)
