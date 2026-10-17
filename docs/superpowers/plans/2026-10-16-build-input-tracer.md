@@ -3614,7 +3614,7 @@ public final class BazelDiffProvider implements ImpactProvider {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 52 tests at this point in the sequence. Also `bazel test //tools/tracer/...` passes.
+Expected: `BUILD SUCCESSFUL`; 59 tests at this point in the sequence (the Task 7 review fixes added 7). Also `bazel test //tools/tracer/...` passes.
 
 - [ ] **Step 6: Try it for real against the repo**
 
@@ -4022,7 +4022,7 @@ public final class WorktreePool implements AutoCloseable {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 63 tests at this point in the sequence.
+Expected: `BUILD SUCCESSFUL`; 70 tests at this point in the sequence.
 
 - [ ] **Step 5: Document and commit**
 
@@ -4450,7 +4450,7 @@ public final class TableRenderer {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 78 tests at this point in the sequence. Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
+Expected: `BUILD SUCCESSFUL`; 85 tests at this point in the sequence. Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
 
 - [ ] **Step 5: Document and commit**
 
@@ -4609,7 +4609,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 83 tests at this point in the sequence; the timeout test finishes in well under a second.
+Expected: `BUILD SUCCESSFUL`; 90 tests at this point in the sequence; the timeout test finishes in well under a second.
 
 - [ ] **Step 5: Commit**
 
@@ -4830,7 +4830,7 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 95 tests at this point in the sequence (the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 102 tests at this point in the sequence (the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -5333,7 +5333,7 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 106 tests at this point in the sequence. Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 113 tests at this point in the sequence. Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 
