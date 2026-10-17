@@ -1,6 +1,8 @@
 package io.joeyang.tracer.cli;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Matcher;
@@ -18,12 +20,17 @@ final class CacheDebugLog {
     private static final Pattern TASK_HEADER = Pattern.compile("^> Task (\\S+)");
     private static final Pattern IMPLEMENTATION = Pattern.compile("^Appending implementation to build cache key: (.+)$");
     private static final Pattern ADDITIONAL_IMPLEMENTATION =
-            Pattern.compile("^Appending additional implementation to build cache key: .+$");
+            Pattern.compile("^Appending additional implementation to build cache key: (.+)$");
     private static final Pattern VALUE = Pattern.compile("^Appending input value fingerprint for '([^']+)' to build cache key: ([0-9a-f]+)$");
     private static final Pattern FILES = Pattern.compile("^Appending input file fingerprints for '([^']+)' to build cache key: [0-9a-f]+ - [A-Z_]+\\{(.*)\\}$");
     private static final Pattern OUTPUT_PROPERTY = Pattern.compile("^Appending output property name to build cache key: .+$");
-    /** A single already-isolated {@code <path>=<'normalized'|IGNORED> / <hash|DIR|MISSING>} entry. */
-    private static final Pattern ENTRY = Pattern.compile("^/.+=(?:'.*'|IGNORED) / (?:[0-9a-f]+|DIR|MISSING)$");
+    /**
+     * A single already-isolated {@code <path>=<'normalized'|IGNORED> / <hash|DIR|MISSING>} entry, with the
+     * path captured greedily so a path containing its own {@code '='} does not get cut at the wrong one:
+     * the engine backtracks to the rightmost {@code '='} for which the rest of the pattern still matches
+     * through end-of-string, which is always the real delimiter.
+     */
+    private static final Pattern ENTRY = Pattern.compile("^(/.+)=(?:'.*'|IGNORED) / (?:([0-9a-f]+)|DIR|MISSING)$");
     private static final Pattern KEY = Pattern.compile("^Build cache key for task '([^']+)' is ([0-9a-f]+)$");
     private static final Pattern NON_CACHEABLE = Pattern.compile("^Non-cacheable because (.+)$");
 
@@ -55,7 +62,7 @@ final class CacheDebugLog {
                           Map<String, String> values, String key, String nonCacheableReason) {}
 
     private static Block blockFor(String output, String taskPath) {
-        String implementation = "";
+        List<String> implementations = new ArrayList<>();
         Map<String, String> values = new LinkedHashMap<>();
         Map<String, Map<String, String>> files = new LinkedHashMap<>();
         boolean inTarget = false;
@@ -64,7 +71,7 @@ final class CacheDebugLog {
             Matcher header = TASK_HEADER.matcher(line);
             if (header.find()) {
                 if (inTarget) {
-                    return new Block(implementation, files, values, null, null);
+                    return new Block(implementation(implementations), files, values, null, null);
                 }
                 inTarget = header.group(1).equals(taskPath);
                 continue;
@@ -74,15 +81,17 @@ final class CacheDebugLog {
             }
             Matcher m;
             if ((m = KEY.matcher(line)).matches()) {
-                return new Block(implementation, files, values, m.group(2), null);
+                return new Block(implementation(implementations), files, values, m.group(2), null);
             }
             if ((m = NON_CACHEABLE.matcher(line)).matches()) {
-                return new Block(implementation, files, values, null, m.group(1));
+                return new Block(implementation(implementations), files, values, null, m.group(1));
             }
             if ((m = IMPLEMENTATION.matcher(line)).matches()) {
-                implementation = m.group(1);
-            } else if (ADDITIONAL_IMPLEMENTATION.matcher(line).matches()) {
-                // A decorator/validation-action implementation hash; the primary one above is enough to spot a change.
+                implementations.add(m.group(1));
+            } else if ((m = ADDITIONAL_IMPLEMENTATION.matcher(line)).matches()) {
+                // A task action / doLast block's own implementation hash; folded in alongside the task
+                // class's so a build-logic change made only through a task action is still visible here.
+                implementations.add(m.group(1));
             } else if ((m = VALUE.matcher(line)).matches()) {
                 values.put(m.group(1), m.group(2));
             } else if ((m = FILES.matcher(line)).matches()) {
@@ -93,7 +102,11 @@ final class CacheDebugLog {
                 throw unrecognised(line);
             }
         }
-        return new Block(implementation, files, values, null, null);
+        return new Block(implementation(implementations), files, values, null, null);
+    }
+
+    private static String implementation(List<String> implementations) {
+        return String.join(", ", implementations);
     }
 
     private static Map<String, String> entries(String body, String originalLine) {
@@ -104,11 +117,12 @@ final class CacheDebugLog {
         // Split before parsing each entry so a "'" inside a normalized path can never merge two entries:
         // every entry boundary is ", " followed by the next entry's absolute path, which always starts with "/".
         for (String entry : body.split(", (?=/)")) {
-            if (!ENTRY.matcher(entry).matches()) {
+            Matcher m = ENTRY.matcher(entry);
+            if (!m.matches()) {
                 throw unrecognised(originalLine);
             }
-            int lastSlashSeparator = entry.lastIndexOf(" / ");
-            out.put(entry.substring(0, entry.indexOf('=')), entry.substring(lastSlashSeparator + 3));
+            String value = m.group(2) != null ? m.group(2) : entry.endsWith("DIR") ? "DIR" : "MISSING";
+            out.put(m.group(1), value);
         }
         return out;
     }

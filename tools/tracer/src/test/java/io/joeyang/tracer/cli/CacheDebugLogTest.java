@@ -21,7 +21,9 @@ class CacheDebugLogTest {
 
         assertEquals(TASK, key.taskPath());
         assertEquals("35c0f7cbe157cd2e30090cc5510cec8c", key.key());
-        assertEquals("org.gradle.api.tasks.compile.JavaCompile_Decorated@bbbb", key.implementation());
+        // Fixture repeats the same class in its "additional implementation" line; both are folded in.
+        assertEquals("org.gradle.api.tasks.compile.JavaCompile_Decorated@bbbb, org.gradle.api.tasks.compile.JavaCompile_Decorated@bbbb",
+                key.implementation());
         assertEquals(Map.of("options.release", "91e6b2f4b53f9e7b3eadb03039173cc5", "options.compilerArgs", "4444"), key.valueFingerprints());
         assertEquals(Map.of(
                 "/w/core/build/classes/java/main/io/joeyang/tracer/core/Greeter.class", "5042bbb7be5171b8d45ca1e0a8193342",
@@ -153,6 +155,32 @@ class CacheDebugLogTest {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> CacheDebugLog.parse(log, ":app:appA:fingerprint"));
         assertTrue(e.getMessage().contains("unrecognised cache debug output"), e.getMessage());
         assertTrue(e.getMessage().contains("options.release"), e.getMessage());
+    }
+
+    @Test void pathsContainingAnEqualsSignAreNotCutAtTheWrongOne() {
+        String log = """
+                > Task :app:appA:fingerprint
+                Appending implementation to build cache key: io.joeyang.tracer.buildlogic.FingerprintTask_Decorated@0001
+                Appending input file fingerprints for 'stableSources' to build cache key: aaaa - RELATIVE_PATH{/w/src/io/a=b.java='a=b.java' / 1111, /w/src/io/c=d.java=IGNORED / 2222}
+                Build cache key for task ':app:appA:fingerprint' is b5a1bb8d226bf944a43ec45392201d50
+                """;
+        TaskKey key = CacheDebugLog.parse(log, ":app:appA:fingerprint").orElseThrow();
+        Map<String, String> entries = key.fileFingerprints().get("stableSources");
+        assertEquals(2, entries.size());
+        assertEquals("1111", entries.get("/w/src/io/a=b.java"));
+        assertEquals("2222", entries.get("/w/src/io/c=d.java"));
+    }
+
+    @Test void additionalImplementationLinesAreFoldedIntoTheImplementationFingerprint() {
+        String log = """
+                > Task :app:appA:fingerprint
+                Appending implementation to build cache key: io.joeyang.tracer.buildlogic.FingerprintTask_Decorated@0001
+                Appending additional implementation to build cache key: org.gradle.api.internal.AbstractTask$TaskActionWrapper@0002
+                Build cache key for task ':app:appA:fingerprint' is b5a1bb8d226bf944a43ec45392201d50
+                """;
+        TaskKey key = CacheDebugLog.parse(log, ":app:appA:fingerprint").orElseThrow();
+        assertTrue(key.implementation().contains("FingerprintTask_Decorated@0001"), key.implementation());
+        assertTrue(key.implementation().contains("TaskActionWrapper@0002"), key.implementation());
     }
 
     @Test void realFixtureRootSpecHasAllThirteenEntries() throws IOException {

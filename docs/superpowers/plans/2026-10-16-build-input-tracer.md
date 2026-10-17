@@ -2781,7 +2781,9 @@ class CacheDebugLogTest {
 
         assertEquals(TASK, key.taskPath());
         assertEquals("35c0f7cbe157cd2e30090cc5510cec8c", key.key());
-        assertEquals("org.gradle.api.tasks.compile.JavaCompile_Decorated@bbbb", key.implementation());
+        // Fixture repeats the same class in its "additional implementation" line; both are folded in.
+        assertEquals("org.gradle.api.tasks.compile.JavaCompile_Decorated@bbbb, org.gradle.api.tasks.compile.JavaCompile_Decorated@bbbb",
+                key.implementation());
         assertEquals(Map.of("options.release", "91e6b2f4b53f9e7b3eadb03039173cc5", "options.compilerArgs", "4444"), key.valueFingerprints());
         assertEquals(Map.of(
                 "/w/core/build/classes/java/main/io/joeyang/tracer/core/Greeter.class", "5042bbb7be5171b8d45ca1e0a8193342",
@@ -2913,6 +2915,32 @@ class CacheDebugLogTest {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> CacheDebugLog.parse(log, ":app:appA:fingerprint"));
         assertTrue(e.getMessage().contains("unrecognised cache debug output"), e.getMessage());
         assertTrue(e.getMessage().contains("options.release"), e.getMessage());
+    }
+
+    @Test void pathsContainingAnEqualsSignAreNotCutAtTheWrongOne() {
+        String log = """
+                > Task :app:appA:fingerprint
+                Appending implementation to build cache key: io.joeyang.tracer.buildlogic.FingerprintTask_Decorated@0001
+                Appending input file fingerprints for 'stableSources' to build cache key: aaaa - RELATIVE_PATH{/w/src/io/a=b.java='a=b.java' / 1111, /w/src/io/c=d.java=IGNORED / 2222}
+                Build cache key for task ':app:appA:fingerprint' is b5a1bb8d226bf944a43ec45392201d50
+                """;
+        TaskKey key = CacheDebugLog.parse(log, ":app:appA:fingerprint").orElseThrow();
+        Map<String, String> entries = key.fileFingerprints().get("stableSources");
+        assertEquals(2, entries.size());
+        assertEquals("1111", entries.get("/w/src/io/a=b.java"));
+        assertEquals("2222", entries.get("/w/src/io/c=d.java"));
+    }
+
+    @Test void additionalImplementationLinesAreFoldedIntoTheImplementationFingerprint() {
+        String log = """
+                > Task :app:appA:fingerprint
+                Appending implementation to build cache key: io.joeyang.tracer.buildlogic.FingerprintTask_Decorated@0001
+                Appending additional implementation to build cache key: org.gradle.api.internal.AbstractTask$TaskActionWrapper@0002
+                Build cache key for task ':app:appA:fingerprint' is b5a1bb8d226bf944a43ec45392201d50
+                """;
+        TaskKey key = CacheDebugLog.parse(log, ":app:appA:fingerprint").orElseThrow();
+        assertTrue(key.implementation().contains("FingerprintTask_Decorated@0001"), key.implementation());
+        assertTrue(key.implementation().contains("TaskActionWrapper@0002"), key.implementation());
     }
 
     @Test void realFixtureRootSpecHasAllThirteenEntries() throws IOException {
@@ -3127,7 +3155,9 @@ Expected: FAIL at compile, `cannot find symbol` for `CacheDebugLog`, `GradleKeyP
 ```java
 package io.joeyang.tracer.cli;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Matcher;
@@ -3145,12 +3175,17 @@ final class CacheDebugLog {
     private static final Pattern TASK_HEADER = Pattern.compile("^> Task (\\S+)");
     private static final Pattern IMPLEMENTATION = Pattern.compile("^Appending implementation to build cache key: (.+)$");
     private static final Pattern ADDITIONAL_IMPLEMENTATION =
-            Pattern.compile("^Appending additional implementation to build cache key: .+$");
+            Pattern.compile("^Appending additional implementation to build cache key: (.+)$");
     private static final Pattern VALUE = Pattern.compile("^Appending input value fingerprint for '([^']+)' to build cache key: ([0-9a-f]+)$");
     private static final Pattern FILES = Pattern.compile("^Appending input file fingerprints for '([^']+)' to build cache key: [0-9a-f]+ - [A-Z_]+\\{(.*)\\}$");
     private static final Pattern OUTPUT_PROPERTY = Pattern.compile("^Appending output property name to build cache key: .+$");
-    /** A single already-isolated {@code <path>=<'normalized'|IGNORED> / <hash|DIR|MISSING>} entry. */
-    private static final Pattern ENTRY = Pattern.compile("^/.+=(?:'.*'|IGNORED) / (?:[0-9a-f]+|DIR|MISSING)$");
+    /**
+     * A single already-isolated {@code <path>=<'normalized'|IGNORED> / <hash|DIR|MISSING>} entry, with the
+     * path captured greedily so a path containing its own {@code '='} does not get cut at the wrong one:
+     * the engine backtracks to the rightmost {@code '='} for which the rest of the pattern still matches
+     * through end-of-string, which is always the real delimiter.
+     */
+    private static final Pattern ENTRY = Pattern.compile("^(/.+)=(?:'.*'|IGNORED) / (?:([0-9a-f]+)|DIR|MISSING)$");
     private static final Pattern KEY = Pattern.compile("^Build cache key for task '([^']+)' is ([0-9a-f]+)$");
     private static final Pattern NON_CACHEABLE = Pattern.compile("^Non-cacheable because (.+)$");
 
@@ -3182,7 +3217,7 @@ final class CacheDebugLog {
                           Map<String, String> values, String key, String nonCacheableReason) {}
 
     private static Block blockFor(String output, String taskPath) {
-        String implementation = "";
+        List<String> implementations = new ArrayList<>();
         Map<String, String> values = new LinkedHashMap<>();
         Map<String, Map<String, String>> files = new LinkedHashMap<>();
         boolean inTarget = false;
@@ -3191,7 +3226,7 @@ final class CacheDebugLog {
             Matcher header = TASK_HEADER.matcher(line);
             if (header.find()) {
                 if (inTarget) {
-                    return new Block(implementation, files, values, null, null);
+                    return new Block(implementation(implementations), files, values, null, null);
                 }
                 inTarget = header.group(1).equals(taskPath);
                 continue;
@@ -3201,15 +3236,17 @@ final class CacheDebugLog {
             }
             Matcher m;
             if ((m = KEY.matcher(line)).matches()) {
-                return new Block(implementation, files, values, m.group(2), null);
+                return new Block(implementation(implementations), files, values, m.group(2), null);
             }
             if ((m = NON_CACHEABLE.matcher(line)).matches()) {
-                return new Block(implementation, files, values, null, m.group(1));
+                return new Block(implementation(implementations), files, values, null, m.group(1));
             }
             if ((m = IMPLEMENTATION.matcher(line)).matches()) {
-                implementation = m.group(1);
-            } else if (ADDITIONAL_IMPLEMENTATION.matcher(line).matches()) {
-                // A decorator/validation-action implementation hash; the primary one above is enough to spot a change.
+                implementations.add(m.group(1));
+            } else if ((m = ADDITIONAL_IMPLEMENTATION.matcher(line)).matches()) {
+                // A task action / doLast block's own implementation hash; folded in alongside the task
+                // class's so a build-logic change made only through a task action is still visible here.
+                implementations.add(m.group(1));
             } else if ((m = VALUE.matcher(line)).matches()) {
                 values.put(m.group(1), m.group(2));
             } else if ((m = FILES.matcher(line)).matches()) {
@@ -3220,7 +3257,11 @@ final class CacheDebugLog {
                 throw unrecognised(line);
             }
         }
-        return new Block(implementation, files, values, null, null);
+        return new Block(implementation(implementations), files, values, null, null);
+    }
+
+    private static String implementation(List<String> implementations) {
+        return String.join(", ", implementations);
     }
 
     private static Map<String, String> entries(String body, String originalLine) {
@@ -3231,11 +3272,12 @@ final class CacheDebugLog {
         // Split before parsing each entry so a "'" inside a normalized path can never merge two entries:
         // every entry boundary is ", " followed by the next entry's absolute path, which always starts with "/".
         for (String entry : body.split(", (?=/)")) {
-            if (!ENTRY.matcher(entry).matches()) {
+            Matcher m = ENTRY.matcher(entry);
+            if (!m.matches()) {
                 throw unrecognised(originalLine);
             }
-            int lastSlashSeparator = entry.lastIndexOf(" / ");
-            out.put(entry.substring(0, entry.indexOf('=')), entry.substring(lastSlashSeparator + 3));
+            String value = m.group(2) != null ? m.group(2) : entry.endsWith("DIR") ? "DIR" : "MISSING";
+            out.put(m.group(1), value);
         }
         return out;
     }
@@ -3351,7 +3393,7 @@ public final class GradleKeyProvider implements KeyProvider {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 52 tests at this point in the sequence (26 from Task 6 plus 26 here — 17 from the original parser/provider tests plus 9 added by review fixes: 5 for `/ DIR`, `/ MISSING`, a quoted path, an unknown normalization token, and `rootSpec$1`'s real entry count; 1 for mapping an unrecognised cache-debug line to `ProviderException` instead of letting it escape uncaught; 1 for null constructor arguments; and 2 for the "What went wrong" extraction, including its real Gradle 9.8.1 javac-error and continuation-line shapes). Then `bazel test //tools/tracer/...` must also pass — the fixtures are on the Bazel test classpath through the `resources` attribute.
+Expected: `BUILD SUCCESSFUL`; 54 tests at this point in the sequence (26 from Task 6 plus 28 here — 17 from the original parser/provider tests plus 11 added by review fixes: 5 for `/ DIR`, `/ MISSING`, a quoted path, an unknown normalization token, and `rootSpec$1`'s real entry count; 1 for mapping an unrecognised cache-debug line to `ProviderException` instead of letting it escape uncaught; 1 for null constructor arguments; 2 for the "What went wrong" extraction, including its real Gradle 9.8.1 javac-error and continuation-line shapes; and 2 for a path containing `=` and folding "additional implementation" lines in). Then `bazel test //tools/tracer/...` must also pass — the fixtures are on the Bazel test classpath through the `resources` attribute.
 
 - [ ] **Step 6: Document and commit**
 
@@ -3705,7 +3747,7 @@ public final class BazelDiffProvider implements ImpactProvider {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 61 tests at this point in the sequence (the Task 7 review fixes added 9, across two rounds). Also `bazel test //tools/tracer/...` passes.
+Expected: `BUILD SUCCESSFUL`; 63 tests at this point in the sequence (the Task 7 review fixes added 11, across two rounds). Also `bazel test //tools/tracer/...` passes.
 
 - [ ] **Step 6: Try it for real against the repo**
 
@@ -4113,7 +4155,7 @@ public final class WorktreePool implements AutoCloseable {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 72 tests at this point in the sequence.
+Expected: `BUILD SUCCESSFUL`; 74 tests at this point in the sequence.
 
 - [ ] **Step 5: Document and commit**
 
@@ -4541,7 +4583,7 @@ public final class TableRenderer {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 87 tests at this point in the sequence. Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
+Expected: `BUILD SUCCESSFUL`; 89 tests at this point in the sequence. Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
 
 - [ ] **Step 5: Document and commit**
 
@@ -4700,7 +4742,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 92 tests at this point in the sequence; the timeout test finishes in well under a second.
+Expected: `BUILD SUCCESSFUL`; 94 tests at this point in the sequence; the timeout test finishes in well under a second.
 
 - [ ] **Step 5: Commit**
 
@@ -4921,7 +4963,7 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 104 tests at this point in the sequence (the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 106 tests at this point in the sequence (the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -5424,7 +5466,7 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 115 tests at this point in the sequence. Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 117 tests at this point in the sequence. Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 
