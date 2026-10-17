@@ -28,18 +28,25 @@ class GradleKeyProviderTest {
 
     @Test void runsGradlewWithDebugFlagsInTheWorktree() throws Exception {
         FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 0, CacheDebugFixtures.COMPILE_JAVA_LOG, "");
+        Duration timeout = Duration.ofMinutes(1);
 
-        TaskKey key = new GradleKeyProvider(runner, false, Duration.ofMinutes(1)).keyFor(worktree, TASK);
+        TaskKey key = new GradleKeyProvider(runner, false, timeout).keyFor(worktree, TASK);
 
         assertEquals("35c0f7cbe157cd2e30090cc5510cec8c", key.key());
         assertEquals(List.of(gradlew, "--console=plain", "--no-parallel", "--build-cache", "-Dorg.gradle.caching.debug=true", TASK), runner.calls.get(0));
         assertEquals(worktree, runner.cwds.get(0));
+        assertEquals(timeout, runner.timeouts.get(0));
     }
 
     @Test void offlineAppendsTheFlag() throws Exception {
         FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 0, CacheDebugFixtures.COMPILE_JAVA_LOG, "");
-        new GradleKeyProvider(runner, true, Duration.ofMinutes(1)).keyFor(worktree, TASK);
-        assertTrue(runner.calls.get(0).contains("--offline"));
+        Duration timeout = Duration.ofSeconds(90);
+
+        new GradleKeyProvider(runner, true, timeout).keyFor(worktree, TASK);
+
+        assertEquals(List.of(gradlew, "--console=plain", "--no-parallel", "--build-cache", "-Dorg.gradle.caching.debug=true", TASK, "--offline"),
+                runner.calls.get(0));
+        assertEquals(timeout, runner.timeouts.get(0));
     }
 
     @Test void missingGradlewIsAProviderError() throws IOException {

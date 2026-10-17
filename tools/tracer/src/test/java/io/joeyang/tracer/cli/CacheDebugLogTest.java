@@ -67,15 +67,23 @@ class CacheDebugLogTest {
 
     @Test void realCompileJavaFixtureParses() throws IOException {
         TaskKey key = CacheDebugLog.parse(resource("/cache-debug/appA-compileJava.log"), TASK).orElseThrow();
-        assertTrue(key.key().matches("[0-9a-f]{32}"), key.key());
+        assertEquals("17035b126dce737b54e2162d950d98e0", key.key());
         assertTrue(key.valueFingerprints().containsKey("options.release"), key.valueFingerprints().keySet().toString());
-        assertFalse(key.fileFingerprints().get("classpath").isEmpty(), "appA's compile classpath has lib and core classes");
+        assertEquals(2, key.fileFingerprints().get("classpath").size(), "appA's compile classpath has lib and core classes");
         assertTrue(key.fileFingerprints().get("stableSources").keySet().stream().anyMatch(p -> p.endsWith("AppA.java")));
         assertTrue(key.implementation().contains("JavaCompile"), key.implementation());
     }
 
     @Test void realFingerprintFixtureParses() throws IOException {
-        TaskKey key = CacheDebugLog.parse(resource("/cache-debug/appA-fingerprint.log"), ":app:appA:fingerprint").orElseThrow();
+        // Read from the fixture itself rather than hand-copied, so a re-capture that changes the key fails loudly.
+        String fixture = resource("/cache-debug/appA-fingerprint.log");
+        String expectedKey = fixture.lines()
+                .filter(l -> l.startsWith("Build cache key for task ':app:appA:fingerprint'"))
+                .findFirst().orElseThrow()
+                .replaceFirst(".* is ", "");
+        TaskKey key = CacheDebugLog.parse(fixture, ":app:appA:fingerprint").orElseThrow();
+        assertEquals(expectedKey, key.key());
+        assertEquals(5, key.fileFingerprints().get("runtimeClasspath").size());
         assertTrue(key.fileFingerprints().get("runtimeClasspath").keySet().stream().anyMatch(p -> p.endsWith("/core.jar")));
         assertTrue(key.fileFingerprints().get("runtimeClasspath").keySet().stream().anyMatch(p -> p.contains("commons-lang3-3.18.0.jar")));
         assertTrue(key.implementation().contains("FingerprintTask"), key.implementation());

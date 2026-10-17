@@ -2711,7 +2711,7 @@ Entries inside `{...}` are `<abs path>=<'normalized path'|IGNORED> / <hash>` sep
 ```bash
 mkdir -p tools/tracer/src/test/resources/cache-debug
 ./gradlew :app:appA:compileJava --console=plain --no-parallel --build-cache --rerun-tasks -Dorg.gradle.caching.debug=true \
-  | sed "s#$PWD#/repo#g" > tools/tracer/src/test/resources/cache-debug/appA-compileJava.log
+  | sed "s#$PWD#/repo#g; s#$HOME#/home/user#g" > tools/tracer/src/test/resources/cache-debug/appA-compileJava.log
 ./gradlew :app:appA:fingerprint --console=plain --no-parallel --build-cache --rerun-tasks -Dorg.gradle.caching.debug=true \
   | sed "s#$PWD#/repo#g; s#$HOME#/home/user#g" > tools/tracer/src/test/resources/cache-debug/appA-fingerprint.log
 grep -c "Build cache key for task" tools/tracer/src/test/resources/cache-debug/*.log
@@ -2827,15 +2827,23 @@ class CacheDebugLogTest {
 
     @Test void realCompileJavaFixtureParses() throws IOException {
         TaskKey key = CacheDebugLog.parse(resource("/cache-debug/appA-compileJava.log"), TASK).orElseThrow();
-        assertTrue(key.key().matches("[0-9a-f]{32}"), key.key());
+        assertEquals("17035b126dce737b54e2162d950d98e0", key.key());
         assertTrue(key.valueFingerprints().containsKey("options.release"), key.valueFingerprints().keySet().toString());
-        assertFalse(key.fileFingerprints().get("classpath").isEmpty(), "appA's compile classpath has lib and core classes");
+        assertEquals(2, key.fileFingerprints().get("classpath").size(), "appA's compile classpath has lib and core classes");
         assertTrue(key.fileFingerprints().get("stableSources").keySet().stream().anyMatch(p -> p.endsWith("AppA.java")));
         assertTrue(key.implementation().contains("JavaCompile"), key.implementation());
     }
 
     @Test void realFingerprintFixtureParses() throws IOException {
-        TaskKey key = CacheDebugLog.parse(resource("/cache-debug/appA-fingerprint.log"), ":app:appA:fingerprint").orElseThrow();
+        // Read from the fixture itself rather than hand-copied, so a re-capture that changes the key fails loudly.
+        String fixture = resource("/cache-debug/appA-fingerprint.log");
+        String expectedKey = fixture.lines()
+                .filter(l -> l.startsWith("Build cache key for task ':app:appA:fingerprint'"))
+                .findFirst().orElseThrow()
+                .replaceFirst(".* is ", "");
+        TaskKey key = CacheDebugLog.parse(fixture, ":app:appA:fingerprint").orElseThrow();
+        assertEquals(expectedKey, key.key());
+        assertEquals(5, key.fileFingerprints().get("runtimeClasspath").size());
         assertTrue(key.fileFingerprints().get("runtimeClasspath").keySet().stream().anyMatch(p -> p.endsWith("/core.jar")));
         assertTrue(key.fileFingerprints().get("runtimeClasspath").keySet().stream().anyMatch(p -> p.contains("commons-lang3-3.18.0.jar")));
         assertTrue(key.implementation().contains("FingerprintTask"), key.implementation());
@@ -2957,18 +2965,25 @@ class GradleKeyProviderTest {
 
     @Test void runsGradlewWithDebugFlagsInTheWorktree() throws Exception {
         FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 0, CacheDebugFixtures.COMPILE_JAVA_LOG, "");
+        Duration timeout = Duration.ofMinutes(1);
 
-        TaskKey key = new GradleKeyProvider(runner, false, Duration.ofMinutes(1)).keyFor(worktree, TASK);
+        TaskKey key = new GradleKeyProvider(runner, false, timeout).keyFor(worktree, TASK);
 
         assertEquals("35c0f7cbe157cd2e30090cc5510cec8c", key.key());
         assertEquals(List.of(gradlew, "--console=plain", "--no-parallel", "--build-cache", "-Dorg.gradle.caching.debug=true", TASK), runner.calls.get(0));
         assertEquals(worktree, runner.cwds.get(0));
+        assertEquals(timeout, runner.timeouts.get(0));
     }
 
     @Test void offlineAppendsTheFlag() throws Exception {
         FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 0, CacheDebugFixtures.COMPILE_JAVA_LOG, "");
-        new GradleKeyProvider(runner, true, Duration.ofMinutes(1)).keyFor(worktree, TASK);
-        assertTrue(runner.calls.get(0).contains("--offline"));
+        Duration timeout = Duration.ofSeconds(90);
+
+        new GradleKeyProvider(runner, true, timeout).keyFor(worktree, TASK);
+
+        assertEquals(List.of(gradlew, "--console=plain", "--no-parallel", "--build-cache", "-Dorg.gradle.caching.debug=true", TASK, "--offline"),
+                runner.calls.get(0));
+        assertEquals(timeout, runner.timeouts.get(0));
     }
 
     @Test void missingGradlewIsAProviderError() throws IOException {
