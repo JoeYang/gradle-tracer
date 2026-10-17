@@ -59,6 +59,37 @@ class GradleKeyProviderTest {
         assertTrue(e.getMessage().contains("';' expected"), e.getMessage());
     }
 
+    @Test void buildFailureSurfacesWhatWentWrongOverTheGenericFailureLine() {
+        String stdout = """
+                > Task :app:appB:compileJava FAILED
+
+                FAILURE: Build failed with an exception.
+
+                * What went wrong:
+                Task ':app:appB:compileJava' not found in root project 'gradle-tracer'.
+
+                * Try:
+                > Run gradle tasks to get a list of available tasks.
+
+                BUILD FAILED in 1s
+                """;
+        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 1, stdout, "");
+        ProviderException e = assertThrows(ProviderException.class,
+                () -> new GradleKeyProvider(runner, false, Duration.ofMinutes(1)).keyFor(worktree, TASK));
+        assertTrue(e.getMessage().contains("not found in root project 'gradle-tracer'"), e.getMessage());
+        assertTrue(e.getMessage().contains(TASK), e.getMessage());
+    }
+
+    @Test void nullConstructorArgumentsAreRejectedImmediately() {
+        NullPointerException runnerNpe = assertThrows(NullPointerException.class,
+                () -> new GradleKeyProvider(null, false, Duration.ofMinutes(1)));
+        assertTrue(runnerNpe.getMessage().contains("runner"), runnerNpe.getMessage());
+
+        NullPointerException timeoutNpe = assertThrows(NullPointerException.class,
+                () -> new GradleKeyProvider(new FakeProcessRunner(), false, null));
+        assertTrue(timeoutNpe.getMessage().contains("timeout"), timeoutNpe.getMessage());
+    }
+
     @Test void timeoutIsAProviderError() {
         FakeProcessRunner runner = new FakeProcessRunner()
                 .failWith(gradlew, ProcessException.timeout(List.of(gradlew), Duration.ofMinutes(1)));

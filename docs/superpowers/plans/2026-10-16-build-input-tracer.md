@@ -2988,6 +2988,37 @@ class GradleKeyProviderTest {
         assertTrue(e.getMessage().contains("';' expected"), e.getMessage());
     }
 
+    @Test void buildFailureSurfacesWhatWentWrongOverTheGenericFailureLine() {
+        String stdout = """
+                > Task :app:appB:compileJava FAILED
+
+                FAILURE: Build failed with an exception.
+
+                * What went wrong:
+                Task ':app:appB:compileJava' not found in root project 'gradle-tracer'.
+
+                * Try:
+                > Run gradle tasks to get a list of available tasks.
+
+                BUILD FAILED in 1s
+                """;
+        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 1, stdout, "");
+        ProviderException e = assertThrows(ProviderException.class,
+                () -> new GradleKeyProvider(runner, false, Duration.ofMinutes(1)).keyFor(worktree, TASK));
+        assertTrue(e.getMessage().contains("not found in root project 'gradle-tracer'"), e.getMessage());
+        assertTrue(e.getMessage().contains(TASK), e.getMessage());
+    }
+
+    @Test void nullConstructorArgumentsAreRejectedImmediately() {
+        NullPointerException runnerNpe = assertThrows(NullPointerException.class,
+                () -> new GradleKeyProvider(null, false, Duration.ofMinutes(1)));
+        assertTrue(runnerNpe.getMessage().contains("runner"), runnerNpe.getMessage());
+
+        NullPointerException timeoutNpe = assertThrows(NullPointerException.class,
+                () -> new GradleKeyProvider(new FakeProcessRunner(), false, null));
+        assertTrue(timeoutNpe.getMessage().contains("timeout"), timeoutNpe.getMessage());
+    }
+
     @Test void timeoutIsAProviderError() {
         FakeProcessRunner runner = new FakeProcessRunner()
                 .failWith(gradlew, ProcessException.timeout(List.of(gradlew), Duration.ofMinutes(1)));
@@ -3153,17 +3184,21 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 
 /** Runs the worktree's own {@code gradlew} with cache debugging on and parses the task's key out of the output. */
 public final class GradleKeyProvider implements KeyProvider {
+    private static final String WHAT_WENT_WRONG_HEADER = "* What went wrong:";
+
     private final ProcessRunner runner;
     private final boolean offline;
     private final Duration timeout;
 
     public GradleKeyProvider(ProcessRunner runner, boolean offline, Duration timeout) {
-        this.runner = runner;
+        this.runner = Objects.requireNonNull(runner, "runner must not be null");
         this.offline = offline;
-        this.timeout = timeout;
+        this.timeout = Objects.requireNonNull(timeout, "timeout must not be null");
     }
 
     @Override
@@ -3184,7 +3219,7 @@ public final class GradleKeyProvider implements KeyProvider {
             throw new ProviderException("gradle: " + e.getMessage(), e);
         }
         if (!result.ok()) {
-            throw new ProviderException("gradle failed: " + result.firstErrorLine());
+            throw new ProviderException("gradle failed for " + taskPath + ": " + whatWentWrong(result).orElseGet(result::firstErrorLine));
         }
         String output = result.stdout() + "\n" + result.stderr();
         return CacheDebugLog.parse(output, taskPath).orElseThrow(() -> new ProviderException(
@@ -3193,13 +3228,29 @@ public final class GradleKeyProvider implements KeyProvider {
                         .orElse("gradle printed no cache key for " + taskPath
                                 + " (unrecognised cache debug output, or the task did not print a key)")));
     }
+
+    /** The first non-blank line after Gradle's {@code * What went wrong:} header, when it printed one. */
+    private static Optional<String> whatWentWrong(ProcessRunner.Result result) {
+        List<String> lines = (result.stdout() + "\n" + result.stderr()).lines().toList();
+        for (int i = 0; i < lines.size(); i++) {
+            if (lines.get(i).strip().equals(WHAT_WENT_WRONG_HEADER)) {
+                for (int j = i + 1; j < lines.size(); j++) {
+                    String candidate = lines.get(j).strip();
+                    if (!candidate.isEmpty()) {
+                        return Optional.of(candidate);
+                    }
+                }
+            }
+        }
+        return Optional.empty();
+    }
 }
 ```
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 48 tests at this point in the sequence (26 from Task 6 plus 22 here — 17 from the original parser/provider tests plus 5 added by review fixes for `/ DIR`, `/ MISSING`, a quoted path, an unknown normalization token, and `rootSpec$1`'s real entry count). Then `bazel test //tools/tracer/...` must also pass — the fixtures are on the Bazel test classpath through the `resources` attribute.
+Expected: `BUILD SUCCESSFUL`; 50 tests at this point in the sequence (26 from Task 6 plus 24 here — 17 from the original parser/provider tests plus 7 added by review fixes: 5 for `/ DIR`, `/ MISSING`, a quoted path, an unknown normalization token, and `rootSpec$1`'s real entry count, and 2 for the "What went wrong" extraction and null constructor arguments). Then `bazel test //tools/tracer/...` must also pass — the fixtures are on the Bazel test classpath through the `resources` attribute.
 
 - [ ] **Step 6: Document and commit**
 
