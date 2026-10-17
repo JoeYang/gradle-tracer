@@ -126,19 +126,25 @@ commit is compared against the last good key.
 Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed (some row is
 `BUILD-FAILED`), 3 at least one row is `CHANGED` — and 2 wins over 3 when both apply in the same range.
 
-Before any worktree is created or any git command beyond option parsing runs, `--tsv-out <file>` is checked: the
-file's parent directory (the current directory when the path has none) must exist, be a directory and be
-writable, and the file itself must not already be an existing directory. Any violation is a usage error naming
-the path, so a bad destination fails immediately rather than after a whole range walk has run.
+`Cli.run` does its work in a fixed order: `--tsv-out <file>` is pre-checked (parent directory must exist, be a
+directory and be writable; the target must not already be a directory) before anything else beyond option
+parsing; then the revision(s) are resolved (`RevisionRange.resolve` for a range, `resolveOne` for `--at`) — this
+is read-only git, so it needs no lock, and a usage error here (unknown revision, empty range) exits 1 with no
+scratch root or `.lock` file ever created; only once that succeeds does the scratch root get created, locked
+(see "One run per scratch root" below), swept, and the worktree walk begin. Any violation along the way is a
+usage error naming the offending path or revision, so a bad input fails immediately rather than after a whole
+range walk has run.
 
 ### One run per scratch root
-Before any sweep or worktree work — for both the range walk and `--at` — `Cli` creates the scratch root and takes
-an exclusive lock on `<scratch>/.lock` (a `FileChannel.tryLock()`), held for the whole run and released when it
-ends. A second run on the same root while the first is still going fails fast as a usage error ("another trace is
-using `<scratch>`; wait for it or set `TMPDIR` to another directory") with no git command run at all, rather than
-sweeping the first run's live `wt-*` worktrees and hash files out from under it. `.lock` itself is never swept:
-`WorktreePool`'s sweep only touches `wt-*` directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/
-`*.impacted.txt` files.
+Before any sweep or worktree work — for both the range walk and `--at`, and only after their revisions are
+already resolved — `Cli` creates the scratch root and takes an exclusive lock on `<scratch>/.lock` (a
+`FileChannel.tryLock()`), held for the whole run and released when it ends. A second run on the same root while
+the first is still going fails fast as a usage error ("another trace is using `<scratch>`; wait for it or set
+`TMPDIR` to another directory") with no worktree work and no scratch sweep, rather than sweeping the first run's
+live `wt-*` worktrees and hash files out from under it. (Its own revision resolution still runs first, same as
+any other invocation — that's read-only git against the repo, not the scratch root, so it's harmless even when
+the lock is about to be refused.) `.lock` itself is never swept: `WorktreePool`'s sweep only touches `wt-*`
+directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/`*.impacted.txt` files.
 
 ### Process timeouts and detached children
 On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it

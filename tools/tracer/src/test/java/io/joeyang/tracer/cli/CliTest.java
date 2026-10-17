@@ -174,8 +174,31 @@ class CliTest {
 
             assertEquals(Cli.EXIT_USAGE, code, err());
             assertTrue(err().contains("another trace is using") && err().contains(scratch.toString()), err());
-            assertTrue(git.calls.isEmpty(), "no git command runs while the scratch root is locked");
+            // The range is resolved (read-only git) before the lock is taken, so rev-parse/log calls do happen;
+            // what must never happen while another run holds the lock is worktree work or a scratch sweep.
+            assertFalse(git.ran("git worktree"), "no worktree work while the scratch root is locked");
+            assertFalse(err().contains("stale scratch file"), "no sweep while the scratch root is locked");
         }
+    }
+
+    @Test void unknownFromRevisionLeavesNoScratchRoot() throws Exception {
+        Path lock = scratch.resolve(".lock");
+        git.on("git rev-parse --verify --quiet nope^{commit}", 1, "", "");
+
+        int code = run(keys, impacts, "appA", "--from", "nope", "--to", "tip");
+
+        assertEquals(Cli.EXIT_USAGE, code, err());
+        assertFalse(Files.exists(lock), ".lock must not be created for a revision that was never resolved");
+    }
+
+    @Test void unknownAtRevisionLeavesNoScratchRoot() throws Exception {
+        Path lock = scratch.resolve(".lock");
+        git.on("git rev-parse --verify --quiet nope^{commit}", 1, "", "");
+
+        int code = run(keys, impacts, "appA", "--at", "nope");
+
+        assertEquals(Cli.EXIT_USAGE, code, err());
+        assertFalse(Files.exists(lock), ".lock must not be created for a revision that was never resolved");
     }
 
     @Test void lockIsReleasedAfterARunCompletes() throws Exception {

@@ -210,16 +210,27 @@ public final class Cli {
             if (!Files.isDirectory(repo.resolve("app").resolve(o.app()))) {
                 throw new UsageException("unknown app '" + o.app() + "': expected a directory app/" + o.app());
             }
-            if (o.at() == null) {
-                checkTsvOutWritable(o);
+            // Revision resolution is read-only git, so it needs no lock; resolving before the lock means an
+            // unknown --from/--to/--at (spec §9) exits 1 with no scratch root or .lock file left behind.
+            if (o.at() != null) {
+                Commit commit = new RevisionRange(runner, repo).resolveOne(o.at());
+                return withScratchLock(err, () -> at(o, out, commit));
             }
-            return withScratchLock(o, out, err);
+            checkTsvOutWritable(o);
+            List<Commit> commits = new RevisionRange(runner, repo).resolve(o.from(), o.to());
+            return withScratchLock(err, () -> range(o, out, err, commits));
         } catch (UsageException e) {
             return usage(err, e.getMessage());
         } catch (ProviderException e) {
             err.println("trace: " + e.getMessage());
             return EXIT_TOOL_FAILURE;
         }
+    }
+
+    /** The work done once the scratch root is locked: either {@link #at} or {@link #range}, with its revisions already resolved. */
+    @FunctionalInterface
+    private interface LockedWork {
+        int run() throws UsageException, ProviderException;
     }
 
     /**
@@ -229,7 +240,7 @@ public final class Cli {
      * {@link OverlappingFileLockException} for one held elsewhere in this same JVM (the case the tests exercise);
      * both mean the root is busy.
      */
-    private int withScratchLock(Options o, PrintStream out, PrintStream err) throws UsageException, ProviderException {
+    private int withScratchLock(PrintStream err, LockedWork work) throws UsageException, ProviderException {
         try {
             Files.createDirectories(scratch);
         } catch (IOException e) {
@@ -246,7 +257,7 @@ public final class Cli {
                 return usage(err, "another trace is using " + scratch + "; wait for it or set TMPDIR to another directory");
             }
             try {
-                return o.at() != null ? at(o, out) : range(o, out, err);
+                return work.run();
             } finally {
                 lock.release();
             }
@@ -279,8 +290,7 @@ public final class Cli {
         }
     }
 
-    private int range(Options o, PrintStream out, PrintStream err) throws UsageException, ProviderException {
-        List<Commit> commits = new RevisionRange(runner, repo).resolve(o.from(), o.to());
+    private int range(Options o, PrintStream out, PrintStream err, List<Commit> commits) throws ProviderException {
         int swept = deleteScratchFiles();
         if (swept > 0) {
             err.println("trace: removed " + swept + " stale scratch file(s) under " + scratch);
@@ -367,8 +377,7 @@ public final class Cli {
         return count;
     }
 
-    private int at(Options o, PrintStream out) throws UsageException, ProviderException {
-        Commit commit = new RevisionRange(runner, repo).resolveOne(o.at());
+    private int at(Options o, PrintStream out, Commit commit) throws ProviderException {
         try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
             TaskKey key = keys.keyFor(pool.checkout(commit), o.taskPath());
             out.println(key.taskPath() + " at " + commit.shortSha() + " " + commit.subject());
