@@ -3776,16 +3776,28 @@ Append to `docs/tracer.md`:
 non-zero exit → first error line; no output file → explicit error. The Cli turns any of these into an `n/a` column, never a verdict.
 ```
 
+Land this as two commits at the fetch-script/provider seam, each leaving the build green (the fetch script and the
+provider are independently reviewable, and the script has no code dependency on the provider):
+
 ```bash
 chmod +x tools/fetch-bazel-diff.sh
-git add .gitignore tools/fetch-bazel-diff.sh tools/tracer docs/bazel-build.md docs/tracer.md
-git commit -m "feat(tracer): add the bazel-diff oracle with a pinned, checksummed binary
+git add .gitignore tools/fetch-bazel-diff.sh docs/bazel-build.md
+git commit -m "build(tools): fetch a pinned bazel-diff binary
 
-bazel-diff ships as a single static binary; fetching the pinned release
-beats building the BCR module, which compiles Rust. Maven artifacts are
-hashed individually so a version bump impacts only its dependants, and
-each worktree's Bazel output base is expunged after hashing so repeated
-runs do not fill the disk."
+bazel-diff ships as a single static binary; fetching the pinned, checksummed
+release into tools/bin/ (gitignored) is simpler and faster than building the
+Bazel Central Registry module, which compiles Rust via rules_rust."
+
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/BazelDiffProvider.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/BazelDiffProviderTest.java \
+        docs/tracer.md
+git commit -m "feat(tracer): detect impacted Bazel targets with bazel-diff
+
+Maven artifacts are hashed individually (--fineGrainedHashExternalRepos=@maven)
+so one library bump impacts only its dependants, not everything. Each worktree
+gets its own Bazel output base, so the provider runs bazel clean --expunge
+there afterwards to stop the server and free the disk; that cleanup failure is
+swallowed rather than masking the real hashing result."
 ```
 
 ---
