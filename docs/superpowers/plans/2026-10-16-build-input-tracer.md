@@ -9158,6 +9158,97 @@ Run `./gradlew :tools:tracer:test`: 232 tests (230 going into this commit, plus
 
 ---
 
+#### Commit Q — `fix(tracer): surface git log failures in resolveOne`
+
+Why: `resolveOne` called `run("git", "log", "-1", FORMAT, sha)` and fed its stdout straight to `parse()` without
+checking the exit code, unlike `resolve()` (which already checks the equivalent base-commit `git log` call).
+A failing `git log` there — e.g. a corrupt object — would feed `parse()` an empty string and surface as a
+confusing "unexpected git log line" `ProviderException` instead of git's own error.
+
+Fix: check `result.ok()` the same way `resolve()` does, before parsing.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/RevisionRange.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/RevisionRange.java
+index 6a6fb5c..3cd4a98 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/RevisionRange.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/RevisionRange.java
+@@ -61,7 +61,11 @@ public final class RevisionRange {
+     /** A single revision as a Commit (for {@code --at}). */
+     public Commit resolveOne(String rev) throws UsageException, ProviderException {
+         String sha = revParse(rev);
+-        return parse(run("git", "log", "-1", FORMAT, sha).stdout().strip());
++        ProcessRunner.Result result = run("git", "log", "-1", FORMAT, sha);
++        if (!result.ok()) {
++            throw new ProviderException("git log failed for '" + sha + "': " + result.firstErrorLine());
++        }
++        return parse(result.stdout().strip());
+     }
+ 
+     private String revParse(String rev) throws UsageException, ProviderException {
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java
+index 38ffd69..260d8ab 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java
+@@ -157,4 +157,15 @@ class RevisionRangeTest {
+ 
+         assertThrows(UsageException.class, () -> new RevisionRange(git, repo).resolveOne("zzz"));
+     }
++
++    // RevisionRange.resolve already treats a failing 'git log -1' as a ProviderException (baseLogFailureIsAProviderError
++    // above); resolveOne must do the same instead of silently feeding garbage into parse().
++    @Test void resolveOneSurfacesAGitLogFailure() {
++        FakeProcessRunner git = new FakeProcessRunner()
++                .on("git rev-parse --verify --quiet HEAD^{commit}", 0, B + "\n", "")
++                .on("git log -1 --format=%H%x1f%P%x1f%s " + B, 128, "", "fatal: bad object\n");
++
++        ProviderException e = assertThrows(ProviderException.class, () -> new RevisionRange(git, repo).resolveOne("HEAD"));
++        assertTrue(e.getMessage().contains("bad object"), e.getMessage());
++    }
+ }
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 3dc1f32..ee59bfc 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -58,7 +58,9 @@ any of these failures to `BazelStatus.NOT_AVAILABLE` for the rest of the range (
+ and prints a warning to stderr once, the first time bazel-diff fails.
+ 
+ ## Git layer
+-- `RevisionRange.resolve(from, to)` → `[from, …from..to oldest first]`, following the first-parent line so adjacent rows are parent and child even across merges. `from` must be an ancestor of `to` on that first-parent line (each row's own first parent, from `%P`, must equal the previous row's sha); a side-branch commit pulled in by a merge is a `UsageException` naming both shas, not a silent mismatch. Unknown revision (`git rev-parse --verify --quiet` exit 1) or an empty range → `UsageException`; any other git failure (not runnable, exit 128, a malformed `git log` line) → `ProviderException`, naming the offending line where there is one. `RevisionRange.resolveOne(rev)` resolves and describes a single revision the same way, for `--at`.
++- `RevisionRange.resolve(from, to)` → `[from, …from..to oldest first]`, following the first-parent line so adjacent rows are parent and child even across merges. `from` must be an ancestor of `to` on that first-parent line (each row's own first parent, from `%P`, must equal the previous row's sha); a side-branch commit pulled in by a merge is a `UsageException` naming both shas, not a silent mismatch. Unknown revision (`git rev-parse --verify --quiet` exit 1) or an empty range → `UsageException`; any other git failure (not runnable, exit 128, a malformed `git log` line) → `ProviderException`, naming the offending line where there is one. `RevisionRange.resolveOne(rev)` resolves and describes a single revision the same way, for `--at`, including the
++`git log` exit-code check: a non-zero exit there is a `ProviderException` naming git's own first stderr line,
++not something `parse` has to make sense of.
+ - `WorktreePool` → sweeps stale worktree directories *before* pruning (see below), then `git worktree add --detach <root>/wt-<sha7> <sha>` per commit. `close()` and a shutdown hook run `git worktree remove --force`; a failed removal is a warning, not a thrown exception, so one bad worktree doesn't stop the rest from being cleaned up.
+ 
+ ### Worktree root rules
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/RevisionRange.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java \
+        docs/tracer.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+fix(tracer): surface git log failures in resolveOne
+
+resolveOne fed git log's stdout straight to parse() without checking
+the exit code, unlike resolve()'s equivalent base-commit lookup. A
+failing git log there surfaced as a confusing "unexpected git log
+line" instead of git's own error. Check result.ok() the same way
+resolve() already does, before parsing.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: 233 tests (232 going into this commit, plus
+`resolveOneSurfacesAGitLogFailure`).
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**

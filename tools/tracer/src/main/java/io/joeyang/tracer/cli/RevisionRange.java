@@ -61,7 +61,11 @@ public final class RevisionRange {
     /** A single revision as a Commit (for {@code --at}). */
     public Commit resolveOne(String rev) throws UsageException, ProviderException {
         String sha = revParse(rev);
-        return parse(run("git", "log", "-1", FORMAT, sha).stdout().strip());
+        ProcessRunner.Result result = run("git", "log", "-1", FORMAT, sha);
+        if (!result.ok()) {
+            throw new ProviderException("git log failed for '" + sha + "': " + result.firstErrorLine());
+        }
+        return parse(result.stdout().strip());
     }
 
     private String revParse(String rev) throws UsageException, ProviderException {

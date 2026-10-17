@@ -157,4 +157,15 @@ class RevisionRangeTest {
 
         assertThrows(UsageException.class, () -> new RevisionRange(git, repo).resolveOne("zzz"));
     }
+
+    // RevisionRange.resolve already treats a failing 'git log -1' as a ProviderException (baseLogFailureIsAProviderError
+    // above); resolveOne must do the same instead of silently feeding garbage into parse().
+    @Test void resolveOneSurfacesAGitLogFailure() {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git rev-parse --verify --quiet HEAD^{commit}", 0, B + "\n", "")
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + B, 128, "", "fatal: bad object\n");
+
+        ProviderException e = assertThrows(ProviderException.class, () -> new RevisionRange(git, repo).resolveOne("HEAD"));
+        assertTrue(e.getMessage().contains("bad object"), e.getMessage());
+    }
 }
