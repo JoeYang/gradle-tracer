@@ -6543,9 +6543,9 @@ check the message names the pattern violation, not just that it contains the lit
 ### Task 13: Cli wiring — range walk, --at, scratch hygiene, exit codes
 
 **Files:**
-- Modify: `tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java` (constructor, `run`, `range`, `at`, scratch cleanup, real `main`)
+- Modify: `tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java` (constructor, `run`, `range`, `at`, scratch cleanup, the scratch-root lock, real `main`)
 - Modify: `tools/tracer/src/main/java/io/joeyang/tracer/cli/RevisionRange.java` (add `resolveOne`)
-- Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java`, add two tests to `RevisionRangeTest.java`
+- Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java` (new), two tests added to `RevisionRangeTest.java`
 - Modify: `docs/tracer.md`
 
 Provider constructors used here and implemented in Tasks 7 and 8 — the signatures are fixed:
@@ -6554,556 +6554,990 @@ Provider constructors used here and implemented in Tasks 7 and 8 — the signatu
 
 Scratch hygiene (spec §9): one fixed scratch root (`$TMPDIR/gradle-tracer`), never per pid, so the next run finds a killed run's leftovers. `WorktreePool` sweeps stale `wt-*` directories (Task 9); the Cli sweeps stale `hashes-*.json`/`*.impacted.txt` at start and removes the ones it created at the end unless `--keep-worktrees`.
 
-- [ ] **Step 1: Add `resolveOne` tests to RevisionRangeTest**
+This task lands as four commits instead of one, because the full wiring exceeds the 400-line hard commit limit.
+Every diff below is the exact diff that was committed (`git diff <parent> <sha> -- <path>`), so it can be checked
+mechanically against the real history rather than re-typed by hand.
 
-Append inside `RevisionRangeTest`:
-```java
-    @Test void resolveOneReturnsTheCommit() throws Exception {
-        FakeProcessRunner git = new FakeProcessRunner()
-                .on("git rev-parse --verify --quiet HEAD^{commit}", 0, B + "\n", "")
-                .on("git log -1 --format=%H%x1f%P%x1f%s " + B, 0, B + "\u001f\u001fcore: add shout\n", "");
+---
 
-        assertEquals(new Commit(B, "core: add shout"), new RevisionRange(git, repo).resolveOne("HEAD"));
-    }
+#### Commit A — `feat(tracer): walk the commit range from the CLI`
 
-    // Real git, under --quiet, exits 1 with no stderr for an unresolvable revision (see RevisionRangeTest's
-    // unknownRevisionIsAUsageError and revParseFailureOtherThanExitOneIsAProviderError from Task 9).
-    @Test void resolveOneRejectsUnknownRevision() {
-        FakeProcessRunner git = new FakeProcessRunner()
-                .on("git rev-parse --verify --quiet zzz^{commit}", 1, "", "");
+Wires the constructor, `run`, `range` and `deleteScratchFiles` (the stale sweep at start and the cleanup at
+end), and the real `main`. `--at` is still a placeholder here (prints "--at arrives in a later commit" to
+stderr, exits `EXIT_TOOL_FAILURE`) because `RevisionRange.resolveOne`, added in this same commit, isn't wired
+into `Cli` until Commit B.
 
-        assertThrows(UsageException.class, () -> new RevisionRange(git, repo).resolveOne("zzz"));
-    }
+Also adds, beyond the original single-commit plan: a pre-check of `--tsv-out` (the parent directory must exist,
+be a directory, and be writable, and the target must not already be a directory) done before any worktree is
+created or any git command beyond option parsing runs; and a test that an unknown `--from` revision exits 1.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/RevisionRange.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/RevisionRange.java
+index 0b24926..6a6fb5c 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/RevisionRange.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/RevisionRange.java
+@@ -58,6 +58,12 @@ public final class RevisionRange {
+         return commits;
+     }
+ 
++    /** A single revision as a Commit (for {@code --at}). */
++    public Commit resolveOne(String rev) throws UsageException, ProviderException {
++        String sha = revParse(rev);
++        return parse(run("git", "log", "-1", FORMAT, sha).stdout().strip());
++    }
++
+     private String revParse(String rev) throws UsageException, ProviderException {
+         ProcessRunner.Result r = run("git", "rev-parse", "--verify", "--quiet", rev + "^{commit}");
+         // Under --quiet, real git exits 1 (with no stderr) for a revision it simply cannot resolve. Any other
 ```
 
-- [ ] **Step 2: Write the failing CliTest**
-
-`tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java`:
-```java
-package io.joeyang.tracer.cli;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.PrintStream;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Stream;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-
-class CliTest {
-    static final String A = "a".repeat(40), B = "b".repeat(40), C = "c".repeat(40);
-    @TempDir Path tmp;
-    Path repo, scratch;
-    FakeProcessRunner git;
-    final ByteArrayOutputStream out = new ByteArrayOutputStream();
-    final ByteArrayOutputStream err = new ByteArrayOutputStream();
-
-    @BeforeEach
-    void setUp() throws IOException {
-        repo = tmp.resolve("repo");
-        scratch = tmp.resolve("scratch");
-        Files.createDirectories(repo.resolve("app/appA"));
-        git = new FakeProcessRunner()
-                .on("git rev-parse --verify --quiet base^{commit}", 0, A + "\n", "")
-                .on("git rev-parse --verify --quiet tip^{commit}", 0, C + "\n", "")
-                .on("git log -1 --format=%H%x1f%P%x1f%s " + A, 0, A + "\u001f\u001fbaseline\n", "")
-                .on("git log -1 --format=%H%x1f%P%x1f%s " + C, 0, C + "\u001f" + B + "\u001fdocs only\n", "")
-                .on("git log --reverse --first-parent --format=%H%x1f%P%x1f%s " + A + ".." + C, 0,
-                        B + "\u001f" + A + "\u001fcore: add shout\n" + C + "\u001f" + B + "\u001fdocs only\n", "")
-                .on("git worktree", 0, "", "");
-    }
-
-    static TaskKey key(String task, String hash, String jarHash) {
-        return new TaskKey(task, hash, Map.of("classpath", Map.of("/wt/core/build/libs/core.jar", jarHash)), Map.of(), "impl");
-    }
-
-    final KeyProvider keys = (wt, task) -> switch (wt.getFileName().toString()) {
-        case "wt-aaaaaaa" -> key(task, "k1", "h1");
-        case "wt-bbbbbbb", "wt-ccccccc" -> key(task, "k2", "h2");
-        default -> throw new ProviderException("unexpected worktree " + wt);
-    };
-
-    /** Writes a hashes file like the real tool does, and reports appA impacted for commit B only. */
-    final ImpactProvider impacts = new ImpactProvider() {
-        @Override public Path hashes(Path worktree, Path output) throws ProviderException {
-            try {
-                return Files.writeString(output, "{}");
-            } catch (IOException e) {
-                throw new ProviderException(e.getMessage(), e);
-            }
-        }
-        @Override public Set<String> impactedTargets(Path previous, Path current) {
-            return current.getFileName().toString().contains("bbbbbbb") ? Set.of("//app/appA:appA") : Set.of();
-        }
-    };
-
-    int run(KeyProvider k, ImpactProvider i, String... args) throws UsageException {
-        return new Cli(git, repo, scratch, k, i).run(Cli.Options.parse(args),
-                new PrintStream(out, true, StandardCharsets.UTF_8), new PrintStream(err, true, StandardCharsets.UTF_8));
-    }
-
-    String out() { return out.toString(StandardCharsets.UTF_8); }
-    String err() { return err.toString(StandardCharsets.UTF_8); }
-
-    @Test void rangeRendersTableAndExits3WhenSomethingChanged() throws Exception {
-        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
-
-        assertEquals(Cli.EXIT_CHANGED, code, err());
-        assertTrue(out().contains("bbbbbbb  core: add shout") && out().contains("CHANGED") && out().contains("core.jar"), out());
-        assertTrue(out().contains("ccccccc  docs only") && out().contains("clean"), out());
-        assertTrue(out().contains("//app/appA:appA (bazel-diff)"), out());
-        assertTrue(git.ran("git worktree remove --force"), "worktrees must be removed");
-    }
-
-    @Test void tsvGoesToStdoutWithoutTable() throws Exception {
-        run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv");
-        assertTrue(out().startsWith(A + "\tbaseline\tk1\t-\tbase\t"), out());
-        assertEquals(3, out().split("\n").length);
-    }
-
-    @Test void tsvOutWritesFileAndKeepsTheTable() throws Exception {
-        Path file = tmp.resolve("rows.tsv");
-        run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", file.toString());
-        assertTrue(out().contains("Tracing inputs of"), out());
-        assertTrue(Files.readString(file).contains(B + "\tcore: add shout\tk2\timpacted\tCHANGED\tcore.jar"));
-    }
-
-    @Test void keyFailureForOneCommitGivesBuildFailedRowAndExit2() throws Exception {
-        KeyProvider flaky = (wt, task) -> {
-            if (wt.getFileName().toString().equals("wt-bbbbbbb")) {
-                throw new ProviderException("Could not resolve com.example:missing:1.0");
-            }
-            return keys.keyFor(wt, task);
-        };
-        int code = run(flaky, impacts, "appA", "--from", "base", "--to", "tip", "--tsv");
-
-        assertEquals(Cli.EXIT_TOOL_FAILURE, code);
-        String[] rows = out().split("\n");
-        assertTrue(rows[1].contains("\tBUILD-FAILED\tCould not resolve com.example:missing:1.0"), rows[1]);
-        assertTrue(rows[2].contains("\tCHANGED\t"), "third commit is compared with the last good key: " + rows[2]);
-    }
-
-    @Test void bazelFailureDegradesToNotAvailable() throws Exception {
-        ImpactProvider broken = new ImpactProvider() {
-            @Override public Path hashes(Path worktree, Path output) throws ProviderException { throw new ProviderException("bazel: command not found"); }
-            @Override public Set<String> impactedTargets(Path p, Path c) { return Set.of(); }
-        };
-        int code = run(keys, broken, "appA", "--from", "base", "--to", "tip", "--tsv");
-
-        assertEquals(Cli.EXIT_CHANGED, code);
-        assertTrue(err().contains("bazel-diff unavailable: bazel: command not found"), err());
-        assertTrue(out().split("\n")[1].contains("\tn/a\t"), out());
-    }
-
-    @Test void noBazelOmitsTheColumnSource() throws Exception {
-        run(keys, null, "appA", "--from", "base", "--to", "tip", "--no-bazel");
-        assertFalse(out().contains("bazel-diff)"), out());
-        assertTrue(out().contains("Tracing inputs of :app:appA:compileJava (gradle) over 2 commits"), out());
-    }
-
-    @Test void unknownAppIsAUsageError() throws Exception {
-        int code = run(keys, impacts, "appZ", "--from", "base", "--to", "tip");
-        assertEquals(Cli.EXIT_USAGE, code);
-        assertTrue(err().contains("appZ"), err());
-    }
-
-    @Test void atPrintsTheKeyComposition() throws Exception {
-        int code = run(keys, impacts, "appA", "--at", "tip", "--task", "fingerprint");
-        assertEquals(Cli.EXIT_OK, code, err());
-        assertTrue(out().contains(":app:appA:fingerprint"), out());
-        assertTrue(out().contains("k2") && out().contains("core.jar") && out().contains("h2"), out());
-    }
-
-    @Test void staleScratchFilesAreSweptAndNewOnesRemoved() throws Exception {
-        Files.createDirectories(scratch);
-        Path stale = Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
-
-        run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv");
-
-        assertFalse(Files.exists(stale), "a killed run's hash files are removed at start");
-        assertTrue(err().contains("removed 1 stale scratch file"), err());
-        try (Stream<Path> left = Files.list(scratch)) {
-            assertTrue(left.noneMatch(p -> p.getFileName().toString().startsWith("hashes-")), "hash files created by this run are removed at the end");
-        }
-    }
-}
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java
+index 10bfbe0..38ffd69 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java
+@@ -140,4 +140,21 @@ class RevisionRangeTest {
+         UsageException e = assertThrows(UsageException.class, () -> new RevisionRange(git, repo).resolve("v1", "HEAD"));
+         assertTrue(e.getMessage().contains(C), e.getMessage());
+     }
++
++    @Test void resolveOneReturnsTheCommit() throws Exception {
++        FakeProcessRunner git = new FakeProcessRunner()
++                .on("git rev-parse --verify --quiet HEAD^{commit}", 0, B + "\n", "")
++                .on("git log -1 --format=%H%x1f%P%x1f%s " + B, 0, B + "\u001f\u001fcore: add shout\n", "");
++
++        assertEquals(new Commit(B, "core: add shout"), new RevisionRange(git, repo).resolveOne("HEAD"));
++    }
++
++    // Real git, under --quiet, exits 1 with no stderr for an unresolvable revision (see RevisionRangeTest's
++    // unknownRevisionIsAUsageError and revParseFailureOtherThanExitOneIsAProviderError from Task 9).
++    @Test void resolveOneRejectsUnknownRevision() {
++        FakeProcessRunner git = new FakeProcessRunner()
++                .on("git rev-parse --verify --quiet zzz^{commit}", 1, "", "");
++
++        assertThrows(UsageException.class, () -> new RevisionRange(git, repo).resolveOne("zzz"));
++    }
+ }
 ```
 
-- [ ] **Step 3: Run the tests to verify they fail**
-
-Run: `./gradlew :tools:tracer:test --tests '*CliTest*' --tests '*RevisionRangeTest*'`
-Expected: FAIL at compile — the `Cli` constructor and `run` do not exist; `resolveOne` not found.
-
-- [ ] **Step 4: Implement `resolveOne` and the Cli**
-
-Add to `RevisionRange`:
-```java
-    /** A single revision as a Commit (for {@code --at}). */
-    public Commit resolveOne(String rev) throws UsageException, ProviderException {
-        String sha = revParse(rev);
-        return parse(run("git", "log", "-1", FORMAT, sha).stdout().strip());
-    }
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index 0b857c9..fec6aad 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -1,21 +1,28 @@
+ package io.joeyang.tracer.cli;
+ 
++import java.io.IOException;
+ import java.io.PrintStream;
++import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.time.Duration;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Optional;
++import java.util.Set;
+ import java.util.function.Function;
+ import java.util.function.Supplier;
+ import java.util.regex.Pattern;
++import java.util.stream.Stream;
+ 
+-/** Entry point. Options parsing lives here; the range walk arrives in the next task. */
++/** Entry point: parses options and walks the range through worktrees, printing the verdicts. {@code --at} is a placeholder until a later commit. */
+ public final class Cli {
+     public static final int EXIT_OK = 0;
+     public static final int EXIT_USAGE = 1;
+     public static final int EXIT_TOOL_FAILURE = 2;
+     public static final int EXIT_CHANGED = 3;
+-
+-    // The JVM ignores $TMPDIR on Linux (java.io.tmpdir is always /tmp), so read it directly to keep the
+-    // documented $TMPDIR/gradle-tracer behaviour true. Wired into main() in the next task.
++    // The JVM ignores $TMPDIR on Linux (java.io.tmpdir is always /tmp), so the default scratch root
++    // reads the environment variable directly.
++    /** One fixed scratch root, so the next run finds and removes whatever a killed run left behind. */
+     static final Path DEFAULT_SCRATCH = defaultScratchRoot(System::getenv, () -> System.getProperty("java.io.tmpdir"));
+ 
+     // <app> is used as a directory name under app/; restrict it so a path-like or option-like value
+@@ -148,7 +155,19 @@ public final class Cli {
+         }
+     }
+ 
+-    private Cli() {}
++    private final ProcessRunner runner;
++    private final Path repo;
++    private final Path scratch;
++    private final KeyProvider keys;
++    private final ImpactProvider impacts; // null when --no-bazel
++
++    Cli(ProcessRunner runner, Path repo, Path scratch, KeyProvider keys, ImpactProvider impacts) {
++        this.runner = runner;
++        this.repo = repo;
++        this.scratch = scratch;
++        this.keys = keys;
++        this.impacts = impacts;
++    }
+ 
+     // Package-private and parameterized by lookup functions so the TMPDIR-vs-fallback behaviour is
+     // directly testable without touching real environment variables or system properties.
+@@ -161,20 +180,155 @@ public final class Cli {
+         return Path.of(base, "gradle-tracer").toAbsolutePath().normalize();
+     }
+ 
++    public static void main(String[] args) {
++        Options options;
++        try {
++            options = Options.parse(args);
++        } catch (UsageException e) {
++            System.exit(usage(System.err, e.getMessage()));
++            return;
++        }
++        ProcessRunner runner = new DefaultProcessRunner();
++        Path repo = Path.of("").toAbsolutePath();
++        KeyProvider keys = new GradleKeyProvider(runner, options.offline(), options.timeout());
++        ImpactProvider impacts = options.bazel() ? new BazelDiffProvider(runner, repo, options.offline(), options.timeout()) : null;
++        System.exit(new Cli(runner, repo, DEFAULT_SCRATCH, keys, impacts).run(options, System.out, System.err));
++    }
++
+     static int usage(PrintStream err, String problem) {
+         err.println("trace: " + problem);
+         err.print(USAGE);
+         return EXIT_USAGE;
+     }
+ 
+-    public static void main(String[] args) {
++    int run(Options o, PrintStream out, PrintStream err) {
+         try {
+-            Options.parse(args);
++            if (!Files.isDirectory(repo.resolve("app").resolve(o.app()))) {
++                throw new UsageException("unknown app '" + o.app() + "': expected a directory app/" + o.app());
++            }
++            if (o.at() != null) {
++                err.println("trace: --at arrives in a later commit");
++                return EXIT_TOOL_FAILURE;
++            }
++            checkTsvOutWritable(o);
++            return range(o, out, err);
+         } catch (UsageException e) {
+-            System.exit(usage(System.err, e.getMessage()));
++            return usage(err, e.getMessage());
++        } catch (ProviderException e) {
++            err.println("trace: " + e.getMessage());
++            return EXIT_TOOL_FAILURE;
++        }
++    }
++
++    /**
++     * Checked before any worktree is created or any git command beyond option parsing runs, so a bad
++     * {@code --tsv-out} path fails fast instead of after a whole range walk has already run.
++     */
++    private void checkTsvOutWritable(Options o) throws UsageException {
++        Path tsvOut = o.tsvOut();
++        if (tsvOut == null) {
+             return;
+         }
+-        System.err.println("trace: options accepted; the range walk arrives in a later commit");
+-        System.exit(EXIT_TOOL_FAILURE);
++        if (Files.isDirectory(tsvOut)) {
++            throw new UsageException("--tsv-out '" + tsvOut + "' is a directory");
++        }
++        Path parent = tsvOut.toAbsolutePath().getParent();
++        if (parent == null) {
++            parent = Path.of("").toAbsolutePath();
++        }
++        if (!Files.isDirectory(parent)) {
++            throw new UsageException("--tsv-out '" + tsvOut + "': parent directory " + parent + " does not exist");
++        }
++        if (!Files.isWritable(parent)) {
++            throw new UsageException("--tsv-out '" + tsvOut + "': parent directory " + parent + " is not writable");
++        }
++    }
++
++    private int range(Options o, PrintStream out, PrintStream err) throws UsageException, ProviderException {
++        List<Commit> commits = new RevisionRange(runner, repo).resolve(o.from(), o.to());
++        int swept = deleteScratchFiles();
++        if (swept > 0) {
++            err.println("trace: removed " + swept + " stale scratch file(s) under " + scratch);
++        }
++        List<Verdict> rows = new ArrayList<>();
++        try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
++            Optional<TaskKey> previousGood = Optional.empty();
++            Path previousHashes = null;
++            boolean bazelAlive = impacts != null;
++            for (Commit commit : commits) {
++                Path worktree = pool.checkout(commit);
++                Optional<TaskKey> key = Optional.empty();
++                Optional<String> error = Optional.empty();
++                try {
++                    key = Optional.of(keys.keyFor(worktree, o.taskPath()));
++                } catch (ProviderException e) {
++                    error = Optional.of(e.getMessage());
++                }
++                BazelStatus bazel = BazelStatus.NONE;
++                if (bazelAlive) {
++                    try {
++                        Path hashes = impacts.hashes(worktree, scratch.resolve("hashes-" + commit.shortSha() + ".json"));
++                        if (previousHashes != null) {
++                            Set<String> impacted = impacts.impactedTargets(previousHashes, hashes);
++                            bazel = impacted.contains(o.bazelTarget()) ? BazelStatus.IMPACTED : BazelStatus.CLEAN;
++                        }
++                        previousHashes = hashes;
++                    } catch (ProviderException e) {
++                        err.println("trace: bazel-diff unavailable: " + e.getMessage());
++                        bazelAlive = false;
++                        bazel = BazelStatus.NOT_AVAILABLE;
++                    }
++                } else if (impacts != null) {
++                    bazel = BazelStatus.NOT_AVAILABLE;
++                }
++                rows.add(KeyComparator.verdict(commit, previousGood, key, error, bazel));
++                if (key.isPresent()) {
++                    previousGood = key;
++                }
++                if (!o.keepWorktrees()) {
++                    pool.release(worktree);
++                }
++            }
++        }
++        if (!o.keepWorktrees()) {
++            deleteScratchFiles();
++        }
++        String tsv = TableRenderer.renderTsv(rows);
++        if (o.tsv()) {
++            out.print(tsv);
++        } else {
++            out.print(TableRenderer.render(o.taskPath(), impacts == null ? null : o.bazelTarget(), rows));
++        }
++        if (o.tsvOut() != null) {
++            try {
++                Files.writeString(o.tsvOut(), tsv);
++            } catch (IOException e) {
++                throw new ProviderException("cannot write " + o.tsvOut() + ": " + e.getMessage(), e);
++            }
++        }
++        if (rows.stream().anyMatch(v -> v.status() == Status.BUILD_FAILED)) {
++            return EXIT_TOOL_FAILURE;
++        }
++        return rows.stream().anyMatch(v -> v.status() == Status.CHANGED) ? EXIT_CHANGED : EXIT_OK;
++    }
++
++    /** Deletes bazel-diff hash and impacted-target files under the scratch root; returns how many went. */
++    private int deleteScratchFiles() {
++        if (!Files.isDirectory(scratch)) {
++            return 0;
++        }
++        int count = 0;
++        try (Stream<Path> entries = Files.list(scratch)) {
++            for (Path p : entries.toList()) {
++                String name = p.getFileName().toString();
++                if (Files.isRegularFile(p) && (name.startsWith("hashes-") || name.endsWith(".impacted.txt"))) {
++                    Files.deleteIfExists(p);
++                    count++;
++                }
++            }
++        } catch (IOException ignored) {
++            // best effort
++        }
++        return count;
+     }
+ }
 ```
 
-Replace `tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java` with (the `USAGE` text and the `Options` record are unchanged from Task 12 and repeated so the file is complete):
-```java
-package io.joeyang.tracer.cli;
-
-import java.io.IOException;
-import java.io.PrintStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Optional;
-import java.util.Set;
-import java.util.function.Function;
-import java.util.function.Supplier;
-import java.util.regex.Pattern;
-import java.util.stream.Stream;
-
-/** Entry point: parses options, walks the range through worktrees, prints the verdicts. */
-public final class Cli {
-    public static final int EXIT_OK = 0;
-    public static final int EXIT_USAGE = 1;
-    public static final int EXIT_TOOL_FAILURE = 2;
-    public static final int EXIT_CHANGED = 3;
-    // The JVM ignores $TMPDIR on Linux (java.io.tmpdir is always /tmp), so the default scratch root
-    // reads the environment variable directly.
-    /** One fixed scratch root, so the next run finds and removes whatever a killed run left behind. */
-    static final Path DEFAULT_SCRATCH = defaultScratchRoot(System::getenv, () -> System.getProperty("java.io.tmpdir"));
-
-    // <app> is used as a directory name under app/; restrict it so a path-like or option-like value
-    // never reaches the filesystem lookup.
-    private static final Pattern APP_NAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_-]*");
-
-    static final String USAGE = """
-            usage: trace <app> --from <rev> --to <rev> [--task <name>] [--no-bazel] [--offline] [--keep-worktrees]
-                                                        [--tsv] [--tsv-out <file>] [--timeout-minutes <n>]
-                   trace <app> --at <rev> [--task <name>] [--offline] [--keep-worktrees] [--timeout-minutes <n>]
-
-              <app>            appA | appB | appC   (maps to :app:<app>:<task> and //app/<app>:<app>)
-              --task           Gradle task whose cache key is compared; default compileJava, alternative fingerprint
-              --no-bazel       skip the bazel-diff column
-              --offline        pass --offline to gradle; forbid repository downloads in bazel
-              --keep-worktrees leave the checked-out worktrees and hash files in place for inspection
-              --tsv            machine-readable output only (sha, subject, key, bazel, verdict, culprits)
-              --tsv-out <file> print the table and also write the TSV to <file>
-              --timeout-minutes per external command, default 10
-
-            exit codes: 0 no change, 1 usage error, 2 a tool failed, 3 at least one CHANGED
-            """;
-
-    /** Parsed command line. */
-    record Options(String app, String from, String to, String at, String task, boolean bazel, boolean offline,
-                   boolean keepWorktrees, boolean tsv, Path tsvOut, Duration timeout) {
-
-        static Options parse(String[] args) throws UsageException {
-            if (args.length == 0) {
-                throw new UsageException("missing <app>");
-            }
-            String app = args[0];
-            if (!APP_NAME.matcher(app).matches()) {
-                throw new UsageException("'" + app + "' is not a valid app name: expected letters, digits, "
-                        + "'-' or '_', starting with a letter or digit");
-            }
-            String from = null, to = null, at = null, task = "compileJava";
-            boolean bazel = true, offline = false, keep = false, tsv = false;
-            Path tsvOut = null;
-            Duration timeout = Duration.ofMinutes(10);
-            for (int i = 1; i < args.length; i++) {
-                String flag = args[i];
-                switch (flag) {
-                    case "--no-bazel" -> bazel = false;
-                    case "--offline" -> offline = true;
-                    case "--keep-worktrees" -> keep = true;
-                    case "--tsv" -> tsv = true;
-                    case "--from", "--to", "--at", "--task", "--tsv-out", "--timeout-minutes" -> {
-                        if (i + 1 >= args.length) {
-                            throw new UsageException(flag + " needs a value");
-                        }
-                        String value = args[++i];
-                        // A blank value, or one that looks like another flag, is almost always a missing
-                        // value swallowing the next option. Excluded for --timeout-minutes, whose own
-                        // numeric validation below gives a strictly more specific error for a negative or
-                        // zero value.
-                        if (!flag.equals("--timeout-minutes") && (value.isBlank() || value.startsWith("-"))) {
-                            throw new UsageException(flag + " needs a value, got '" + value + "'");
-                        }
-                        switch (flag) {
-                            case "--from" -> from = value;
-                            case "--to" -> to = value;
-                            case "--at" -> at = value;
-                            case "--task" -> task = value;
-                            case "--tsv-out" -> tsvOut = Path.of(value);
-                            default -> timeout = parseMinutes(value);
-                        }
-                    }
-                    default -> throw new UsageException("unknown option '" + flag + "'");
-                }
-            }
-            if (at != null && (from != null || to != null)) {
-                throw new UsageException("use either --at or --from/--to, not both");
-            }
-            if (at == null && (from == null || to == null)) {
-                throw new UsageException("--from and --to are both required (or use --at)");
-            }
-            // --at prints the key and its composition with no comparison, so the comparison-only flags
-            // are meaningless alongside it.
-            if (at != null && tsv) {
-                throw new UsageException("--at cannot be combined with --tsv");
-            }
-            if (at != null && tsvOut != null) {
-                throw new UsageException("--at cannot be combined with --tsv-out");
-            }
-            if (at != null && !bazel) {
-                throw new UsageException("--at cannot be combined with --no-bazel");
-            }
-            return new Options(app, from, to, at, task, bazel, offline, keep, tsv, tsvOut, timeout);
-        }
-
-        // ASCII digits only (optional leading '-'), checked before parsing, so a non-ASCII digit is
-        // "needs a whole number" and an all-digit value too long to fit a long is distinguished as
-        // "too large".
-        private static final Pattern TIMEOUT_VALUE = Pattern.compile("-?[0-9]+");
-
-        private static Duration parseMinutes(String value) throws UsageException {
-            if (!TIMEOUT_VALUE.matcher(value).matches()) {
-                throw new UsageException("--timeout-minutes needs a whole number, got '" + value + "'");
-            }
-            long minutes;
-            try {
-                minutes = Long.parseLong(value);
-            } catch (NumberFormatException e) {
-                // A value with too many digits to fit a long overflows here, including a negative one
-                // (e.g. a minus sign followed by twenty 9s): "too large" fits either sign equally well.
-                throw new UsageException("--timeout-minutes is too large, got '" + value + "'");
-            }
-            // DefaultProcessRunner rejects a zero or negative timeout with an unchecked exception, so
-            // validate it here as a usage error instead of ever passing one through.
-            if (minutes <= 0) {
-                throw new UsageException("--timeout-minutes must be a positive integer, got " + minutes);
-            }
-            try {
-                return Duration.ofMinutes(minutes);
-            } catch (ArithmeticException e) {
-                // Duration.ofMinutes overflows for absurdly large inputs; map that to a usage error instead
-                // of letting ArithmeticException escape main().
-                throw new UsageException("--timeout-minutes is too large, got '" + value + "'");
-            }
-        }
-
-        String taskPath() {
-            return ":app:" + app + ":" + task;
-        }
-
-        String bazelTarget() {
-            return "//app/" + app + ":" + app;
-        }
-    }
-
-    private final ProcessRunner runner;
-    private final Path repo;
-    private final Path scratch;
-    private final KeyProvider keys;
-    private final ImpactProvider impacts; // null when --no-bazel
-
-    Cli(ProcessRunner runner, Path repo, Path scratch, KeyProvider keys, ImpactProvider impacts) {
-        this.runner = runner;
-        this.repo = repo;
-        this.scratch = scratch;
-        this.keys = keys;
-        this.impacts = impacts;
-    }
-
-    // Package-private and parameterized so the TMPDIR-vs-fallback behaviour is directly testable.
-    static Path defaultScratchRoot(Function<String, String> getenv, Supplier<String> javaIoTmpdir) {
-        String tmpdir = getenv.apply("TMPDIR");
-        String base = (tmpdir != null && !tmpdir.isBlank()) ? tmpdir : javaIoTmpdir.get();
-        // Child processes such as <worktree>/gradlew run inside the worktree, so a relative root would
-        // resolve differently there; resolve it once against the JVM's working directory (the repo root
-        // after ./trace's cd).
-        return Path.of(base, "gradle-tracer").toAbsolutePath().normalize();
-    }
-
-    public static void main(String[] args) {
-        Options options;
-        try {
-            options = Options.parse(args);
-        } catch (UsageException e) {
-            System.exit(usage(System.err, e.getMessage()));
-            return;
-        }
-        ProcessRunner runner = new DefaultProcessRunner();
-        Path repo = Path.of("").toAbsolutePath();
-        KeyProvider keys = new GradleKeyProvider(runner, options.offline(), options.timeout());
-        ImpactProvider impacts = options.bazel() ? new BazelDiffProvider(runner, repo, options.offline(), options.timeout()) : null;
-        System.exit(new Cli(runner, repo, DEFAULT_SCRATCH, keys, impacts).run(options, System.out, System.err));
-    }
-
-    static int usage(PrintStream err, String problem) {
-        err.println("trace: " + problem);
-        err.print(USAGE);
-        return EXIT_USAGE;
-    }
-
-    int run(Options o, PrintStream out, PrintStream err) {
-        try {
-            if (!Files.isDirectory(repo.resolve("app").resolve(o.app()))) {
-                throw new UsageException("unknown app '" + o.app() + "': expected a directory app/" + o.app());
-            }
-            return o.at() != null ? at(o, out) : range(o, out, err);
-        } catch (UsageException e) {
-            return usage(err, e.getMessage());
-        } catch (ProviderException e) {
-            err.println("trace: " + e.getMessage());
-            return EXIT_TOOL_FAILURE;
-        }
-    }
-
-    private int range(Options o, PrintStream out, PrintStream err) throws UsageException, ProviderException {
-        List<Commit> commits = new RevisionRange(runner, repo).resolve(o.from(), o.to());
-        int swept = deleteScratchFiles();
-        if (swept > 0) {
-            err.println("trace: removed " + swept + " stale scratch file(s) under " + scratch);
-        }
-        List<Verdict> rows = new ArrayList<>();
-        try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
-            Optional<TaskKey> previousGood = Optional.empty();
-            Path previousHashes = null;
-            boolean bazelAlive = impacts != null;
-            for (Commit commit : commits) {
-                Path worktree = pool.checkout(commit);
-                Optional<TaskKey> key = Optional.empty();
-                Optional<String> error = Optional.empty();
-                try {
-                    key = Optional.of(keys.keyFor(worktree, o.taskPath()));
-                } catch (ProviderException e) {
-                    error = Optional.of(e.getMessage());
-                }
-                BazelStatus bazel = BazelStatus.NONE;
-                if (bazelAlive) {
-                    try {
-                        Path hashes = impacts.hashes(worktree, scratch.resolve("hashes-" + commit.shortSha() + ".json"));
-                        if (previousHashes != null) {
-                            Set<String> impacted = impacts.impactedTargets(previousHashes, hashes);
-                            bazel = impacted.contains(o.bazelTarget()) ? BazelStatus.IMPACTED : BazelStatus.CLEAN;
-                        }
-                        previousHashes = hashes;
-                    } catch (ProviderException e) {
-                        err.println("trace: bazel-diff unavailable: " + e.getMessage());
-                        bazelAlive = false;
-                        bazel = BazelStatus.NOT_AVAILABLE;
-                    }
-                } else if (impacts != null) {
-                    bazel = BazelStatus.NOT_AVAILABLE;
-                }
-                rows.add(KeyComparator.verdict(commit, previousGood, key, error, bazel));
-                if (key.isPresent()) {
-                    previousGood = key;
-                }
-                if (!o.keepWorktrees()) {
-                    pool.release(worktree);
-                }
-            }
-        }
-        if (!o.keepWorktrees()) {
-            deleteScratchFiles();
-        }
-        String tsv = TableRenderer.renderTsv(rows);
-        if (o.tsv()) {
-            out.print(tsv);
-        } else {
-            out.print(TableRenderer.render(o.taskPath(), impacts == null ? null : o.bazelTarget(), rows));
-        }
-        if (o.tsvOut() != null) {
-            try {
-                Files.writeString(o.tsvOut(), tsv);
-            } catch (IOException e) {
-                throw new ProviderException("cannot write " + o.tsvOut() + ": " + e.getMessage(), e);
-            }
-        }
-        if (rows.stream().anyMatch(v -> v.status() == Status.BUILD_FAILED)) {
-            return EXIT_TOOL_FAILURE;
-        }
-        return rows.stream().anyMatch(v -> v.status() == Status.CHANGED) ? EXIT_CHANGED : EXIT_OK;
-    }
-
-    /** Deletes bazel-diff hash and impacted-target files under the scratch root; returns how many went. */
-    private int deleteScratchFiles() {
-        if (!Files.isDirectory(scratch)) {
-            return 0;
-        }
-        int count = 0;
-        try (Stream<Path> entries = Files.list(scratch)) {
-            for (Path p : entries.toList()) {
-                String name = p.getFileName().toString();
-                if (Files.isRegularFile(p) && (name.startsWith("hashes-") || name.endsWith(".impacted.txt"))) {
-                    Files.deleteIfExists(p);
-                    count++;
-                }
-            }
-        } catch (IOException ignored) {
-            // best effort
-        }
-        return count;
-    }
-
-    private int at(Options o, PrintStream out) throws UsageException, ProviderException {
-        Commit commit = new RevisionRange(runner, repo).resolveOne(o.at());
-        try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
-            TaskKey key = keys.keyFor(pool.checkout(commit), o.taskPath());
-            out.println(key.taskPath() + " at " + commit.shortSha() + " " + commit.subject());
-            out.println("key: " + key.key());
-            out.println("implementation: " + key.implementation());
-            key.valueFingerprints().forEach((property, hash) -> out.println("value " + property + ": " + hash));
-            key.fileFingerprints().forEach((property, files) -> {
-                out.println("files " + property + ":");
-                files.forEach((path, hash) -> out.println("  " + KeyComparator.displayName(path) + "  " + hash));
-            });
-        }
-        return EXIT_OK;
-    }
-}
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+new file mode 100644
+index 0000000..15fbada
+--- /dev/null
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -0,0 +1,177 @@
++package io.joeyang.tracer.cli;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++import java.io.ByteArrayOutputStream;
++import java.io.IOException;
++import java.io.PrintStream;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.Map;
++import java.util.Set;
++import java.util.stream.Stream;
++import org.junit.jupiter.api.BeforeEach;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++
++class CliTest {
++    static final String A = "a".repeat(40), B = "b".repeat(40), C = "c".repeat(40);
++    @TempDir Path tmp;
++    Path repo, scratch;
++    FakeProcessRunner git;
++    final ByteArrayOutputStream out = new ByteArrayOutputStream();
++    final ByteArrayOutputStream err = new ByteArrayOutputStream();
++
++    @BeforeEach
++    void setUp() throws IOException {
++        repo = tmp.resolve("repo");
++        scratch = tmp.resolve("scratch");
++        Files.createDirectories(repo.resolve("app/appA"));
++        git = new FakeProcessRunner()
++                .on("git rev-parse --verify --quiet base^{commit}", 0, A + "\n", "")
++                .on("git rev-parse --verify --quiet tip^{commit}", 0, C + "\n", "")
++                .on("git log -1 --format=%H%x1f%P%x1f%s " + A, 0, A + "\u001f\u001fbaseline\n", "")
++                .on("git log -1 --format=%H%x1f%P%x1f%s " + C, 0, C + "\u001f" + B + "\u001fdocs only\n", "")
++                .on("git log --reverse --first-parent --format=%H%x1f%P%x1f%s " + A + ".." + C, 0,
++                        B + "\u001f" + A + "\u001fcore: add shout\n" + C + "\u001f" + B + "\u001fdocs only\n", "")
++                .on("git worktree", 0, "", "");
++    }
++
++    static TaskKey key(String task, String hash, String jarHash) {
++        return new TaskKey(task, hash, Map.of("classpath", Map.of("/wt/core/build/libs/core.jar", jarHash)), Map.of(), "impl");
++    }
++
++    final KeyProvider keys = (wt, task) -> switch (wt.getFileName().toString()) {
++        case "wt-aaaaaaa" -> key(task, "k1", "h1");
++        case "wt-bbbbbbb", "wt-ccccccc" -> key(task, "k2", "h2");
++        default -> throw new ProviderException("unexpected worktree " + wt);
++    };
++
++    /** Writes a hashes file like the real tool does, and reports appA impacted for commit B only. */
++    final ImpactProvider impacts = new ImpactProvider() {
++        @Override public Path hashes(Path worktree, Path output) throws ProviderException {
++            try {
++                return Files.writeString(output, "{}");
++            } catch (IOException e) {
++                throw new ProviderException(e.getMessage(), e);
++            }
++        }
++        @Override public Set<String> impactedTargets(Path previous, Path current) {
++            return current.getFileName().toString().contains("bbbbbbb") ? Set.of("//app/appA:appA") : Set.of();
++        }
++    };
++
++    int run(KeyProvider k, ImpactProvider i, String... args) throws UsageException {
++        return new Cli(git, repo, scratch, k, i).run(Cli.Options.parse(args),
++                new PrintStream(out, true, StandardCharsets.UTF_8), new PrintStream(err, true, StandardCharsets.UTF_8));
++    }
++
++    String out() { return out.toString(StandardCharsets.UTF_8); }
++    String err() { return err.toString(StandardCharsets.UTF_8); }
++
++    @Test void rangeRendersTableAndExits3WhenSomethingChanged() throws Exception {
++        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
++
++        assertEquals(Cli.EXIT_CHANGED, code, err());
++        assertTrue(out().contains("bbbbbbb  core: add shout") && out().contains("CHANGED") && out().contains("core.jar"), out());
++        assertTrue(out().contains("ccccccc  docs only") && out().contains("clean"), out());
++        assertTrue(out().contains("//app/appA:appA (bazel-diff)"), out());
++        assertTrue(git.ran("git worktree remove --force"), "worktrees must be removed");
++    }
++
++    @Test void tsvGoesToStdoutWithoutTable() throws Exception {
++        run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv");
++        assertTrue(out().startsWith(A + "\tbaseline\tk1\t-\tbase\t"), out());
++        assertEquals(3, out().split("\n").length);
++    }
++
++    @Test void tsvOutWritesFileAndKeepsTheTable() throws Exception {
++        Path file = tmp.resolve("rows.tsv");
++        run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", file.toString());
++        assertTrue(out().contains("Tracing inputs of"), out());
++        assertTrue(Files.readString(file).contains(B + "\tcore: add shout\tk2\timpacted\tCHANGED\tcore.jar"));
++    }
++
++    @Test void keyFailureForOneCommitGivesBuildFailedRowAndExit2() throws Exception {
++        KeyProvider flaky = (wt, task) -> {
++            if (wt.getFileName().toString().equals("wt-bbbbbbb")) {
++                throw new ProviderException("Could not resolve com.example:missing:1.0");
++            }
++            return keys.keyFor(wt, task);
++        };
++        int code = run(flaky, impacts, "appA", "--from", "base", "--to", "tip", "--tsv");
++
++        assertEquals(Cli.EXIT_TOOL_FAILURE, code);
++        String[] rows = out().split("\n");
++        assertTrue(rows[1].contains("\tBUILD-FAILED\tCould not resolve com.example:missing:1.0"), rows[1]);
++        assertTrue(rows[2].contains("\tCHANGED\t"), "third commit is compared with the last good key: " + rows[2]);
++    }
++
++    @Test void bazelFailureDegradesToNotAvailable() throws Exception {
++        ImpactProvider broken = new ImpactProvider() {
++            @Override public Path hashes(Path worktree, Path output) throws ProviderException { throw new ProviderException("bazel: command not found"); }
++            @Override public Set<String> impactedTargets(Path p, Path c) { return Set.of(); }
++        };
++        int code = run(keys, broken, "appA", "--from", "base", "--to", "tip", "--tsv");
++
++        assertEquals(Cli.EXIT_CHANGED, code);
++        assertTrue(err().contains("bazel-diff unavailable: bazel: command not found"), err());
++        assertTrue(out().split("\n")[1].contains("\tn/a\t"), out());
++    }
++
++    @Test void noBazelOmitsTheColumnSource() throws Exception {
++        run(keys, null, "appA", "--from", "base", "--to", "tip", "--no-bazel");
++        assertFalse(out().contains("bazel-diff)"), out());
++        assertTrue(out().contains("Tracing inputs of :app:appA:compileJava (gradle) over 2 commits"), out());
++    }
++
++    @Test void unknownAppIsAUsageError() throws Exception {
++        int code = run(keys, impacts, "appZ", "--from", "base", "--to", "tip");
++        assertEquals(Cli.EXIT_USAGE, code);
++        assertTrue(err().contains("appZ"), err());
++    }
++
++    @Test void unknownFromRevisionIsAUsageError() throws Exception {
++        git.on("git rev-parse --verify --quiet nope^{commit}", 1, "", "");
++        int code = run(keys, impacts, "appA", "--from", "nope", "--to", "tip");
++        assertEquals(Cli.EXIT_USAGE, code, err());
++        assertTrue(err().contains("nope"), err());
++    }
++
++    @Test void atArrivesInALaterCommit() throws Exception {
++        int code = run(keys, impacts, "appA", "--at", "tip", "--task", "fingerprint");
++        assertEquals(Cli.EXIT_TOOL_FAILURE, code);
++        assertTrue(err().contains("--at arrives in a later commit"), err());
++    }
++
++    @Test void tsvOutWithMissingParentIsAUsageError() throws Exception {
++        Path file = tmp.resolve("missing-dir/rows.tsv");
++        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", file.toString());
++        assertEquals(Cli.EXIT_USAGE, code, err());
++        assertTrue(err().contains(file.toString()), err());
++        assertFalse(git.ran("git worktree"), "no worktree work before the tsv-out pre-check fails");
++    }
++
++    @Test void tsvOutThatIsADirectoryIsAUsageError() throws Exception {
++        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", tmp.toString());
++        assertEquals(Cli.EXIT_USAGE, code, err());
++        assertTrue(err().contains(tmp.toString()), err());
++        assertFalse(git.ran("git worktree"), "no worktree work before the tsv-out pre-check fails");
++    }
++
++    @Test void staleScratchFilesAreSweptAndNewOnesRemoved() throws Exception {
++        Files.createDirectories(scratch);
++        Path stale = Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
++
++        run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv");
++
++        assertFalse(Files.exists(stale), "a killed run's hash files are removed at start");
++        assertTrue(err().contains("removed 1 stale scratch file"), err());
++        try (Stream<Path> left = Files.list(scratch)) {
++            assertTrue(left.noneMatch(p -> p.getFileName().toString().startsWith("hashes-")), "hash files created by this run are removed at the end");
++        }
++    }
++}
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
-
-Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 212 tests at this point in the sequence (201 going into this task per Task 12's
-thrice-amended count, plus the 2 `RevisionRangeTest` cases and 9 `CliTest` cases this task adds). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
-
-- [ ] **Step 6: Document and commit**
-
-Append to `docs/tracer.md`:
-```markdown
-## Range walk
-Worktrees and bazel-diff hash files live under one fixed root, `$TMPDIR/gradle-tracer/`. At start the tracer prunes git's
-worktree list, deletes stale `wt-*` directories and stale `hashes-*.json`/`*.impacted.txt` files left by a killed run, and
-reports how many it removed; at the end it removes what it created unless `--keep-worktrees`. If bazel-diff fails once, the
-rest of the Bazel column is `n/a` and a warning goes to stderr. A commit whose Gradle run fails is `BUILD-FAILED`; the next
-commit is compared against the last good key.
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 93473b4..49a8726 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -1,8 +1,9 @@
+ # tracer
+ 
+-`tools/tracer` is a Java CLI. Today `Cli.main` parses and validates options. On a usage error it exits 1 with the
+-usage text. Valid options currently exit 2, printing a not-implemented message, because no verdict is produced
+-yet. The range walk, the `./trace` wrapper and exit codes 0 and 3 arrive in later commits.
++`tools/tracer` is a Java CLI. `Cli.main` parses options, then walks the `--from`/`--to` range through detached
++git worktrees, asking the Gradle and bazel-diff providers about each commit and printing a verdict table. On a
++usage error it exits 1 with the usage text. `--at` currently exits 2 with a placeholder message; it and the
++`./trace` wrapper arrive in later commits.
+ 
+ ## Vocabulary (`io.joeyang.tracer.cli`)
+ | type | meaning |
+@@ -15,12 +16,11 @@ yet. The range walk, the `./trace` wrapper and exit codes 0 and 3 arrive in late
+ | `BazelStatus` | `IMPACTED`, `CLEAN`, `NOT_AVAILABLE`, `NONE` — the informational column |
+ | `Verdict` | one table row |
+ | `KeyProvider`, `ImpactProvider` | the two oracles behind interfaces so tests can fake them |
+-| `UsageException` → exit 1 (wired); `ProviderException` → exit 2, wired by a later commit | error classes |
++| `UsageException` → exit 1; `ProviderException` → exit 2 | error classes |
+ 
+ ## Exit codes
+-0 no change in range · 1 usage error (wired) · 2 a tool failed (some row is BUILD-FAILED) · 3 at least one
+-CHANGED — 0, the "a tool failed" sense of 2, and 3 are wired by a later commit; `Cli.main` exits 2 today as an
+-interim placeholder whenever the options are valid.
++0 no change in range · 1 usage error · 2 a tool failed (some row is BUILD-FAILED, or `--at`'s placeholder) · 3
++at least one CHANGED. 2 wins over 3 when a range has both a BUILD-FAILED row and a CHANGED row.
+ 
+ ## Gradle oracle
+ `GradleKeyProvider` runs `<worktree>/gradlew --console=plain --no-parallel --build-cache -Dorg.gradle.caching.debug=true <task>`
+@@ -47,15 +47,14 @@ non-blank line with the following line when that one is indented (e.g. "Selectio
+ match ..." for an unknown task, where the real cause is the indented continuation, not the header's own first line).
+ Failing that, it falls back to the first non-blank stderr/stdout line. The task path is named in the message either way.
+ A line inside the target task's own cache-debug block that CacheDebugLog cannot recognise is reported the same way, as a
+-`ProviderException` naming the task and the offending line, instead of escaping uncaught. Computing *which* culprit
+-changed between two commits' `TaskKey`s, and the `./trace` revision-range walk that drives this provider, arrive in
+-later commits.
++`ProviderException` naming the task and the offending line, instead of escaping uncaught.
+ 
+ ## Bazel oracle
+ `BazelDiffProvider` — see `docs/bazel-build.md`. Failure modes: binary missing → the error names `tools/fetch-bazel-diff.sh`;
+ non-zero exit → the real Bazel `ERROR:` line (not bazel-diff's own wrapper line); no output file → explicit error;
+-a stray non-label line in `get-impacted-targets`' output → explicit error naming the line. Mapping these into the
+-`BazelStatus` column (`NOT_AVAILABLE` rather than failing the whole row) arrives in a later commit.
++a stray non-label line in `get-impacted-targets`' output → explicit error naming the line. The `Cli` range walk maps
++any of these failures to `BazelStatus.NOT_AVAILABLE` for the rest of the range (rather than failing the whole row)
++and prints a warning to stderr once, the first time bazel-diff fails.
+ 
+ ## Git layer
+ - `RevisionRange.resolve(from, to)` → `[from, …from..to oldest first]`, following the first-parent line so adjacent rows are parent and child even across merges. `from` must be an ancestor of `to` on that first-parent line (each row's own first parent, from `%P`, must equal the previous row's sha); a side-branch commit pulled in by a merge is a `UsageException` naming both shas, not a silent mismatch. Unknown revision (`git rev-parse --verify --quiet` exit 1) or an empty range → `UsageException`; any other git failure (not runnable, exit 128, a malformed `git log` line) → `ProviderException`, naming the offending line where there is one.
+@@ -93,15 +92,16 @@ is a usage error naming the rejected value. Every value-taking option (`--from`,
+ `--tsv-out`) rejects a value that is blank or starts with `-`, so a missing value can't silently swallow the
+ next option: `--from --to y` fails naming `--from`, rather than failing later on `y` as an unknown option; a
+ value missing at the end of the arguments fails the same way, naming the option. The one exception is
+-`--timeout-minutes`: its values are validated as integers instead (see below). `--at` prints the key and its
+-composition with no comparison, so it rejects `--tsv`, `--tsv-out` and `--no-bazel` alongside it, naming both
+-flags in the error.
++`--timeout-minutes`: its values are validated as integers instead (see below). `--at` is meant to print the key
++and its composition with no comparison, so it already rejects `--tsv`, `--tsv-out` and `--no-bazel` alongside it,
++naming both flags in the error; `--at` itself prints a placeholder message and exits 2 until a later commit wires
++it up.
+ 
+ `Cli.defaultScratchRoot` computes one fixed scratch root, `$TMPDIR/gradle-tracer`, that worktrees and bazel-diff
+-hash files will live under once the range walk is wired (never per pid — a fixed root is how the next run finds
+-and sweeps a killed run's leftovers). On Linux the JVM does not read `$TMPDIR` into `java.io.tmpdir` (it is
+-always `/tmp`), so it reads the `TMPDIR` environment variable directly and only falls back to `java.io.tmpdir`
+-when it is unset or blank, keeping the documented path real; either way, the result is resolved to an absolute,
++hash files live under (never per pid — a fixed root is how the next run finds and sweeps a killed run's
++leftovers; see "Range walk" below). On Linux the JVM does not read `$TMPDIR` into `java.io.tmpdir` (it is always
++`/tmp`), so it reads the `TMPDIR` environment variable directly and only falls back to `java.io.tmpdir` when it
++is unset or blank, keeping the documented path real; either way, the result is resolved to an absolute,
+ normalized path, since a child process such as `<worktree>/gradlew` runs inside the worktree, so a relative
+ root would resolve differently there — it is resolved once against the JVM's working directory (the repo root
+ after `./trace`'s `cd`) instead.
+@@ -113,3 +113,18 @@ non-ASCII digit, is "needs a whole number"; a value that is all ASCII digits but
+ a value that parses but is zero or negative is "must be a positive integer". `DefaultProcessRunner` rejects a
+ non-positive timeout with an unchecked exception, so the CLI validates it here as a usage error instead of ever
+ passing one through.
++
++## Range walk
++Worktrees and bazel-diff hash files live under one fixed root, `$TMPDIR/gradle-tracer/`. At start the tracer prunes git's
++worktree list, deletes stale `wt-*` directories and stale `hashes-*.json`/`*.impacted.txt` files left by a killed run, and
++reports how many it removed; at the end it removes what it created unless `--keep-worktrees`. If bazel-diff fails once, the
++rest of the Bazel column is `n/a` and a warning goes to stderr. A commit whose Gradle run fails is `BUILD-FAILED`; the next
++commit is compared against the last good key.
++
++Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed (some row is
++`BUILD-FAILED`), 3 at least one row is `CHANGED` — and 2 wins over 3 when both apply in the same range.
++
++Before any worktree is created or any git command beyond option parsing runs, `--tsv-out <file>` is checked: the
++file's parent directory (the current directory when the path has none) must exist, be a directory and be
++writable, and the file itself must not already be an existing directory. Any violation is a usage error naming
++the path, so a bad destination fails immediately rather than after a whole range walk has run.
 ```
 
 ```bash
-git add tools/tracer docs/tracer.md
-git commit -m "feat(tracer): wire the CLI over the providers
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/main/java/io/joeyang/tracer/cli/RevisionRange.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java \
+        docs/tracer.md
+git commit -m "feat(tracer): walk the commit range from the CLI
 
-The CLI walks the range through worktrees, degrades the Bazel column to
-n/a on failure, keeps comparing against the last good key after a failed
-build, cleans its scratch root so killed runs leave nothing behind, and
-exits 0/1/2/3 so scripts can branch on the outcome."
+Earlier tasks built the git range walker, worktree pool, Gradle and
+bazel-diff providers, and the table renderer in isolation; wiring them
+together here is what actually makes `trace` do something instead of
+exiting 2 on every valid invocation. --tsv-out is checked for a usable
+destination before any worktree or extra git command runs, so a typo'd
+output path fails fast instead of after a whole range has been walked.
+--at stays a placeholder (exit 2) until a later commit gives it real
+behaviour, since RevisionRange.resolveOne doesn't exist yet."
 ```
+
+Run `./gradlew :tools:tracer:test`: 215 tests (201 going into this task, plus 2 `RevisionRangeTest` cases and
+12 `CliTest` cases this commit adds).
+
+---
+
+#### Commit B — `feat(tracer): print one revision's key with --at`
+
+Wires `Cli.at` to `RevisionRange.resolveOne` and replaces Commit A's interim placeholder test with
+`atPrintsTheKeyComposition`.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index fec6aad..337c93b 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -14,7 +14,7 @@ import java.util.function.Supplier;
+ import java.util.regex.Pattern;
+ import java.util.stream.Stream;
+ 
+-/** Entry point: parses options and walks the range through worktrees, printing the verdicts. {@code --at} is a placeholder until a later commit. */
++/** Entry point: parses options, walks the range through worktrees, and prints the verdicts (or, for {@code --at}, one commit's key). */
+ public final class Cli {
+     public static final int EXIT_OK = 0;
+     public static final int EXIT_USAGE = 1;
+@@ -207,8 +207,7 @@ public final class Cli {
+                 throw new UsageException("unknown app '" + o.app() + "': expected a directory app/" + o.app());
+             }
+             if (o.at() != null) {
+-                err.println("trace: --at arrives in a later commit");
+-                return EXIT_TOOL_FAILURE;
++                return at(o, out);
+             }
+             checkTsvOutWritable(o);
+             return range(o, out, err);
+@@ -331,4 +330,20 @@ public final class Cli {
+         }
+         return count;
+     }
++
++    private int at(Options o, PrintStream out) throws UsageException, ProviderException {
++        Commit commit = new RevisionRange(runner, repo).resolveOne(o.at());
++        try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
++            TaskKey key = keys.keyFor(pool.checkout(commit), o.taskPath());
++            out.println(key.taskPath() + " at " + commit.shortSha() + " " + commit.subject());
++            out.println("key: " + key.key());
++            out.println("implementation: " + key.implementation());
++            key.valueFingerprints().forEach((property, hash) -> out.println("value " + property + ": " + hash));
++            key.fileFingerprints().forEach((property, files) -> {
++                out.println("files " + property + ":");
++                files.forEach((path, hash) -> out.println("  " + KeyComparator.displayName(path) + "  " + hash));
++            });
++        }
++        return EXIT_OK;
++    }
+ }
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index 15fbada..b61da00 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -141,10 +141,11 @@ class CliTest {
+         assertTrue(err().contains("nope"), err());
+     }
+ 
+-    @Test void atArrivesInALaterCommit() throws Exception {
++    @Test void atPrintsTheKeyComposition() throws Exception {
+         int code = run(keys, impacts, "appA", "--at", "tip", "--task", "fingerprint");
+-        assertEquals(Cli.EXIT_TOOL_FAILURE, code);
+-        assertTrue(err().contains("--at arrives in a later commit"), err());
++        assertEquals(Cli.EXIT_OK, code, err());
++        assertTrue(out().contains(":app:appA:fingerprint"), out());
++        assertTrue(out().contains("k2") && out().contains("core.jar") && out().contains("h2"), out());
+     }
+ 
+     @Test void tsvOutWithMissingParentIsAUsageError() throws Exception {
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 49a8726..2b5a7bf 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -1,9 +1,9 @@
+ # tracer
+ 
+-`tools/tracer` is a Java CLI. `Cli.main` parses options, then walks the `--from`/`--to` range through detached
+-git worktrees, asking the Gradle and bazel-diff providers about each commit and printing a verdict table. On a
+-usage error it exits 1 with the usage text. `--at` currently exits 2 with a placeholder message; it and the
+-`./trace` wrapper arrive in later commits.
++`tools/tracer` is a Java CLI. `Cli.main` parses options, then either walks the `--from`/`--to` range through
++detached git worktrees, asking the Gradle and bazel-diff providers about each commit and printing a verdict
++table, or — for `--at` — checks out that one revision and prints its Gradle key and the fingerprints it is
++composed from. On a usage error it exits 1 with the usage text. The `./trace` wrapper arrives in a later commit.
+ 
+ ## Vocabulary (`io.joeyang.tracer.cli`)
+ | type | meaning |
+@@ -19,8 +19,9 @@ usage error it exits 1 with the usage text. `--at` currently exits 2 with a plac
+ | `UsageException` → exit 1; `ProviderException` → exit 2 | error classes |
+ 
+ ## Exit codes
+-0 no change in range · 1 usage error · 2 a tool failed (some row is BUILD-FAILED, or `--at`'s placeholder) · 3
+-at least one CHANGED. 2 wins over 3 when a range has both a BUILD-FAILED row and a CHANGED row.
++0 no change in range (or `--at` succeeded) · 1 usage error · 2 a tool failed (some row is BUILD-FAILED, or
++`--at`'s checkout/key lookup failed) · 3 at least one CHANGED. 2 wins over 3 when a range has both a
++BUILD-FAILED row and a CHANGED row.
+ 
+ ## Gradle oracle
+ `GradleKeyProvider` runs `<worktree>/gradlew --console=plain --no-parallel --build-cache -Dorg.gradle.caching.debug=true <task>`
+@@ -57,7 +58,7 @@ any of these failures to `BazelStatus.NOT_AVAILABLE` for the rest of the range (
+ and prints a warning to stderr once, the first time bazel-diff fails.
+ 
+ ## Git layer
+-- `RevisionRange.resolve(from, to)` → `[from, …from..to oldest first]`, following the first-parent line so adjacent rows are parent and child even across merges. `from` must be an ancestor of `to` on that first-parent line (each row's own first parent, from `%P`, must equal the previous row's sha); a side-branch commit pulled in by a merge is a `UsageException` naming both shas, not a silent mismatch. Unknown revision (`git rev-parse --verify --quiet` exit 1) or an empty range → `UsageException`; any other git failure (not runnable, exit 128, a malformed `git log` line) → `ProviderException`, naming the offending line where there is one.
++- `RevisionRange.resolve(from, to)` → `[from, …from..to oldest first]`, following the first-parent line so adjacent rows are parent and child even across merges. `from` must be an ancestor of `to` on that first-parent line (each row's own first parent, from `%P`, must equal the previous row's sha); a side-branch commit pulled in by a merge is a `UsageException` naming both shas, not a silent mismatch. Unknown revision (`git rev-parse --verify --quiet` exit 1) or an empty range → `UsageException`; any other git failure (not runnable, exit 128, a malformed `git log` line) → `ProviderException`, naming the offending line where there is one. `RevisionRange.resolveOne(rev)` resolves and describes a single revision the same way, for `--at`.
+ - `WorktreePool` → sweeps stale worktree directories *before* pruning (see below), then `git worktree add --detach <root>/wt-<sha7> <sha>` per commit. `close()` and a shutdown hook run `git worktree remove --force`; a failed removal is a warning, not a thrown exception, so one bad worktree doesn't stop the rest from being cleaned up.
+ 
+ ### Worktree root rules
+@@ -92,10 +93,11 @@ is a usage error naming the rejected value. Every value-taking option (`--from`,
+ `--tsv-out`) rejects a value that is blank or starts with `-`, so a missing value can't silently swallow the
+ next option: `--from --to y` fails naming `--from`, rather than failing later on `y` as an unknown option; a
+ value missing at the end of the arguments fails the same way, naming the option. The one exception is
+-`--timeout-minutes`: its values are validated as integers instead (see below). `--at` is meant to print the key
+-and its composition with no comparison, so it already rejects `--tsv`, `--tsv-out` and `--no-bazel` alongside it,
+-naming both flags in the error; `--at` itself prints a placeholder message and exits 2 until a later commit wires
+-it up.
++`--timeout-minutes`: its values are validated as integers instead (see below). `--at` checks out one revision
++into a worktree via `RevisionRange.resolveOne` and prints that task's key, its implementation hash, every value
++fingerprint, and every file fingerprint (grouped by property, named the same way `KeyComparator.displayName`
++names a culprit) — no comparison, so it rejects `--tsv`, `--tsv-out` and `--no-bazel` alongside it, naming both
++flags in the error.
+ 
+ `Cli.defaultScratchRoot` computes one fixed scratch root, `$TMPDIR/gradle-tracer`, that worktrees and bazel-diff
+ hash files live under (never per pid — a fixed root is how the next run finds and sweeps a killed run's
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/tracer.md
+git commit -m "feat(tracer): print one revision's key with --at
+
+--at exists to inspect a single commit's build inputs without picking
+a comparison point, e.g. to sanity-check what a task's key is made of
+before trusting a range result. RevisionRange.resolveOne already
+landed in the previous commit, so this only wires Cli.at to it and
+replaces the interim placeholder test."
+```
+
+Run `./gradlew :tools:tracer:test`: still 215 tests (one test renamed and re-targeted, none added or removed).
+
+---
+
+#### Commit C — `fix(tracer): lock the scratch root so concurrent runs cannot sweep each other`
+
+Why: a second run on the same scratch root sweeps the first run's live `wt-*` worktrees and hash files, since
+both `WorktreePool`'s sweep and `Cli.deleteScratchFiles` assume the root is exclusively theirs for the run's
+duration.
+
+Fix: before any sweep or worktree work, for both the range walk and `--at`, create the scratch root and take an
+exclusive `FileChannel.tryLock()` on `<scratch>/.lock`, held for the whole run via try-with-resources. A `null`
+result (locked by another process) or an `OverlappingFileLockException` (locked elsewhere in this same JVM) is a
+usage error naming the scratch root. `.lock` is never swept: `WorktreePool`'s sweep only matches `wt-*`
+directories and `Cli.deleteScratchFiles` only matches `hashes-*`/`*.impacted.txt` files, so neither one touches it.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index 337c93b..5f479ea 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -2,8 +2,12 @@ package io.joeyang.tracer.cli;
+ 
+ import java.io.IOException;
+ import java.io.PrintStream;
++import java.nio.channels.FileChannel;
++import java.nio.channels.FileLock;
++import java.nio.channels.OverlappingFileLockException;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
++import java.nio.file.StandardOpenOption;
+ import java.time.Duration;
+ import java.util.ArrayList;
+ import java.util.List;
+@@ -206,11 +210,10 @@ public final class Cli {
+             if (!Files.isDirectory(repo.resolve("app").resolve(o.app()))) {
+                 throw new UsageException("unknown app '" + o.app() + "': expected a directory app/" + o.app());
+             }
+-            if (o.at() != null) {
+-                return at(o, out);
++            if (o.at() == null) {
++                checkTsvOutWritable(o);
+             }
+-            checkTsvOutWritable(o);
+-            return range(o, out, err);
++            return withScratchLock(o, out, err);
+         } catch (UsageException e) {
+             return usage(err, e.getMessage());
+         } catch (ProviderException e) {
+@@ -219,6 +222,39 @@ public final class Cli {
+         }
+     }
+ 
++    /**
++     * Locks the scratch root for the whole run, before any sweep or worktree work starts: two trace runs sharing
++     * a root would otherwise sweep each other's live {@code wt-*} worktrees and hash files out from under one
++     * another. {@code tryLock()} returns null for a lock held by another process, and throws
++     * {@link OverlappingFileLockException} for one held elsewhere in this same JVM (the case the tests exercise);
++     * both mean the root is busy.
++     */
++    private int withScratchLock(Options o, PrintStream out, PrintStream err) throws UsageException, ProviderException {
++        try {
++            Files.createDirectories(scratch);
++        } catch (IOException e) {
++            throw new ProviderException("cannot create scratch root " + scratch + ": " + e.getMessage(), e);
++        }
++        try (FileChannel channel = FileChannel.open(scratch.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
++            FileLock lock;
++            try {
++                lock = channel.tryLock();
++            } catch (OverlappingFileLockException e) {
++                lock = null;
++            }
++            if (lock == null) {
++                return usage(err, "another trace is using " + scratch + "; wait for it or set TMPDIR to another directory");
++            }
++            try {
++                return o.at() != null ? at(o, out) : range(o, out, err);
++            } finally {
++                lock.release();
++            }
++        } catch (IOException e) {
++            throw new ProviderException("cannot lock scratch root " + scratch + ": " + e.getMessage(), e);
++        }
++    }
++
+     /**
+      * Checked before any worktree is created or any git command beyond option parsing runs, so a bad
+      * {@code --tsv-out} path fails fast instead of after a whole range walk has already run.
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index b61da00..db0d721 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -7,9 +7,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
+ import java.io.ByteArrayOutputStream;
+ import java.io.IOException;
+ import java.io.PrintStream;
++import java.nio.channels.FileChannel;
++import java.nio.channels.FileLock;
+ import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
++import java.nio.file.StandardOpenOption;
+ import java.util.Map;
+ import java.util.Set;
+ import java.util.stream.Stream;
+@@ -163,6 +166,36 @@ class CliTest {
+         assertFalse(git.ran("git worktree"), "no worktree work before the tsv-out pre-check fails");
+     }
+ 
++    @Test void scratchRootLockedByAnotherRunIsAUsageError() throws Exception {
++        Files.createDirectories(scratch);
++        try (FileChannel locked = FileChannel.open(scratch.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
++             FileLock heldElsewhere = locked.lock()) {
++            int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
++
++            assertEquals(Cli.EXIT_USAGE, code, err());
++            assertTrue(err().contains("another trace is using") && err().contains(scratch.toString()), err());
++            assertTrue(git.calls.isEmpty(), "no git command runs while the scratch root is locked");
++        }
++    }
++
++    @Test void lockIsReleasedAfterARunCompletes() throws Exception {
++        int first = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
++        assertEquals(Cli.EXIT_CHANGED, first, err());
++
++        int second = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
++        assertEquals(Cli.EXIT_CHANGED, second, err());
++    }
++
++    @Test void lockFileSurvivesScratchSweep() throws Exception {
++        Files.createDirectories(scratch);
++        Path lock = Files.createFile(scratch.resolve(".lock"));
++        Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
++
++        run(keys, impacts, "appA", "--from", "base", "--to", "tip");
++
++        assertTrue(Files.exists(lock), ".lock must never be swept, by WorktreePool or Cli.deleteScratchFiles");
++    }
++
+     @Test void staleScratchFilesAreSweptAndNewOnesRemoved() throws Exception {
+         Files.createDirectories(scratch);
+         Path stale = Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 2b5a7bf..321aaa8 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -62,8 +62,8 @@ and prints a warning to stderr once, the first time bazel-diff fails.
+ - `WorktreePool` → sweeps stale worktree directories *before* pruning (see below), then `git worktree add --detach <root>/wt-<sha7> <sha>` per commit. `close()` and a shutdown hook run `git worktree remove --force`; a failed removal is a warning, not a thrown exception, so one bad worktree doesn't stop the rest from being cleaned up.
+ 
+ ### Worktree root rules
+-- The sweep at construction only ever touches directories directly under the pool's root whose name is exactly `wt-` plus 7 lowercase hex characters; anything else there (a stray file, an unrelated directory) is left alone.
+-- Two `WorktreePool`s must never point at the same root at the same time: the sweep-then-prune startup sequence and `wt-<sha7>` naming assume the root is exclusively theirs for the run's duration, and a second pool's sweep would delete worktrees the first one is actively using.
++- The sweep at construction only ever touches directories directly under the pool's root whose name is exactly `wt-` plus 7 lowercase hex characters; anything else there (a stray file, an unrelated directory, `.lock`) is left alone.
++- Two `WorktreePool`s must never point at the same root at the same time: the sweep-then-prune startup sequence and `wt-<sha7>` naming assume the root is exclusively theirs for the run's duration, and a second pool's sweep would delete worktrees the first one is actively using. `Cli` now enforces this (see "One run per scratch root" below) rather than relying on it just happening to be true.
+ - `--keep-worktrees` leaves everything — the checked-out directories and their `git worktree` registrations — in place when the run ends; no shutdown hook is even registered, so an interrupted run leaves them too. The *next* pool opened on that root deletes whatever is there in its startup sweep (git included, via sweep-then-prune) regardless of `--keep-worktrees`; a commit `checkout()` again within the same run tears down and recreates its worktree rather than reusing it in place.
+ 
+ ## Comparison
+@@ -130,3 +130,12 @@ Before any worktree is created or any git command beyond option parsing runs, `-
+ file's parent directory (the current directory when the path has none) must exist, be a directory and be
+ writable, and the file itself must not already be an existing directory. Any violation is a usage error naming
+ the path, so a bad destination fails immediately rather than after a whole range walk has run.
++
++### One run per scratch root
++Before any sweep or worktree work — for both the range walk and `--at` — `Cli` creates the scratch root and takes
++an exclusive lock on `<scratch>/.lock` (a `FileChannel.tryLock()`), held for the whole run and released when it
++ends. A second run on the same root while the first is still going fails fast as a usage error ("another trace is
++using `<scratch>`; wait for it or set `TMPDIR` to another directory") with no git command run at all, rather than
++sweeping the first run's live `wt-*` worktrees and hash files out from under it. `.lock` itself is never swept:
++`WorktreePool`'s sweep only touches `wt-*` directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/
++`*.impacted.txt` files.
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/tracer.md
+git commit -m "fix(tracer): lock the scratch root so concurrent runs cannot sweep each other
+
+A second run on the same scratch root sweeps the first run's live
+wt-* worktrees and hash files out from under it, since the sweep
+assumes the root is exclusively its own for the run's duration. Take
+an exclusive lock on <scratch>/.lock for the whole run so a second run
+fails fast instead of corrupting the first one's in-flight work."
+```
+
+Run `./gradlew :tools:tracer:test`: 218 tests (215 going into this commit, plus 3 new `CliTest` cases).
+
+---
+
+#### Commit D — `docs(tracer): document that a detached child survives a timeout`
+
+Docs only, `docs/tracer.md`'s `DefaultProcessRunner` row/section: on timeout, `killTree` kills what it can still
+see as a descendant of the process it started, then the direct child. A process that has already detached and
+been reparented (a Gradle daemon, or a Bazel server the build started) is no longer a descendant by then, so it
+survives — by design, since those servers are meant to outlive one invocation.
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 321aaa8..7c32e68 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -9,7 +9,7 @@ composed from. On a usage error it exits 1 with the usage text. The `./trace` wr
+ | type | meaning |
+ |---|---|
+ | `ProcessRunner` / `Result` | runs a command; non-zero exit is a `Result`, "could not run" is a `ProcessException` |
+-| `DefaultProcessRunner` | the real `ProcessRunner`: UTF-8 stdout/stderr capture on named daemon threads (`tracer-stdout-N`/`tracer-stderr-N`), stdin from `/dev/null`, a single deadline bounding both the process wait and the drain, and a process-tree kill (not just the direct child) on timeout |
++| `DefaultProcessRunner` | the real `ProcessRunner`: UTF-8 stdout/stderr capture on named daemon threads (`tracer-stdout-N`/`tracer-stderr-N`), stdin from `/dev/null`, a single deadline bounding both the process wait and the drain, and a process-tree kill (not just the direct child) on timeout — see below for its limit |
+ | `Commit` | sha + subject |
+ | `TaskKey` | a task's cache key plus per-input fingerprints (`property → file → hash`), value fingerprints and implementation hash |
+ | `Status` | `BASE`, `CHANGED`, `CLEAN`, `BUILD_FAILED` — the Gradle verdict |
+@@ -139,3 +139,10 @@ using `<scratch>`; wait for it or set `TMPDIR` to another directory") with no gi
+ sweeping the first run's live `wt-*` worktrees and hash files out from under it. `.lock` itself is never swept:
+ `WorktreePool`'s sweep only touches `wt-*` directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/
+ `*.impacted.txt` files.
++
++### Process timeouts and detached children
++On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it
++started, then the direct child itself. A process that has already detached from that tree and been reparented —
++for example a Gradle daemon, or a Bazel server started by the build — is no longer a descendant by the time
++`killTree` runs, so it survives the kill. This is by design: those servers are meant to outlive the single
++invocation that happened to start them.
+```
+
+```bash
+git add docs/tracer.md
+git commit -m "docs(tracer): document that a detached child survives a timeout
+
+killTree only kills what is still a descendant of the process it
+started; a Gradle daemon or Bazel server the build spawned and that
+has since detached is no longer in that set by the time a timeout
+fires, so it survives. Record this as intended behaviour rather than
+leave it undocumented and looking like an oversight."
+```
+
+Run `./gradlew :tools:tracer:test`: still 218 (docs-only commit). Run `bazel test //...`: 23/23. Run
+`git diff --exit-code MODULE.bazel.lock` to confirm the lockfile didn't drift.
 
 ---
 
