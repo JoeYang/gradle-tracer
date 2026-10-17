@@ -62,8 +62,8 @@ and prints a warning to stderr once, the first time bazel-diff fails.
 - `WorktreePool` → sweeps stale worktree directories *before* pruning (see below), then `git worktree add --detach <root>/wt-<sha7> <sha>` per commit. `close()` and a shutdown hook run `git worktree remove --force`; a failed removal is a warning, not a thrown exception, so one bad worktree doesn't stop the rest from being cleaned up.
 
 ### Worktree root rules
-- The sweep at construction only ever touches directories directly under the pool's root whose name is exactly `wt-` plus 7 lowercase hex characters; anything else there (a stray file, an unrelated directory) is left alone.
-- Two `WorktreePool`s must never point at the same root at the same time: the sweep-then-prune startup sequence and `wt-<sha7>` naming assume the root is exclusively theirs for the run's duration, and a second pool's sweep would delete worktrees the first one is actively using.
+- The sweep at construction only ever touches directories directly under the pool's root whose name is exactly `wt-` plus 7 lowercase hex characters; anything else there (a stray file, an unrelated directory, `.lock`) is left alone.
+- Two `WorktreePool`s must never point at the same root at the same time: the sweep-then-prune startup sequence and `wt-<sha7>` naming assume the root is exclusively theirs for the run's duration, and a second pool's sweep would delete worktrees the first one is actively using. `Cli` now enforces this (see "One run per scratch root" below) rather than relying on it just happening to be true.
 - `--keep-worktrees` leaves everything — the checked-out directories and their `git worktree` registrations — in place when the run ends; no shutdown hook is even registered, so an interrupted run leaves them too. The *next* pool opened on that root deletes whatever is there in its startup sweep (git included, via sweep-then-prune) regardless of `--keep-worktrees`; a commit `checkout()` again within the same run tears down and recreates its worktree rather than reusing it in place.
 
 ## Comparison
@@ -130,3 +130,12 @@ Before any worktree is created or any git command beyond option parsing runs, `-
 file's parent directory (the current directory when the path has none) must exist, be a directory and be
 writable, and the file itself must not already be an existing directory. Any violation is a usage error naming
 the path, so a bad destination fails immediately rather than after a whole range walk has run.
+
+### One run per scratch root
+Before any sweep or worktree work — for both the range walk and `--at` — `Cli` creates the scratch root and takes
+an exclusive lock on `<scratch>/.lock` (a `FileChannel.tryLock()`), held for the whole run and released when it
+ends. A second run on the same root while the first is still going fails fast as a usage error ("another trace is
+using `<scratch>`; wait for it or set `TMPDIR` to another directory") with no git command run at all, rather than
+sweeping the first run's live `wt-*` worktrees and hash files out from under it. `.lock` itself is never swept:
+`WorktreePool`'s sweep only touches `wt-*` directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/
+`*.impacted.txt` files.

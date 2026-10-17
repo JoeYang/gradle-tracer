@@ -2,8 +2,12 @@ package io.joeyang.tracer.cli;
 
 import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -206,16 +210,48 @@ public final class Cli {
             if (!Files.isDirectory(repo.resolve("app").resolve(o.app()))) {
                 throw new UsageException("unknown app '" + o.app() + "': expected a directory app/" + o.app());
             }
-            if (o.at() != null) {
-                return at(o, out);
+            if (o.at() == null) {
+                checkTsvOutWritable(o);
             }
-            checkTsvOutWritable(o);
-            return range(o, out, err);
+            return withScratchLock(o, out, err);
         } catch (UsageException e) {
             return usage(err, e.getMessage());
         } catch (ProviderException e) {
             err.println("trace: " + e.getMessage());
             return EXIT_TOOL_FAILURE;
+        }
+    }
+
+    /**
+     * Locks the scratch root for the whole run, before any sweep or worktree work starts: two trace runs sharing
+     * a root would otherwise sweep each other's live {@code wt-*} worktrees and hash files out from under one
+     * another. {@code tryLock()} returns null for a lock held by another process, and throws
+     * {@link OverlappingFileLockException} for one held elsewhere in this same JVM (the case the tests exercise);
+     * both mean the root is busy.
+     */
+    private int withScratchLock(Options o, PrintStream out, PrintStream err) throws UsageException, ProviderException {
+        try {
+            Files.createDirectories(scratch);
+        } catch (IOException e) {
+            throw new ProviderException("cannot create scratch root " + scratch + ": " + e.getMessage(), e);
+        }
+        try (FileChannel channel = FileChannel.open(scratch.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+            FileLock lock;
+            try {
+                lock = channel.tryLock();
+            } catch (OverlappingFileLockException e) {
+                lock = null;
+            }
+            if (lock == null) {
+                return usage(err, "another trace is using " + scratch + "; wait for it or set TMPDIR to another directory");
+            }
+            try {
+                return o.at() != null ? at(o, out) : range(o, out, err);
+            } finally {
+                lock.release();
+            }
+        } catch (IOException e) {
+            throw new ProviderException("cannot lock scratch root " + scratch + ": " + e.getMessage(), e);
         }
     }
 

@@ -7,9 +7,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -161,6 +164,36 @@ class CliTest {
         assertEquals(Cli.EXIT_USAGE, code, err());
         assertTrue(err().contains(tmp.toString()), err());
         assertFalse(git.ran("git worktree"), "no worktree work before the tsv-out pre-check fails");
+    }
+
+    @Test void scratchRootLockedByAnotherRunIsAUsageError() throws Exception {
+        Files.createDirectories(scratch);
+        try (FileChannel locked = FileChannel.open(scratch.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+             FileLock heldElsewhere = locked.lock()) {
+            int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
+
+            assertEquals(Cli.EXIT_USAGE, code, err());
+            assertTrue(err().contains("another trace is using") && err().contains(scratch.toString()), err());
+            assertTrue(git.calls.isEmpty(), "no git command runs while the scratch root is locked");
+        }
+    }
+
+    @Test void lockIsReleasedAfterARunCompletes() throws Exception {
+        int first = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
+        assertEquals(Cli.EXIT_CHANGED, first, err());
+
+        int second = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
+        assertEquals(Cli.EXIT_CHANGED, second, err());
+    }
+
+    @Test void lockFileSurvivesScratchSweep() throws Exception {
+        Files.createDirectories(scratch);
+        Path lock = Files.createFile(scratch.resolve(".lock"));
+        Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
+
+        run(keys, impacts, "appA", "--from", "base", "--to", "tip");
+
+        assertTrue(Files.exists(lock), ".lock must never be swept, by WorktreePool or Cli.deleteScratchFiles");
     }
 
     @Test void staleScratchFilesAreSweptAndNewOnesRemoved() throws Exception {
