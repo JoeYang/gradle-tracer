@@ -6547,6 +6547,7 @@ check the message names the pattern violation, not just that it contains the lit
 - Modify: `tools/tracer/src/main/java/io/joeyang/tracer/cli/RevisionRange.java` (add `resolveOne`)
 - Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java` (new), two tests added to `RevisionRangeTest.java`
 - Modify: `docs/tracer.md`
+- Modify: `docs/superpowers/specs/2026-10-16-build-input-tracer-design.md` (§14 amendments, Commit E)
 
 Provider constructors used here and implemented in Tasks 7 and 8 — the signatures are fixed:
 `new GradleKeyProvider(ProcessRunner runner, boolean offline, Duration timeout)` and
@@ -6554,9 +6555,11 @@ Provider constructors used here and implemented in Tasks 7 and 8 — the signatu
 
 Scratch hygiene (spec §9): one fixed scratch root (`$TMPDIR/gradle-tracer`), never per pid, so the next run finds a killed run's leftovers. `WorktreePool` sweeps stale `wt-*` directories (Task 9); the Cli sweeps stale `hashes-*.json`/`*.impacted.txt` at start and removes the ones it created at the end unless `--keep-worktrees`.
 
-This task lands as four commits instead of one, because the full wiring exceeds the 400-line hard commit limit.
+This task lands as seven commits instead of one, because the full wiring exceeds the 400-line hard commit limit.
 Every diff below is the exact diff that was committed (`git diff <parent> <sha> -- <path>`), so it can be checked
-mechanically against the real history rather than re-typed by hand.
+mechanically against the real history rather than re-typed by hand. Every commit block below uses
+`git commit -F - <<'EOF' ... EOF` rather than `git commit -m "..."`, so a backticked word inside the message (e.g.
+`` `trace` ``) can't be read as a shell command substitution if the block is copied and pasted as-is.
 
 ---
 
@@ -7133,7 +7136,8 @@ git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
         tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
         tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java \
         docs/tracer.md
-git commit -m "feat(tracer): walk the commit range from the CLI
+git commit -F - <<'EOF'
+feat(tracer): walk the commit range from the CLI
 
 Earlier tasks built the git range walker, worktree pool, Gradle and
 bazel-diff providers, and the table renderer in isolation; wiring them
@@ -7142,8 +7146,13 @@ exiting 2 on every valid invocation. --tsv-out is checked for a usable
 destination before any worktree or extra git command runs, so a typo'd
 output path fails fast instead of after a whole range has been walked.
 --at stays a placeholder (exit 2) until a later commit gives it real
-behaviour, since RevisionRange.resolveOne doesn't exist yet."
+behaviour, since RevisionRange.resolveOne doesn't exist yet.
+EOF
 ```
+
+The commit message quoted above is the real, byte-identical message — including "since RevisionRange.resolveOne
+doesn't exist yet", which reads oddly given the diff above. In fact `resolveOne` *is* added in this very commit;
+the message means it doesn't exist *in `Cli`* yet, i.e. nothing calls it until Commit B wires `Cli.at` to it.
 
 Run `./gradlew :tools:tracer:test`: 215 tests (201 going into this task, plus 2 `RevisionRangeTest` cases and
 12 `CliTest` cases this commit adds).
@@ -7286,13 +7295,15 @@ index 49a8726..2b5a7bf 100644
 git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
         tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
         docs/tracer.md
-git commit -m "feat(tracer): print one revision's key with --at
+git commit -F - <<'EOF'
+feat(tracer): print one revision's key with --at
 
 --at exists to inspect a single commit's build inputs without picking
 a comparison point, e.g. to sanity-check what a task's key is made of
 before trusting a range result. RevisionRange.resolveOne already
 landed in the previous commit, so this only wires Cli.at to it and
-replaces the interim placeholder test."
+replaces the interim placeholder test.
+EOF
 ```
 
 Run `./gradlew :tools:tracer:test`: still 215 tests (one test renamed and re-targeted, none added or removed).
@@ -7478,13 +7489,15 @@ index 2b5a7bf..321aaa8 100644
 git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
         tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
         docs/tracer.md
-git commit -m "fix(tracer): lock the scratch root so concurrent runs cannot sweep each other
+git commit -F - <<'EOF'
+fix(tracer): lock the scratch root so concurrent runs cannot sweep each other
 
 A second run on the same scratch root sweeps the first run's live
 wt-* worktrees and hash files out from under it, since the sweep
 assumes the root is exclusively its own for the run's duration. Take
 an exclusive lock on <scratch>/.lock for the whole run so a second run
-fails fast instead of corrupting the first one's in-flight work."
+fails fast instead of corrupting the first one's in-flight work.
+EOF
 ```
 
 Run `./gradlew :tools:tracer:test`: 218 tests (215 going into this commit, plus 3 new `CliTest` cases).
@@ -7494,9 +7507,11 @@ Run `./gradlew :tools:tracer:test`: 218 tests (215 going into this commit, plus 
 #### Commit D — `docs(tracer): document that a detached child survives a timeout`
 
 Docs only, `docs/tracer.md`'s `DefaultProcessRunner` row/section: on timeout, `killTree` kills what it can still
-see as a descendant of the process it started, then the direct child. A process that has already detached and
-been reparented (a Gradle daemon, or a Bazel server the build started) is no longer a descendant by then, so it
-survives — by design, since those servers are meant to outlive one invocation.
+see as a descendant of the process it started, then the direct child. This commit's own example of a survivor —
+"a Gradle daemon, or a Bazel server the build started" — turned out to be wrong for the Gradle half: a *freshly
+spawned* Gradle daemon is still a child of the process tree `killTree` walks, so it gets killed along with
+everything else; the diff below is kept byte-identical to what was actually committed, and the error is
+corrected later, in Commit G.
 
 ```diff
 diff --git a/docs/tracer.md b/docs/tracer.md
@@ -7527,16 +7542,350 @@ index 321aaa8..7c32e68 100644
 
 ```bash
 git add docs/tracer.md
-git commit -m "docs(tracer): document that a detached child survives a timeout
+git commit -F - <<'EOF'
+docs(tracer): document that a detached child survives a timeout
 
 killTree only kills what is still a descendant of the process it
 started; a Gradle daemon or Bazel server the build spawned and that
 has since detached is no longer in that set by the time a timeout
 fires, so it survives. Record this as intended behaviour rather than
-leave it undocumented and looking like an oversight."
+leave it undocumented and looking like an oversight.
+EOF
 ```
 
 Run `./gradlew :tools:tracer:test`: still 218 (docs-only commit). Run `bazel test //...`: 23/23. Run
+`git diff --exit-code MODULE.bazel.lock` to confirm the lockfile didn't drift.
+
+---
+
+#### Commit E — `fix(tracer): resolve revisions before taking the scratch lock`
+
+Why: spec §9 says an unknown `--from`/`--to`/`--at` exits 1 with nothing created, but since Commit C, `Cli.run`
+created the scratch root and `<scratch>/.lock` before resolving the revision (`RevisionRange.resolve`/
+`resolveOne` ran inside `range`/`at`, which only ran after the lock was taken), so a bad revision still left
+`.lock` behind. Found by spec review.
+
+Fix: resolve the revision(s) first — that's read-only git against the repo, not the scratch root, so it needs no
+lock — then create the scratch root and take the lock, and only then sweep and walk worktrees. The `--tsv-out`
+pre-check stays first, before resolution, same as before.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index 5f479ea..474aa31 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -210,10 +210,15 @@ public final class Cli {
+             if (!Files.isDirectory(repo.resolve("app").resolve(o.app()))) {
+                 throw new UsageException("unknown app '" + o.app() + "': expected a directory app/" + o.app());
+             }
+-            if (o.at() == null) {
+-                checkTsvOutWritable(o);
++            // Revision resolution is read-only git, so it needs no lock; resolving before the lock means an
++            // unknown --from/--to/--at (spec §9) exits 1 with no scratch root or .lock file left behind.
++            if (o.at() != null) {
++                Commit commit = new RevisionRange(runner, repo).resolveOne(o.at());
++                return withScratchLock(err, () -> at(o, out, commit));
+             }
+-            return withScratchLock(o, out, err);
++            checkTsvOutWritable(o);
++            List<Commit> commits = new RevisionRange(runner, repo).resolve(o.from(), o.to());
++            return withScratchLock(err, () -> range(o, out, err, commits));
+         } catch (UsageException e) {
+             return usage(err, e.getMessage());
+         } catch (ProviderException e) {
+@@ -222,6 +227,12 @@ public final class Cli {
+         }
+     }
+ 
++    /** The work done once the scratch root is locked: either {@link #at} or {@link #range}, with its revisions already resolved. */
++    @FunctionalInterface
++    private interface LockedWork {
++        int run() throws UsageException, ProviderException;
++    }
++
+     /**
+      * Locks the scratch root for the whole run, before any sweep or worktree work starts: two trace runs sharing
+      * a root would otherwise sweep each other's live {@code wt-*} worktrees and hash files out from under one
+@@ -229,7 +240,7 @@ public final class Cli {
+      * {@link OverlappingFileLockException} for one held elsewhere in this same JVM (the case the tests exercise);
+      * both mean the root is busy.
+      */
+-    private int withScratchLock(Options o, PrintStream out, PrintStream err) throws UsageException, ProviderException {
++    private int withScratchLock(PrintStream err, LockedWork work) throws UsageException, ProviderException {
+         try {
+             Files.createDirectories(scratch);
+         } catch (IOException e) {
+@@ -246,7 +257,7 @@ public final class Cli {
+                 return usage(err, "another trace is using " + scratch + "; wait for it or set TMPDIR to another directory");
+             }
+             try {
+-                return o.at() != null ? at(o, out) : range(o, out, err);
++                return work.run();
+             } finally {
+                 lock.release();
+             }
+@@ -279,8 +290,7 @@ public final class Cli {
+         }
+     }
+ 
+-    private int range(Options o, PrintStream out, PrintStream err) throws UsageException, ProviderException {
+-        List<Commit> commits = new RevisionRange(runner, repo).resolve(o.from(), o.to());
++    private int range(Options o, PrintStream out, PrintStream err, List<Commit> commits) throws ProviderException {
+         int swept = deleteScratchFiles();
+         if (swept > 0) {
+             err.println("trace: removed " + swept + " stale scratch file(s) under " + scratch);
+@@ -367,8 +377,7 @@ public final class Cli {
+         return count;
+     }
+ 
+-    private int at(Options o, PrintStream out) throws UsageException, ProviderException {
+-        Commit commit = new RevisionRange(runner, repo).resolveOne(o.at());
++    private int at(Options o, PrintStream out, Commit commit) throws ProviderException {
+         try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
+             TaskKey key = keys.keyFor(pool.checkout(commit), o.taskPath());
+             out.println(key.taskPath() + " at " + commit.shortSha() + " " + commit.subject());
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index db0d721..dc33f7d 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -174,10 +174,33 @@ class CliTest {
+ 
+             assertEquals(Cli.EXIT_USAGE, code, err());
+             assertTrue(err().contains("another trace is using") && err().contains(scratch.toString()), err());
+-            assertTrue(git.calls.isEmpty(), "no git command runs while the scratch root is locked");
++            // The range is resolved (read-only git) before the lock is taken, so rev-parse/log calls do happen;
++            // what must never happen while another run holds the lock is worktree work or a scratch sweep.
++            assertFalse(git.ran("git worktree"), "no worktree work while the scratch root is locked");
++            assertFalse(err().contains("stale scratch file"), "no sweep while the scratch root is locked");
+         }
+     }
+ 
++    @Test void unknownFromRevisionLeavesNoScratchRoot() throws Exception {
++        Path lock = scratch.resolve(".lock");
++        git.on("git rev-parse --verify --quiet nope^{commit}", 1, "", "");
++
++        int code = run(keys, impacts, "appA", "--from", "nope", "--to", "tip");
++
++        assertEquals(Cli.EXIT_USAGE, code, err());
++        assertFalse(Files.exists(lock), ".lock must not be created for a revision that was never resolved");
++    }
++
++    @Test void unknownAtRevisionLeavesNoScratchRoot() throws Exception {
++        Path lock = scratch.resolve(".lock");
++        git.on("git rev-parse --verify --quiet nope^{commit}", 1, "", "");
++
++        int code = run(keys, impacts, "appA", "--at", "nope");
++
++        assertEquals(Cli.EXIT_USAGE, code, err());
++        assertFalse(Files.exists(lock), ".lock must not be created for a revision that was never resolved");
++    }
++
+     @Test void lockIsReleasedAfterARunCompletes() throws Exception {
+         int first = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
+         assertEquals(Cli.EXIT_CHANGED, first, err());
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 7c32e68..d0ea4ff 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -126,19 +126,25 @@ commit is compared against the last good key.
+ Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed (some row is
+ `BUILD-FAILED`), 3 at least one row is `CHANGED` — and 2 wins over 3 when both apply in the same range.
+ 
+-Before any worktree is created or any git command beyond option parsing runs, `--tsv-out <file>` is checked: the
+-file's parent directory (the current directory when the path has none) must exist, be a directory and be
+-writable, and the file itself must not already be an existing directory. Any violation is a usage error naming
+-the path, so a bad destination fails immediately rather than after a whole range walk has run.
++`Cli.run` does its work in a fixed order: `--tsv-out <file>` is pre-checked (parent directory must exist, be a
++directory and be writable; the target must not already be a directory) before anything else beyond option
++parsing; then the revision(s) are resolved (`RevisionRange.resolve` for a range, `resolveOne` for `--at`) — this
++is read-only git, so it needs no lock, and a usage error here (unknown revision, empty range) exits 1 with no
++scratch root or `.lock` file ever created; only once that succeeds does the scratch root get created, locked
++(see "One run per scratch root" below), swept, and the worktree walk begin. Any violation along the way is a
++usage error naming the offending path or revision, so a bad input fails immediately rather than after a whole
++range walk has run.
+ 
+ ### One run per scratch root
+-Before any sweep or worktree work — for both the range walk and `--at` — `Cli` creates the scratch root and takes
+-an exclusive lock on `<scratch>/.lock` (a `FileChannel.tryLock()`), held for the whole run and released when it
+-ends. A second run on the same root while the first is still going fails fast as a usage error ("another trace is
+-using `<scratch>`; wait for it or set `TMPDIR` to another directory") with no git command run at all, rather than
+-sweeping the first run's live `wt-*` worktrees and hash files out from under it. `.lock` itself is never swept:
+-`WorktreePool`'s sweep only touches `wt-*` directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/
+-`*.impacted.txt` files.
++Before any sweep or worktree work — for both the range walk and `--at`, and only after their revisions are
++already resolved — `Cli` creates the scratch root and takes an exclusive lock on `<scratch>/.lock` (a
++`FileChannel.tryLock()`), held for the whole run and released when it ends. A second run on the same root while
++the first is still going fails fast as a usage error ("another trace is using `<scratch>`; wait for it or set
++`TMPDIR` to another directory") with no worktree work and no scratch sweep, rather than sweeping the first run's
++live `wt-*` worktrees and hash files out from under it. (Its own revision resolution still runs first, same as
++any other invocation — that's read-only git against the repo, not the scratch root, so it's harmless even when
++the lock is about to be refused.) `.lock` itself is never swept: `WorktreePool`'s sweep only touches `wt-*`
++directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/`*.impacted.txt` files.
+ 
+ ### Process timeouts and detached children
+ On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it
+```
+
+```diff
+diff --git a/docs/superpowers/specs/2026-10-16-build-input-tracer-design.md b/docs/superpowers/specs/2026-10-16-build-input-tracer-design.md
+index 0e43be3..ed2697e 100644
+--- a/docs/superpowers/specs/2026-10-16-build-input-tracer-design.md
++++ b/docs/superpowers/specs/2026-10-16-build-input-tracer-design.md
+@@ -422,4 +422,5 @@ Design changes resulting from the review and from current versions:
+ | T1 | TestKit shares one build cache across test methods, so identical sample code came back `FROM_CACHE` where `SUCCESS` was asserted (found while implementing Task 1) | fixed: each TestKit project gets its own local build cache; the later TestKit tests already assumed this | plan Tasks 1, 5 |
+ | T2 | §6 gave `ProcessRunner` an `env` parameter the implemented interface never had and no provider needs (every command's environment is just the parent process's) | fixed: §6 now matches `ProcessRunner.run(Path, Duration, List<String>)` as coded in Task 6 | §6 |
+ | T3 | F14's "last `/src/` occurrence wins" was itself wrong: a worktree root that happens to contain `/src/` (e.g. a checkout under `~/src/...`) leaked into the culprit name and differed between commits, and a module's own nested `src` directory (`core/src/main/resources/src/x.txt`) matched the wrong occurrence; separately, `renderTsv` did not escape embedded tabs/CR/LF, `truncate`/`pad` worked by UTF-16 char and could split a surrogate pair, a culprit-less row kept trailing padding, and a task path with no app segment produced a summary reading "of ." (found by the Task 10 code-quality review) | fixed: the worktree root is stripped first (sharing `WorktreePool`'s `wt-<sha7>` naming), then the module boundary is the *first* `/src/` in what remains; "build logic" sorts first so it is never hidden by the culprit cap; TSV fields are tab/CR/LF-escaped; table columns are truncated/padded by code point; culprit-less rows are trimmed; `appName` falls back to the full task path. Supersedes F14's fix, not §5/§8's design intent | plan Task 10 |
++| T4 | spec §9 says a bad revision exits 1 with nothing created; after Task 13 commit C, `Cli` created the scratch root and `<scratch>/.lock` before resolving `--from`/`--to`/`--at`, so an unknown revision left `.lock` behind (found by spec review) | fixed: revision resolution (read-only git, no lock needed) now runs before the scratch root is created or locked. §9's single-run-per-scratch-root rule is enforced by a `FileChannel` lock on `<scratch>/.lock`, taken after revision resolution; contention exits 1 | plan Task 13 (commit E) |
+ 
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/tracer.md \
+        docs/superpowers/specs/2026-10-16-build-input-tracer-design.md
+git commit -F - <<'EOF'
+fix(tracer): resolve revisions before taking the scratch lock
+
+Spec §9 says an unknown --from/--to/--at exits 1 with nothing created,
+but since the scratch-root lock landed, Cli created the scratch root
+and .lock before resolving the revision, so a bad revision still left
+.lock behind. Revision resolution is read-only git and needs no lock,
+so do it first; only create and lock the scratch root once it succeeds.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: 220 tests (218 going into this commit, plus `unknownFromRevisionLeavesNoScratchRoot`
+and `unknownAtRevisionLeavesNoScratchRoot`).
+
+---
+
+#### Commit F — `test(tracer): cover an unwritable --tsv-out parent`
+
+Why: `checkTsvOutWritable`'s "parent not writable" branch (the last of its four checks) had no test; every other
+branch did.
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index dc33f7d..d6a7fb0 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -13,6 +13,8 @@ import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.nio.file.StandardOpenOption;
++import java.nio.file.attribute.PosixFilePermission;
++import java.nio.file.attribute.PosixFilePermissions;
+ import java.util.Map;
+ import java.util.Set;
+ import java.util.stream.Stream;
+@@ -166,6 +168,24 @@ class CliTest {
+         assertFalse(git.ran("git worktree"), "no worktree work before the tsv-out pre-check fails");
+     }
+ 
++    @Test void tsvOutWithUnwritableParentIsAUsageError() throws Exception {
++        Path dir = tmp.resolve("readonly-dir");
++        Files.createDirectories(dir);
++        Set<PosixFilePermission> original = Files.getPosixFilePermissions(dir);
++        try {
++            Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("r-xr-xr-x"));
++            Path file = dir.resolve("rows.tsv");
++
++            int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", file.toString());
++
++            assertEquals(Cli.EXIT_USAGE, code, err());
++            assertTrue(err().contains(file.toString()) || err().contains(dir.toString()), err());
++            assertFalse(git.ran("git worktree"), "no worktree work before the tsv-out pre-check fails");
++        } finally {
++            Files.setPosixFilePermissions(dir, original);
++        }
++    }
++
+     @Test void scratchRootLockedByAnotherRunIsAUsageError() throws Exception {
+         Files.createDirectories(scratch);
+         try (FileChannel locked = FileChannel.open(scratch.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+```
+
+```bash
+git add tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+git commit -F - <<'EOF'
+test(tracer): cover an unwritable --tsv-out parent
+
+checkTsvOutWritable's "parent not writable" branch had no test;
+every other branch of the pre-check did. Make a temp directory
+read-only (restored in a finally) and assert the run fails as a
+usage error before any worktree work starts.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: 221 tests (220 going into this commit, plus `tsvOutWithUnwritableParentIsAUsageError`).
+
+Uses a POSIX-only API (`Files.setPosixFilePermissions`); the tracer's test suite already assumes a POSIX
+filesystem elsewhere (e.g. the worktree/scratch-root tests), so this doesn't introduce a new platform constraint.
+
+---
+
+#### Commit G — `docs(tracer): correct the detached-child example and make the plan's commit commands copy-safe`
+
+Why: Commit D's `docs/tracer.md` example of a process that survives a timeout — "a Gradle daemon, or a Bazel
+server started by the build" — is half wrong (found by spec review). A *freshly spawned* Gradle daemon's parent
+is the `gradlew` client JVM that `killTree` started, so it's still a descendant and gets killed with everything
+else; only a daemon *reused from an earlier invocation* is already detached by the time this run starts, so only
+that one survives. The Bazel half was already correct: a Bazel server daemonizes on start and gets reparented to
+a subreaper, so it's never a descendant either.
+
+Also: every Task 13 commit block above used `git commit -m "…"` with the real message inline, and at least one
+message contains a backticked word (`` `trace` `` in Commit A's). A shell that runs the block as typed — e.g.
+pasted into a terminal — would read `` `trace` `` inside those double quotes as a command substitution, not
+literal text. Every block above (A–F) has already been switched to `git commit -F - <<'EOF' ... EOF`, which
+takes the message from a quoted heredoc and so can't expand anything inside it; this commit's own block uses the
+same form. No message text changed.
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index d0ea4ff..62d8597 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -148,7 +148,9 @@ directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/`*.impacted.tx
+ 
+ ### Process timeouts and detached children
+ On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it
+-started, then the direct child itself. A process that has already detached from that tree and been reparented —
+-for example a Gradle daemon, or a Bazel server started by the build — is no longer a descendant by the time
+-`killTree` runs, so it survives the kill. This is by design: those servers are meant to outlive the single
+-invocation that happened to start them.
++started, then the direct child itself. A freshly spawned Gradle daemon is still a child of that process tree (its
++parent is the `gradlew` client JVM `killTree` started), so it is killed along with everything else. What survives
++is a process that had already detached and been reparented *before* this invocation started it: a Gradle daemon
++reused from an earlier invocation, or a Bazel server (which daemonizes on start) — neither is a descendant of the
++process `killTree` is walking, so it is never in scope to kill. This is by design: those servers are meant to
++outlive the single invocation that happened to start or reuse them.
+```
+
+```bash
+git add docs/tracer.md
+git commit -F - <<'EOF'
+docs(tracer): correct the detached-child example and make the plan's commit commands copy-safe
+
+Commit D's example of a process that survives killTree's timeout kill
+was half wrong: a freshly spawned Gradle daemon is still a child of
+the process tree killTree walks, so it gets killed too. Only a daemon
+reused from an earlier invocation, or a Bazel server (which daemonizes
+on start), is already detached and so survives. Separately, the plan's
+Task 13 commit blocks quoted commit messages inline in "git commit -m",
+and at least one message has a backticked word that a shell would read
+as a command substitution if the block were pasted as-is; switch every
+block to "git commit -F - <<'EOF'" so the message is taken literally.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: still 221 (docs-only commit). Run `bazel test //...`: 23/23. Run
 `git diff --exit-code MODULE.bazel.lock` to confirm the lockfile didn't drift.
 
 ---

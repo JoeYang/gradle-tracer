@@ -148,7 +148,9 @@ directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/`*.impacted.tx
 
 ### Process timeouts and detached children
 On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it
-started, then the direct child itself. A process that has already detached from that tree and been reparented —
-for example a Gradle daemon, or a Bazel server started by the build — is no longer a descendant by the time
-`killTree` runs, so it survives the kill. This is by design: those servers are meant to outlive the single
-invocation that happened to start them.
+started, then the direct child itself. A freshly spawned Gradle daemon is still a child of that process tree (its
+parent is the `gradlew` client JVM `killTree` started), so it is killed along with everything else. What survives
+is a process that had already detached and been reparented *before* this invocation started it: a Gradle daemon
+reused from an earlier invocation, or a Bazel server (which daemonizes on start) — neither is a descendant of the
+process `killTree` is walking, so it is never in scope to kill. This is by design: those servers are meant to
+outlive the single invocation that happened to start or reuse them.
