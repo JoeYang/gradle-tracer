@@ -64,9 +64,18 @@ a stray non-label line in `get-impacted-targets`' output → explicit error nami
 - `--keep-worktrees` leaves everything — the checked-out directories and their `git worktree` registrations — in place when the run ends; no shutdown hook is even registered, so an interrupted run leaves them too. The *next* pool opened on that root deletes whatever is there in its startup sweep (git included, via sweep-then-prune) regardless of `--keep-worktrees`; a commit `checkout()` again within the same run tears down and recreates its worktree rather than reusing it in place.
 
 ## Comparison
-`KeyComparator.verdict(commit, previousGoodKey, currentKey, error, bazel)`: no current key → `BUILD-FAILED`; no previous → `base`;
-equal keys → `clean`; otherwise `CHANGED` with culprits = file fingerprints that differ (compared by location-independent display
-name: `core.jar`, `appA/src/main/java/.../AppA.java`, `appA classes`, and `group:artifact` for jars from the Gradle module cache so a version bump is one culprit), value properties that differ, and `build logic` when the task
-implementation hash differs. Capped at four plus `+N more`.
+`KeyComparator.verdict(commit, previousGoodKey, currentKey, error, bazel)`: no current key → `BUILD-FAILED` (defaulting the
+error message to "no cache key obtained" when none is given); no previous → `base`; equal keys → `clean`; otherwise `CHANGED`
+with culprits = file fingerprints that differ (compared by location-independent display name: `core.jar`,
+`appA/src/main/java/.../AppA.java`, `appA classes`, `appA resources` for a changed resource file, and `group:artifact` for
+jars from the Gradle module cache so a version bump is one culprit — the worktree root is stripped first, using
+`WorktreePool`'s `wt-<sha7>` directory naming, so a checkout path that itself contains `/src/` cannot leak into a name or
+differ between commits), value properties that differ, and `build logic` when the task implementation hash differs, sorted
+first so it is never hidden by the cap below. When none of the above differ despite the key changing, the single culprit is
+"inputs changed (no fingerprint detail)". Capped at four named culprits plus a trailing `+N more`; exactly five print in
+full with no `+N more` marker, since the cap only triggers above five.
 
-`TableRenderer.render` prints the fixed-width table and a summary line; `renderTsv` prints `sha\tsubject\tkey\tbazel\tverdict\tculprits` for scripts.
+`TableRenderer.render` prints the fixed-width table and a summary line; `renderTsv` prints `sha\tsubject\tkey\tbazel\tverdict\tculprits`
+for scripts — for a `BUILD-FAILED` row, that last column is the error message, not the (empty) culprit list. Tabs, CR and LF
+inside any field are collapsed to a single space so they cannot shift a column. Table columns are padded and truncated by
+Unicode code point, not UTF-16 char, so a surrogate pair is never split.

@@ -87,18 +87,21 @@ Java package root: `io.joeyang.tracer.<module>`. Language level 21 on both build
 Example output:
 
 ```
-Tracing inputs of :app:appA:compileJava (gradle) and //app/appA (bazel-diff) over 6 commits
+Tracing inputs of :app:appA:compileJava (gradle) and //app/appA:appA (bazel-diff) over 6 commits
 
-commit   subject                              gradle key  bazel-diff  verdict   culprit
+commit   subject                              gradle key  bazel-diff  verdict       culprit
 a1b2c3d  baseline                             3f9c…e1     -           base
-b2c3d4e  utils: body-only edit                3f9c…e1     impacted    clean     bazel≠gradle
-c3d4e5f  core: add Greeter.shout()            2bb4…77     impacted    CHANGED   core classes
-d4e5f6a  deps: commons-lang3 3.18.0 -> 3.20.0 2bb4…77     impacted    clean     bazel≠gradle
+b2c3d4e  utils: body-only edit                3f9c…e1     impacted    clean         bazel≠gradle
+c3d4e5f  core: add Greeter.shout()            2bb4…77     impacted    CHANGED       core classes
+d4e5f6a  deps: commons-lang3 3.18.0 -> 3.20.0 2bb4…77     impacted    clean         bazel≠gradle
 e5f6a7b  deps: gson 2.10.1 -> 2.11.0          2bb4…77     clean       clean
-f6a7b8c  core: comment-only edit              2bb4…77     impacted    clean     bazel≠gradle
+f6a7b8c  core: comment-only edit              2bb4…77     impacted    clean         bazel≠gradle
 
 1 of 6 commits changed compile inputs of appA. First: c3d4e5f.
 ```
+
+(The `verdict` column is 14 wide, not 10: `BUILD-FAILED` is 12 characters and needs to fit with at least one
+trailing space. Amendment, Task 10 quality review — see §14.)
 
 Semantics:
 
@@ -418,4 +421,5 @@ Design changes resulting from the review and from current versions:
 | F16 | bazel-diff v60 hash files are `{"hashes": {...}, "metadata": {...}}`, not a flat map | fixed in the Task 8 smoke command | plan Task 8 |
 | T1 | TestKit shares one build cache across test methods, so identical sample code came back `FROM_CACHE` where `SUCCESS` was asserted (found while implementing Task 1) | fixed: each TestKit project gets its own local build cache; the later TestKit tests already assumed this | plan Tasks 1, 5 |
 | T2 | §6 gave `ProcessRunner` an `env` parameter the implemented interface never had and no provider needs (every command's environment is just the parent process's) | fixed: §6 now matches `ProcessRunner.run(Path, Duration, List<String>)` as coded in Task 6 | §6 |
+| T3 | F14's "last `/src/` occurrence wins" was itself wrong: a worktree root that happens to contain `/src/` (e.g. a checkout under `~/src/...`) leaked into the culprit name and differed between commits, and a module's own nested `src` directory (`core/src/main/resources/src/x.txt`) matched the wrong occurrence; separately, `renderTsv` did not escape embedded tabs/CR/LF, `truncate`/`pad` worked by UTF-16 char and could split a surrogate pair, a culprit-less row kept trailing padding, and a task path with no app segment produced a summary reading "of ." (found by the Task 10 code-quality review) | fixed: the worktree root is stripped first (sharing `WorktreePool`'s `wt-<sha7>` naming), then the module boundary is the *first* `/src/` in what remains; "build logic" sorts first so it is never hidden by the culprit cap; TSV fields are tab/CR/LF-escaped; table columns are truncated/padded by code point; culprit-less rows are trimmed; `appName` falls back to the full task path. Supersedes F14's fix, not §5/§8's design intent | plan Task 10 |
 
