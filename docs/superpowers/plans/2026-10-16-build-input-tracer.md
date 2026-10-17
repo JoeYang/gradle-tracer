@@ -9531,6 +9531,67 @@ Run `./gradlew :tools:tracer:test`: still 236 (docs/comments-only commit).
 
 ---
 
+#### Commit T — `test(tracer): make the group/other-write fixture umask-independent`
+
+Why: not one of the originally triaged items — found while running this plan's own `bazel test //...` step
+for Commit S. `scratchRootWithGroupOrOtherWriteIsAUsageError` (added in Commit P) created its insecure fixture
+directory via `Files.createDirectory(scratch, PosixFilePermissions.asFileAttribute(...rwxrwxr-x...))`, which
+passed under Gradle's test JVM (inherits the shell's `umask 0002`) but failed under `bazel test` (sandboxed test
+runs default to a stricter umask — confirmed by printing the actual resulting permissions under each runner:
+Gradle produced the requested `rwxrwxr-x`, Bazel produced `rwxr-xr-x` with the group write bit silently masked
+off). `PosixFilePermissions.asFileAttribute`'s mode is evidently still subject to the process umask for
+directory creation on this platform, contrary to the common assumption that it bypasses it.
+
+Fix: create the directory with default permissions, then set the exact mode with a separate
+`Files.setPosixFilePermissions` call — an explicit `chmod`, which is not subject to umask.
+
+This is a test-only fix to a fixture from an already-committed commit (P); the no-amend rule for this shared
+branch means it lands as its own commit rather than folded back into P's.
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index a6d17b0..967b531 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -346,7 +346,12 @@ class CliTest {
+     // Ownership by another user can't be faked without root (chown requires privilege this test doesn't have and
+     // shouldn't need), so only the permission-bits branch of the privacy check is exercised here.
+     @Test void scratchRootWithGroupOrOtherWriteIsAUsageError() throws Exception {
+-        Files.createDirectory(scratch, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwxrwxr-x")));
++        // setPosixFilePermissions (a separate chmod), not createDirectory's FileAttribute: the attribute's mode
++        // is still subject to the process umask on at least some platforms/sandboxes (e.g. Bazel's sandboxed test
++        // runs default to a stricter umask than an interactive shell), so asking for group write at creation time
++        // isn't reliable; an explicit chmod afterward is.
++        Files.createDirectory(scratch);
++        Files.setPosixFilePermissions(scratch, PosixFilePermissions.fromString("rwxrwxr-x"));
+ 
+         int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
+ 
+```
+
+```bash
+git add tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+test(tracer): make the group/other-write fixture umask-independent
+
+scratchRootWithGroupOrOtherWriteIsAUsageError created its insecure
+fixture directory via createDirectory's FileAttribute, whose mode
+turned out to still be subject to the process umask for directory
+creation on this platform: it passed under Gradle's test JVM but
+failed under bazel test, whose sandboxed runs default to a stricter
+umask that silently masked off the group write bit the test needed.
+Set the exact mode with a separate chmod instead, which umask can't
+touch.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: still 236 (test fixture fix only, no tests added or removed). Run
+`bazel test //...`: 23/23 (this is the failure this commit fixes). Run `git diff --exit-code MODULE.bazel.lock`
+to confirm the lockfile didn't drift.
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**

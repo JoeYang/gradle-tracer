@@ -346,7 +346,12 @@ class CliTest {
     // Ownership by another user can't be faked without root (chown requires privilege this test doesn't have and
     // shouldn't need), so only the permission-bits branch of the privacy check is exercised here.
     @Test void scratchRootWithGroupOrOtherWriteIsAUsageError() throws Exception {
-        Files.createDirectory(scratch, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwxrwxr-x")));
+        // setPosixFilePermissions (a separate chmod), not createDirectory's FileAttribute: the attribute's mode
+        // is still subject to the process umask on at least some platforms/sandboxes (e.g. Bazel's sandboxed test
+        // runs default to a stricter umask than an interactive shell), so asking for group write at creation time
+        // isn't reliable; an explicit chmod afterward is.
+        Files.createDirectory(scratch);
+        Files.setPosixFilePermissions(scratch, PosixFilePermissions.fromString("rwxrwxr-x"));
 
         int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
 
