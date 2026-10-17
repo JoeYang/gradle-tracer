@@ -13,6 +13,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -164,6 +166,24 @@ class CliTest {
         assertEquals(Cli.EXIT_USAGE, code, err());
         assertTrue(err().contains(tmp.toString()), err());
         assertFalse(git.ran("git worktree"), "no worktree work before the tsv-out pre-check fails");
+    }
+
+    @Test void tsvOutWithUnwritableParentIsAUsageError() throws Exception {
+        Path dir = tmp.resolve("readonly-dir");
+        Files.createDirectories(dir);
+        Set<PosixFilePermission> original = Files.getPosixFilePermissions(dir);
+        try {
+            Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("r-xr-xr-x"));
+            Path file = dir.resolve("rows.tsv");
+
+            int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", file.toString());
+
+            assertEquals(Cli.EXIT_USAGE, code, err());
+            assertTrue(err().contains(file.toString()) || err().contains(dir.toString()), err());
+            assertFalse(git.ran("git worktree"), "no worktree work before the tsv-out pre-check fails");
+        } finally {
+            Files.setPosixFilePermissions(dir, original);
+        }
     }
 
     @Test void scratchRootLockedByAnotherRunIsAUsageError() throws Exception {
