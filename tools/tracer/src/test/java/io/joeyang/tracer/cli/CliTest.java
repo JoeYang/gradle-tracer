@@ -79,6 +79,11 @@ class CliTest {
                 new PrintStream(out, true, StandardCharsets.UTF_8), new PrintStream(err, true, StandardCharsets.UTF_8));
     }
 
+    /** Pre-creates {@code scratch} the same way Cli itself would, so a fixture testing something else doesn't trip the privacy check. */
+    void createPrivateScratch() throws IOException {
+        Files.createDirectory(scratch, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+    }
+
     String out() { return out.toString(StandardCharsets.UTF_8); }
     String err() { return err.toString(StandardCharsets.UTF_8); }
 
@@ -237,7 +242,7 @@ class CliTest {
     }
 
     @Test void scratchRootLockedByAnotherRunIsAUsageError() throws Exception {
-        Files.createDirectories(scratch);
+        createPrivateScratch();
         try (FileChannel locked = FileChannel.open(scratch.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
              FileLock heldElsewhere = locked.lock()) {
             int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
@@ -305,6 +310,24 @@ class CliTest {
         assertEquals(Cli.EXIT_CHANGED, second, err());
     }
 
+    // Ownership by another user can't be faked without root (chown requires privilege this test doesn't have and
+    // shouldn't need), so only the permission-bits branch of the privacy check is exercised here.
+    @Test void scratchRootWithGroupOrOtherWriteIsAUsageError() throws Exception {
+        Files.createDirectory(scratch, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwxrwxr-x")));
+
+        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
+
+        assertEquals(Cli.EXIT_USAGE, code, err());
+        assertTrue(err().contains(scratch.toString()) && err().contains("not private"), err());
+        assertFalse(git.ran("git worktree"), "no worktree work when the scratch root isn't private");
+    }
+
+    @Test void freshlyCreatedScratchRootHasMode700() throws Exception {
+        run(keys, impacts, "appA", "--from", "base", "--to", "tip");
+
+        assertEquals(PosixFilePermissions.fromString("rwx------"), Files.getPosixFilePermissions(scratch));
+    }
+
     @Test void scratchRootThatIsAnExistingFileIsAToolFailure() throws Exception {
         Files.writeString(scratch, "not a directory");
 
@@ -315,7 +338,8 @@ class CliTest {
     }
 
     @Test void lockPathThatIsADirectoryIsAToolFailure() throws Exception {
-        Files.createDirectories(scratch.resolve(".lock"));
+        createPrivateScratch();
+        Files.createDirectory(scratch.resolve(".lock"));
 
         int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
 
@@ -324,7 +348,7 @@ class CliTest {
     }
 
     @Test void lockFileSurvivesScratchSweep() throws Exception {
-        Files.createDirectories(scratch);
+        createPrivateScratch();
         Path lock = Files.createFile(scratch.resolve(".lock"));
         Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
 
@@ -391,7 +415,7 @@ class CliTest {
     }
 
     @Test void staleScratchFilesAreSweptAndNewOnesRemoved() throws Exception {
-        Files.createDirectories(scratch);
+        createPrivateScratch();
         Path stale = Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
 
         run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv");

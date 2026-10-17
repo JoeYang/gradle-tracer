@@ -160,6 +160,14 @@ suppressed onto that failure instead of replacing it. Any `IOException` naming o
 some `IOException` subtypes) falls back to the exception's class name instead of repeating the path a second
 time, the same fallback `BazelDiffProvider` already used.
 
+### The scratch root must be private
+`$TMPDIR/gradle-tracer` is a predictable, fixed path (spec §9), often under a shared `/tmp`: another local user
+could pre-create it and tamper with the worktrees whose `gradlew` this tool executes, or hold `.lock` to block
+every run. `Cli` creates a fresh root `rwx------`; an existing one must already be owned by the current user
+with no group or other write permission, or the run refuses to touch it — exit 1, naming the path ("scratch
+root `<path>` is not private to you; remove it or set `TMPDIR` to a private directory") — before any sweep,
+lock or worktree work. The fixed path itself is unchanged; this only narrows who may use it.
+
 ### Process timeouts and detached children
 On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it
 started, then the direct child itself. A freshly spawned Gradle daemon is still a child of that process tree (its

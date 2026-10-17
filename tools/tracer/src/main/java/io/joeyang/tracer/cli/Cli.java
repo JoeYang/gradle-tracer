@@ -9,6 +9,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -248,11 +250,7 @@ public final class Cli {
      * both mean the root is busy.
      */
     private int withScratchLock(PrintStream err, LockedWork work) throws UsageException, ProviderException {
-        try {
-            Files.createDirectories(scratch);
-        } catch (IOException e) {
-            throw new ProviderException("cannot create scratch root " + scratch + ": " + ioReason(e, scratch), e);
-        }
+        ensurePrivateScratchRoot();
         Path lockPath = scratch.resolve(".lock");
         try (FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
             FileLock lock;
@@ -275,6 +273,45 @@ public final class Cli {
             }
         } catch (IOException e) {
             throw new ProviderException("cannot lock scratch root " + lockPath + ": " + ioReason(e, lockPath), e);
+        }
+    }
+
+    private static final Set<PosixFilePermission> PRIVATE_SCRATCH_PERMISSIONS = PosixFilePermissions.fromString("rwx------");
+
+    /**
+     * $TMPDIR/gradle-tracer is a predictable path, often under a shared {@code /tmp}: another local user could
+     * pre-create it and tamper with the worktrees whose {@code gradlew} this tool executes, or hold {@code .lock}
+     * to block every run. A fresh root is created {@code rwx------}; an existing one must already be owned by
+     * the current user with no group/other write bit, or the run refuses to touch it.
+     */
+    private void ensurePrivateScratchRoot() throws UsageException, ProviderException {
+        if (Files.isDirectory(scratch)) {
+            checkScratchRootIsPrivate();
+            return;
+        }
+        try {
+            Path parent = scratch.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            Files.createDirectory(scratch, PosixFilePermissions.asFileAttribute(PRIVATE_SCRATCH_PERMISSIONS));
+        } catch (IOException e) {
+            throw new ProviderException("cannot create scratch root " + scratch + ": " + ioReason(e, scratch), e);
+        }
+    }
+
+    private void checkScratchRootIsPrivate() throws UsageException, ProviderException {
+        try {
+            Set<PosixFilePermission> perms = Files.getPosixFilePermissions(scratch);
+            boolean groupOrOtherWrite = perms.contains(PosixFilePermission.GROUP_WRITE)
+                    || perms.contains(PosixFilePermission.OTHERS_WRITE);
+            boolean notOwnedByMe = !Files.getOwner(scratch).getName().equals(System.getProperty("user.name"));
+            if (groupOrOtherWrite || notOwnedByMe) {
+                throw new UsageException("scratch root " + scratch
+                        + " is not private to you; remove it or set TMPDIR to a private directory");
+            }
+        } catch (IOException e) {
+            throw new ProviderException("cannot check scratch root " + scratch + ": " + ioReason(e, scratch), e);
         }
     }
 

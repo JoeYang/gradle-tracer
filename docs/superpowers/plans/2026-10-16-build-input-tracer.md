@@ -8928,6 +8928,236 @@ Run `./gradlew :tools:tracer:test`: 230 tests (228 going into this commit, plus
 
 ---
 
+#### Commit P — `fix(tracer): refuse a scratch root that is not private to the user`
+
+Security finding from quality review: `$TMPDIR/gradle-tracer` is a predictable path (spec §9's fixed scratch
+root), often under a shared `/tmp`. Another local user could pre-create it and tamper with the worktrees whose
+`gradlew` this tool executes, or hold `.lock` to block every run — the fixed-path design (deliberately kept,
+per §9) otherwise has no defence against that.
+
+Fix: `ensurePrivateScratchRoot`, called before anything else in `withScratchLock`, creates a fresh root
+`rwx------` (`PosixFilePermissions.asFileAttribute`, which sets the mode explicitly rather than relying on the
+process umask — the three existing test fixtures that pre-created `scratch` with `Files.createDirectories`
+picked up this environment's `0002` umask as `rwxrwxr-x` and so now legitimately trip the new check; they
+switch to a `createPrivateScratch()` helper that matches what `Cli` itself creates). An *existing* root must
+already be owned by the current user with no group/other write bit, checked via `checkScratchRootIsPrivate`,
+or the run exits 1 naming the path. Ownership by another user can't be tested without root, so only the
+permission-bits branch has a test; the test comments say so.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index dd0e7da..7e957ef 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -9,6 +9,8 @@ import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.nio.file.StandardCopyOption;
+ import java.nio.file.StandardOpenOption;
++import java.nio.file.attribute.PosixFilePermission;
++import java.nio.file.attribute.PosixFilePermissions;
+ import java.time.Duration;
+ import java.util.ArrayList;
+ import java.util.List;
+@@ -248,11 +250,7 @@ public final class Cli {
+      * both mean the root is busy.
+      */
+     private int withScratchLock(PrintStream err, LockedWork work) throws UsageException, ProviderException {
+-        try {
+-            Files.createDirectories(scratch);
+-        } catch (IOException e) {
+-            throw new ProviderException("cannot create scratch root " + scratch + ": " + ioReason(e, scratch), e);
+-        }
++        ensurePrivateScratchRoot();
+         Path lockPath = scratch.resolve(".lock");
+         try (FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+             FileLock lock;
+@@ -278,6 +276,45 @@ public final class Cli {
+         }
+     }
+ 
++    private static final Set<PosixFilePermission> PRIVATE_SCRATCH_PERMISSIONS = PosixFilePermissions.fromString("rwx------");
++
++    /**
++     * $TMPDIR/gradle-tracer is a predictable path, often under a shared {@code /tmp}: another local user could
++     * pre-create it and tamper with the worktrees whose {@code gradlew} this tool executes, or hold {@code .lock}
++     * to block every run. A fresh root is created {@code rwx------}; an existing one must already be owned by
++     * the current user with no group/other write bit, or the run refuses to touch it.
++     */
++    private void ensurePrivateScratchRoot() throws UsageException, ProviderException {
++        if (Files.isDirectory(scratch)) {
++            checkScratchRootIsPrivate();
++            return;
++        }
++        try {
++            Path parent = scratch.getParent();
++            if (parent != null) {
++                Files.createDirectories(parent);
++            }
++            Files.createDirectory(scratch, PosixFilePermissions.asFileAttribute(PRIVATE_SCRATCH_PERMISSIONS));
++        } catch (IOException e) {
++            throw new ProviderException("cannot create scratch root " + scratch + ": " + ioReason(e, scratch), e);
++        }
++    }
++
++    private void checkScratchRootIsPrivate() throws UsageException, ProviderException {
++        try {
++            Set<PosixFilePermission> perms = Files.getPosixFilePermissions(scratch);
++            boolean groupOrOtherWrite = perms.contains(PosixFilePermission.GROUP_WRITE)
++                    || perms.contains(PosixFilePermission.OTHERS_WRITE);
++            boolean notOwnedByMe = !Files.getOwner(scratch).getName().equals(System.getProperty("user.name"));
++            if (groupOrOtherWrite || notOwnedByMe) {
++                throw new UsageException("scratch root " + scratch
++                        + " is not private to you; remove it or set TMPDIR to a private directory");
++            }
++        } catch (IOException e) {
++            throw new ProviderException("cannot check scratch root " + scratch + ": " + ioReason(e, scratch), e);
++        }
++    }
++
+     /**
+      * {@code e.getMessage()}, falling back to the exception's simple class name when the message is missing or is
+      * just the path again (some {@link IOException} subtypes report nothing more useful than that), so the
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index 9f6289c..65ddd51 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -79,6 +79,11 @@ class CliTest {
+                 new PrintStream(out, true, StandardCharsets.UTF_8), new PrintStream(err, true, StandardCharsets.UTF_8));
+     }
+ 
++    /** Pre-creates {@code scratch} the same way Cli itself would, so a fixture testing something else doesn't trip the privacy check. */
++    void createPrivateScratch() throws IOException {
++        Files.createDirectory(scratch, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
++    }
++
+     String out() { return out.toString(StandardCharsets.UTF_8); }
+     String err() { return err.toString(StandardCharsets.UTF_8); }
+ 
+@@ -237,7 +242,7 @@ class CliTest {
+     }
+ 
+     @Test void scratchRootLockedByAnotherRunIsAUsageError() throws Exception {
+-        Files.createDirectories(scratch);
++        createPrivateScratch();
+         try (FileChannel locked = FileChannel.open(scratch.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+              FileLock heldElsewhere = locked.lock()) {
+             int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
+@@ -305,6 +310,24 @@ class CliTest {
+         assertEquals(Cli.EXIT_CHANGED, second, err());
+     }
+ 
++    // Ownership by another user can't be faked without root (chown requires privilege this test doesn't have and
++    // shouldn't need), so only the permission-bits branch of the privacy check is exercised here.
++    @Test void scratchRootWithGroupOrOtherWriteIsAUsageError() throws Exception {
++        Files.createDirectory(scratch, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwxrwxr-x")));
++
++        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
++
++        assertEquals(Cli.EXIT_USAGE, code, err());
++        assertTrue(err().contains(scratch.toString()) && err().contains("not private"), err());
++        assertFalse(git.ran("git worktree"), "no worktree work when the scratch root isn't private");
++    }
++
++    @Test void freshlyCreatedScratchRootHasMode700() throws Exception {
++        run(keys, impacts, "appA", "--from", "base", "--to", "tip");
++
++        assertEquals(PosixFilePermissions.fromString("rwx------"), Files.getPosixFilePermissions(scratch));
++    }
++
+     @Test void scratchRootThatIsAnExistingFileIsAToolFailure() throws Exception {
+         Files.writeString(scratch, "not a directory");
+ 
+@@ -315,7 +338,8 @@ class CliTest {
+     }
+ 
+     @Test void lockPathThatIsADirectoryIsAToolFailure() throws Exception {
+-        Files.createDirectories(scratch.resolve(".lock"));
++        createPrivateScratch();
++        Files.createDirectory(scratch.resolve(".lock"));
+ 
+         int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
+ 
+@@ -324,7 +348,7 @@ class CliTest {
+     }
+ 
+     @Test void lockFileSurvivesScratchSweep() throws Exception {
+-        Files.createDirectories(scratch);
++        createPrivateScratch();
+         Path lock = Files.createFile(scratch.resolve(".lock"));
+         Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
+ 
+@@ -391,7 +415,7 @@ class CliTest {
+     }
+ 
+     @Test void staleScratchFilesAreSweptAndNewOnesRemoved() throws Exception {
+-        Files.createDirectories(scratch);
++        createPrivateScratch();
+         Path stale = Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
+ 
+         run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv");
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 768ddd0..3dc1f32 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -160,6 +160,14 @@ suppressed onto that failure instead of replacing it. Any `IOException` naming o
+ some `IOException` subtypes) falls back to the exception's class name instead of repeating the path a second
+ time, the same fallback `BazelDiffProvider` already used.
+ 
++### The scratch root must be private
++`$TMPDIR/gradle-tracer` is a predictable, fixed path (spec §9), often under a shared `/tmp`: another local user
++could pre-create it and tamper with the worktrees whose `gradlew` this tool executes, or hold `.lock` to block
++every run. `Cli` creates a fresh root `rwx------`; an existing one must already be owned by the current user
++with no group or other write permission, or the run refuses to touch it — exit 1, naming the path ("scratch
++root `<path>` is not private to you; remove it or set `TMPDIR` to a private directory") — before any sweep,
++lock or worktree work. The fixed path itself is unchanged; this only narrows who may use it.
++
+ ### Process timeouts and detached children
+ On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it
+ started, then the direct child itself. A freshly spawned Gradle daemon is still a child of that process tree (its
+```
+
+```diff
+diff --git a/docs/superpowers/specs/2026-10-16-build-input-tracer-design.md b/docs/superpowers/specs/2026-10-16-build-input-tracer-design.md
+index bc90d78..2349d64 100644
+--- a/docs/superpowers/specs/2026-10-16-build-input-tracer-design.md
++++ b/docs/superpowers/specs/2026-10-16-build-input-tracer-design.md
+@@ -423,4 +423,5 @@ Design changes resulting from the review and from current versions:
+ | T2 | §6 gave `ProcessRunner` an `env` parameter the implemented interface never had and no provider needs (every command's environment is just the parent process's) | fixed: §6 now matches `ProcessRunner.run(Path, Duration, List<String>)` as coded in Task 6 | §6 |
+ | T3 | F14's "last `/src/` occurrence wins" was itself wrong: a worktree root that happens to contain `/src/` (e.g. a checkout under `~/src/...`) leaked into the culprit name and differed between commits, and a module's own nested `src` directory (`core/src/main/resources/src/x.txt`) matched the wrong occurrence; separately, `renderTsv` did not escape embedded tabs/CR/LF, `truncate`/`pad` worked by UTF-16 char and could split a surrogate pair, a culprit-less row kept trailing padding, and a task path with no app segment produced a summary reading "of ." (found by the Task 10 code-quality review) | fixed: the worktree root is stripped first (sharing `WorktreePool`'s `wt-<sha7>` naming), then the module boundary is the *first* `/src/` in what remains; "build logic" sorts first so it is never hidden by the culprit cap; TSV fields are tab/CR/LF-escaped; table columns are truncated/padded by code point; culprit-less rows are trimmed; `appName` falls back to the full task path. Supersedes F14's fix, not §5/§8's design intent | plan Task 10 |
+ | T4 | §9 says a bad revision exits 1 with nothing created; after Task 13 commit C, `Cli` created the scratch root and `<scratch>/.lock` before resolving `--from`/`--to`/`--at`, so an unknown revision left `.lock` behind, violating that row (found by spec review) | fixed: revision resolution (read-only git, no lock needed) now runs before the scratch root is created or locked, restoring §9's "nothing created" guarantee. (The scratch-root lock itself, a `FileChannel` lock on `<scratch>/.lock` guarding against two concurrent runs sharing a root, is an implementation safeguard added in commit C — §9 doesn't specify it; taking it after revision resolution is what keeps the two consistent.) | plan Task 13 (commit E) |
++| T5 | `$TMPDIR/gradle-tracer` (spec §9's fixed scratch root) is a predictable path, often under a shared `/tmp`; another local user could pre-create it and tamper with the worktrees whose `gradlew` this tool executes, or hold `.lock` to block every run (found by quality review) | fixed: a fresh scratch root is created `rwx------`; an existing one must already be owned by the current user with no group/other write bit, or the run refuses to touch it, exiting 1 with a message naming the path. The fixed path itself is unchanged | plan Task 13 (commit P) |
+ 
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/tracer.md \
+        docs/superpowers/specs/2026-10-16-build-input-tracer-design.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+fix(tracer): refuse a scratch root that is not private to the user
+
+$TMPDIR/gradle-tracer is a predictable, fixed path, often under a
+shared /tmp: another local user could pre-create it and tamper with
+the worktrees whose gradlew this tool executes, or hold .lock to
+block every run. Create a fresh root rwx------, and refuse to touch
+an existing one unless it's already owned by the current user with
+no group/other write bit.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: 232 tests (230 going into this commit, plus
+`scratchRootWithGroupOrOtherWriteIsAUsageError` and `freshlyCreatedScratchRootHasMode700`).
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**
