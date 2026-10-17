@@ -33,3 +33,11 @@ The same `src/main/java` and `src/test/java` trees as Gradle. Outputs go to `baz
 
 ## Commands
     bazel build //...   bazel test //...   bazel run //app/appA -- Ada
+
+## bazel-diff
+`tools/fetch-bazel-diff.sh` downloads the pinned release binary (v60.0.0, sha256-checked) to `tools/bin/` (gitignored).
+`--offline` maps to `--repository_disable_download` for the Bazel queries: it works on a fresh output base once the repository
+cache is warm, and fails with a clear "download is disabled" error when it is cold.
+Override with `BAZEL_DIFF=/path/to/binary`. The tracer runs `generate-hashes -w <worktree> -b bazel --fineGrainedHashExternalRepos=@maven`
+per commit and `get-impacted-targets` per adjacent pair, then `bazel clean --expunge` in the worktree so each throwaway
+output base is removed. Building bazel-diff from the Bazel Central Registry module was rejected: it compiles Rust via rules_rust.
