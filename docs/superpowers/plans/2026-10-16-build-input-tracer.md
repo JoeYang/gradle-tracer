@@ -9249,6 +9249,139 @@ Run `./gradlew :tools:tracer:test`: 233 tests (232 going into this commit, plus
 
 ---
 
+#### Commit R — `test(tracer): cover the remaining exit paths`
+
+Test-only: quality review found gaps in `CliTest`'s exit-path coverage and a couple of loose assertions.
+
+Added: a range where every commit's key is identical (`EXIT_OK`), `--at` with a failing key lookup
+(`EXIT_TOOL_FAILURE`), and `--keep-worktrees` on the range path (no `git worktree remove` call, and this run's
+hash files still present — the fake runner never touches a real filesystem for `git worktree add` itself, so
+worktree-directory existence isn't the right thing to assert here; not removing them is).
+
+Tightened: `tsvGoesToStdoutWithoutTable` now asserts the exit code, not just the output. `bazelFailureDegradesToNotAvailable`
+now asserts the third row (not just the second) is also `n/a`, and that the warning prints exactly once for the
+whole run, not once per remaining commit. `tsvOutWithUnwritableParentIsAUsageError`'s loose
+`contains(file) || contains(dir)` becomes an exact match on the real message, which already names both.
+
+No assume/skip for root was added, as instructed — none of this needed one.
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index 65ddd51..a6d17b0 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -98,7 +98,8 @@ class CliTest {
+     }
+ 
+     @Test void tsvGoesToStdoutWithoutTable() throws Exception {
+-        run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv");
++        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv");
++        assertEquals(Cli.EXIT_CHANGED, code, err());
+         assertTrue(out().startsWith(A + "\tbaseline\tk1\t-\tbase\t"), out());
+         assertEquals(3, out().split("\n").length);
+     }
+@@ -133,8 +134,11 @@ class CliTest {
+         int code = run(keys, broken, "appA", "--from", "base", "--to", "tip", "--tsv");
+ 
+         assertEquals(Cli.EXIT_CHANGED, code);
+-        assertTrue(err().contains("bazel-diff unavailable: bazel: command not found"), err());
+-        assertTrue(out().split("\n")[1].contains("\tn/a\t"), out());
++        String[] rows = out().split("\n");
++        assertTrue(rows[1].contains("\tn/a\t"), rows[1]);
++        assertTrue(rows[2].contains("\tn/a\t"), "bazel-diff stays n/a for the rest of the range: " + rows[2]);
++        int warnings = err().split("bazel-diff unavailable", -1).length - 1;
++        assertEquals(1, warnings, "the warning must print exactly once, not once per commit: " + err());
+     }
+ 
+     @Test void noBazelOmitsTheColumnSource() throws Exception {
+@@ -163,6 +167,35 @@ class CliTest {
+         assertTrue(out().contains("k2") && out().contains("core.jar") && out().contains("h2"), out());
+     }
+ 
++    @Test void atWithAKeyFailureIsAToolFailure() throws Exception {
++        KeyProvider broken = (wt, task) -> { throw new ProviderException("Could not resolve com.example:missing:1.0"); };
++
++        int code = run(broken, impacts, "appA", "--at", "tip");
++
++        assertEquals(Cli.EXIT_TOOL_FAILURE, code);
++        assertTrue(err().contains("Could not resolve com.example:missing:1.0"), err());
++    }
++
++    @Test void rangeWithNoChangeExitsZero() throws Exception {
++        KeyProvider sameKeyEverywhere = (wt, task) -> key(task, "k1", "h1");
++
++        int code = run(sameKeyEverywhere, impacts, "appA", "--from", "base", "--to", "tip");
++
++        assertEquals(Cli.EXIT_OK, code, err());
++        assertTrue(out().contains("No commit changed"), out());
++    }
++
++    @Test void keepWorktreesKeepsTheWorktreesAndHashFiles() throws Exception {
++        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--keep-worktrees");
++
++        assertEquals(Cli.EXIT_CHANGED, code, err());
++        assertFalse(git.ran("git worktree remove"), "worktrees must stay with --keep-worktrees, so none are removed");
++        try (Stream<Path> left = Files.list(scratch)) {
++            assertTrue(left.anyMatch(p -> p.getFileName().toString().startsWith("hashes-")),
++                    "hash files must stay with --keep-worktrees");
++        }
++    }
++
+     @Test void tsvOutWithMissingParentIsAUsageError() throws Exception {
+         Path file = tmp.resolve("missing-dir/rows.tsv");
+         int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", file.toString());
+@@ -189,7 +222,7 @@ class CliTest {
+             int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", file.toString());
+ 
+             assertEquals(Cli.EXIT_USAGE, code, err());
+-            assertTrue(err().contains(file.toString()) || err().contains(dir.toString()), err());
++            assertTrue(err().contains("--tsv-out '" + file + "': parent directory " + dir + " is not writable"), err());
+             assertFalse(git.ran("git worktree"), "no worktree work before the tsv-out pre-check fails");
+         } finally {
+             Files.setPosixFilePermissions(dir, original);
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index ee59bfc..f130244 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -122,9 +122,10 @@ passing one through.
+ Worktrees and bazel-diff hash files live under one fixed root, `$TMPDIR/gradle-tracer/`. At start the tracer prunes git's
+ worktree list, deletes stale `wt-*` directories and stale `hashes-*.json`/`*.impacted.txt` files left by a killed run, and
+ reports how many it removed; at the end — including when a checkout or provider failure aborts the walk partway
+-through — it removes what it created unless `--keep-worktrees`. If bazel-diff fails once, the
+-rest of the Bazel column is `n/a` and a warning goes to stderr. A commit whose Gradle run fails is `BUILD-FAILED`; the next
+-commit is compared against the last good key.
++through — it removes what it created unless `--keep-worktrees`, which keeps the worktrees themselves (their
++`git worktree` registrations too) and every hash file this run wrote. If bazel-diff fails once, the rest of the
++Bazel column is `n/a` and exactly one warning goes to stderr for the whole run, not one per remaining commit. A
++commit whose Gradle run fails is `BUILD-FAILED`; the next commit is compared against the last good key.
+ 
+ Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed (some row is
+ `BUILD-FAILED`, an unexpected runtime exception — e.g. `UncheckedIOException` from a provider or from a
+```
+
+```bash
+git add tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/tracer.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+test(tracer): cover the remaining exit paths
+
+Added coverage for a no-change range (exit 0), --at with a failing
+key lookup (exit 2), and --keep-worktrees on the range path. Tightened
+three existing assertions that were checking output but not the exit
+code, only one of two n/a rows, or using a loose || instead of the
+exact expected message.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: 236 tests (233 going into this commit, plus `atWithAKeyFailureIsAToolFailure`,
+`rangeWithNoChangeExitsZero` and `keepWorktreesKeepsTheWorktreesAndHashFiles`).
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**

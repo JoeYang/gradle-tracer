@@ -98,7 +98,8 @@ class CliTest {
     }
 
     @Test void tsvGoesToStdoutWithoutTable() throws Exception {
-        run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv");
+        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv");
+        assertEquals(Cli.EXIT_CHANGED, code, err());
         assertTrue(out().startsWith(A + "\tbaseline\tk1\t-\tbase\t"), out());
         assertEquals(3, out().split("\n").length);
     }
@@ -133,8 +134,11 @@ class CliTest {
         int code = run(keys, broken, "appA", "--from", "base", "--to", "tip", "--tsv");
 
         assertEquals(Cli.EXIT_CHANGED, code);
-        assertTrue(err().contains("bazel-diff unavailable: bazel: command not found"), err());
-        assertTrue(out().split("\n")[1].contains("\tn/a\t"), out());
+        String[] rows = out().split("\n");
+        assertTrue(rows[1].contains("\tn/a\t"), rows[1]);
+        assertTrue(rows[2].contains("\tn/a\t"), "bazel-diff stays n/a for the rest of the range: " + rows[2]);
+        int warnings = err().split("bazel-diff unavailable", -1).length - 1;
+        assertEquals(1, warnings, "the warning must print exactly once, not once per commit: " + err());
     }
 
     @Test void noBazelOmitsTheColumnSource() throws Exception {
@@ -163,6 +167,35 @@ class CliTest {
         assertTrue(out().contains("k2") && out().contains("core.jar") && out().contains("h2"), out());
     }
 
+    @Test void atWithAKeyFailureIsAToolFailure() throws Exception {
+        KeyProvider broken = (wt, task) -> { throw new ProviderException("Could not resolve com.example:missing:1.0"); };
+
+        int code = run(broken, impacts, "appA", "--at", "tip");
+
+        assertEquals(Cli.EXIT_TOOL_FAILURE, code);
+        assertTrue(err().contains("Could not resolve com.example:missing:1.0"), err());
+    }
+
+    @Test void rangeWithNoChangeExitsZero() throws Exception {
+        KeyProvider sameKeyEverywhere = (wt, task) -> key(task, "k1", "h1");
+
+        int code = run(sameKeyEverywhere, impacts, "appA", "--from", "base", "--to", "tip");
+
+        assertEquals(Cli.EXIT_OK, code, err());
+        assertTrue(out().contains("No commit changed"), out());
+    }
+
+    @Test void keepWorktreesKeepsTheWorktreesAndHashFiles() throws Exception {
+        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--keep-worktrees");
+
+        assertEquals(Cli.EXIT_CHANGED, code, err());
+        assertFalse(git.ran("git worktree remove"), "worktrees must stay with --keep-worktrees, so none are removed");
+        try (Stream<Path> left = Files.list(scratch)) {
+            assertTrue(left.anyMatch(p -> p.getFileName().toString().startsWith("hashes-")),
+                    "hash files must stay with --keep-worktrees");
+        }
+    }
+
     @Test void tsvOutWithMissingParentIsAUsageError() throws Exception {
         Path file = tmp.resolve("missing-dir/rows.tsv");
         int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", file.toString());
@@ -189,7 +222,7 @@ class CliTest {
             int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", file.toString());
 
             assertEquals(Cli.EXIT_USAGE, code, err());
-            assertTrue(err().contains(file.toString()) || err().contains(dir.toString()), err());
+            assertTrue(err().contains("--tsv-out '" + file + "': parent directory " + dir + " is not writable"), err());
             assertFalse(git.ran("git worktree"), "no worktree work before the tsv-out pre-check fails");
         } finally {
             Files.setPosixFilePermissions(dir, original);
