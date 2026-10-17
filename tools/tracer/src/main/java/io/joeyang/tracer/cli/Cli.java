@@ -369,7 +369,7 @@ public final class Cli {
      * Checked before any worktree is created or any git command beyond option parsing runs, so a bad
      * {@code --tsv-out} path fails fast instead of after a whole range walk has already run.
      */
-    private void checkTsvOutWritable(Options o) throws UsageException {
+    private void checkTsvOutWritable(Options o) throws UsageException, ProviderException {
         Path tsvOut = o.tsvOut();
         if (tsvOut == null) {
             return;
@@ -377,10 +377,24 @@ public final class Cli {
         if (Files.isDirectory(tsvOut)) {
             throw new UsageException("--tsv-out '" + tsvOut + "' is a directory");
         }
-        if (Files.exists(tsvOut) && !Files.isWritable(tsvOut)) {
-            throw new UsageException("--tsv-out '" + tsvOut + "' exists and is not writable");
+        if (Files.isSymbolicLink(tsvOut) && !Files.exists(tsvOut)) {
+            throw new UsageException("--tsv-out '" + tsvOut + "' is a symlink to a missing file");
         }
-        Path parent = tsvOut.toAbsolutePath().getParent();
+        // The parent checked below is the REAL target's parent, not the symlink's own: a symlinked --tsv-out is
+        // written through to whatever it points at (see writeTsvAtomically), so what matters is whether that
+        // real location is writable, not the directory the symlink itself happens to live in.
+        Path checkTarget = tsvOut;
+        if (Files.exists(tsvOut)) {
+            if (!Files.isWritable(tsvOut)) {
+                throw new UsageException("--tsv-out '" + tsvOut + "' exists and is not writable");
+            }
+            try {
+                checkTarget = tsvOut.toRealPath();
+            } catch (IOException e) {
+                throw new ProviderException("cannot resolve --tsv-out '" + tsvOut + "': " + ioReason(e, tsvOut), e);
+            }
+        }
+        Path parent = checkTarget.toAbsolutePath().getParent();
         if (parent == null) {
             parent = Path.of("").toAbsolutePath();
         }
@@ -460,6 +474,12 @@ public final class Cli {
                 deleteScratchFiles();
             }
         }
+        // An interrupt during the *last* commit's bazel-diff call degrades silently like any other (the loop's
+        // own top-of-iteration check never gets a next iteration to catch it in), so it would otherwise survive
+        // only as that warning and let the walk finish normally. Catch it here too, before rendering anything.
+        if (Thread.currentThread().isInterrupted()) {
+            throw new ProviderException("interrupted");
+        }
         String tsv = TableRenderer.renderTsv(rows);
         if (o.tsv()) {
             out.print(tsv);
@@ -509,10 +529,14 @@ public final class Cli {
                 // A brand-new file has no previous mode to preserve, so it's written plainly (mode follows the
                 // umask like any other file this tool creates) rather than through createTempFile, which is
                 // always 0600 regardless of umask.
-                tmp = parent.resolve(realTarget.getFileName() + ".tmp" + System.nanoTime());
-                try (OutputStream newFile = Files.newOutputStream(tmp, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+                Path candidate = parent.resolve(realTarget.getFileName() + ".tmp" + System.nanoTime());
+                try (OutputStream newFile = Files.newOutputStream(candidate, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
                     newFile.write(content.getBytes(StandardCharsets.UTF_8));
                 }
+                // Only assigned to tmp once CREATE_NEW has actually succeeded: if the name collided with a file
+                // this run didn't create, the catch below must never delete it. Not tested: the collision (a
+                // nanoTime() value reused) can't be forced deterministically.
+                tmp = candidate;
             }
             Files.move(tmp, realTarget, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {

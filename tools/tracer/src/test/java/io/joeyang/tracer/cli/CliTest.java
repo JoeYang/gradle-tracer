@@ -277,6 +277,38 @@ class CliTest {
         }
     }
 
+    @Test void tsvOutThatIsADanglingSymlinkIsAUsageError() throws Exception {
+        Path link = tmp.resolve("rows.tsv");
+        Files.createSymbolicLink(link, tmp.resolve("missing-target"));
+
+        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", link.toString());
+
+        assertEquals(Cli.EXIT_USAGE, code, err());
+        assertTrue(err().contains(link.toString()) && err().contains("symlink") && err().contains("missing"), err());
+        assertFalse(git.ran("git worktree"), "no worktree work before the tsv-out pre-check fails");
+    }
+
+    @Test void tsvOutThatIsASymlinkWithAReadOnlyRealParentIsAUsageError() throws Exception {
+        Path realDir = tmp.resolve("real-dir");
+        Files.createDirectory(realDir);
+        Path real = realDir.resolve("real-rows.tsv");
+        Files.writeString(real, "previous content\n");
+        Path link = tmp.resolve("rows.tsv");
+        Files.createSymbolicLink(link, real);
+        Set<PosixFilePermission> original = Files.getPosixFilePermissions(realDir);
+        try {
+            Files.setPosixFilePermissions(realDir, PosixFilePermissions.fromString("r-xr-xr-x"));
+
+            int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", link.toString());
+
+            assertEquals(Cli.EXIT_USAGE, code, err());
+            assertTrue(err().contains(realDir.toString()), err());
+            assertFalse(git.ran("git worktree"), "no worktree work before the tsv-out pre-check fails");
+        } finally {
+            Files.setPosixFilePermissions(realDir, original);
+        }
+    }
+
     @Test void tsvOutWriteFailureMidWalkLeavesThePreviousFileIntact() throws Exception {
         Path file = tmp.resolve("rows.tsv");
         Files.writeString(file, "previous content\n");
@@ -529,6 +561,33 @@ class CliTest {
             // walk only stops at the top of the *next* iteration, before that commit's checkout or any of its
             // provider calls.
             assertEquals(1, hashCalls.get(), "no further bazel-diff calls once the flag is seen");
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test void interruptedBazelDiffOnTheLastCommitAbortsAfterTheLoop() throws Exception {
+        ImpactProvider interruptOnLastCommit = new ImpactProvider() {
+            @Override public Path hashes(Path worktree, Path output) throws ProviderException {
+                if (worktree.getFileName().toString().equals("wt-ccccccc")) {
+                    Thread.currentThread().interrupt();
+                    throw new ProviderException("boom");
+                }
+                try {
+                    return Files.writeString(output, "{}");
+                } catch (IOException e) {
+                    throw new ProviderException(e.getMessage(), e);
+                }
+            }
+            @Override public Set<String> impactedTargets(Path p, Path c) { return Set.of(); }
+        };
+        try {
+            int code = run(keys, interruptOnLastCommit, "appA", "--from", "base", "--to", "tip");
+
+            // With no post-loop check, this would render the table and exit 3 (a CHANGED row) instead, and the
+            // interrupt would survive only as the bazel-diff warning already printed.
+            assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
+            assertTrue(err().contains("interrupted"), err());
         } finally {
             Thread.interrupted();
         }

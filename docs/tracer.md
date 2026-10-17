@@ -140,15 +140,19 @@ an unexpected runtime exception — e.g. `UncheckedIOException` from a provider 
 caught in `Cli.run` and reported as "internal error: `<class>`: `<message>`" rather than escaping as a raw
 stack trace; or the thread being interrupted mid-walk, reported as "interrupted" and aborting the range
 immediately instead of limping through every remaining commit with the interrupt flag still set. The flag is
-checked both after a failed key lookup and at the top of every iteration, since an interrupted bazel-diff call
-degrades silently (as an ordinary bazel-diff failure, below) with the flag still set — the top-of-iteration
-check is what catches that case before the next checkout, rather than letting it fail there with an unrelated
-error — 3 at least one row is `CHANGED`. 2 wins over 3 when both apply in the same range.
+checked after a failed key lookup, at the top of every iteration, and once more after the loop (before
+rendering anything): an interrupted bazel-diff call degrades silently (as an ordinary bazel-diff failure,
+below) with the flag still set, and if that happens on the *last* commit there's no next iteration left to
+catch it in — only the final check does, aborting instead of rendering a table as if nothing had happened — 3
+at least one row is `CHANGED`. 2 wins over 3 when both apply in the same range.
 
 `Cli.run` does its work in a fixed order: the app name is checked against `app/<app>` first (a usage error here
 needs no scratch root or git at all); then, for a range, `--tsv-out <file>` is pre-checked (parent directory
 must exist, be a directory and be writable; the target must not already be a directory; an existing target must
-itself be writable); then the revision(s) are resolved (`RevisionRange.resolve` for a range, `resolveOne` for
+itself be writable; a *dangling* symlink — `Files.isSymbolicLink` true, `Files.exists` false — is rejected
+outright, since nothing exists yet to write through; for an existing target, the parent checked is the real
+target's — `toRealPath()` — not the symlink's own directory, since a symlinked `--tsv-out` is written through
+to whatever it points at); then the revision(s) are resolved (`RevisionRange.resolve` for a range, `resolveOne` for
 `--at`) — this is read-only git, so it needs no lock, and a usage error here (unknown revision, empty range)
 exits 1 with no scratch root or `.lock` file ever created; only once that succeeds does the scratch root get
 created, locked (see "One run per scratch root" below), swept, and the worktree walk begin. Any violation along

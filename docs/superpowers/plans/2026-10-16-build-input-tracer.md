@@ -10462,6 +10462,241 @@ Run `./gradlew :tools:tracer:test`: still 241 (docs-only commit). Run `bazel tes
 
 ---
 
+#### Commit AA — `fix(tracer): close the last --tsv-out symlink and interrupt gaps`
+
+Four closely related gaps, found by round-3 quality review:
+
+1. A dangling `--tsv-out` symlink (`Files.isSymbolicLink` true, `Files.exists` false) passed the pre-check —
+   `writeTsvAtomically` only branches on `Files.exists`, so it would have written a plain new file where the
+   symlink used to be, contradicting the "written through" promise Commit W made for symlinks. Rejected
+   outright with a dedicated message instead.
+
+2. The pre-check validated the *symlink's own* parent directory, not the real target's, so a symlinked
+   `--tsv-out` whose real parent was read-only passed the pre-check and only failed with exit 2 after the whole
+   walk ran. For an existing target, the parent checked is now `target.toRealPath()`'s.
+
+3. An interrupt during the *last* commit's bazel-diff call had no next iteration left to catch it in (Commit
+   Y's top-of-iteration check never runs again after the final commit), so it exited 3 with a rendered table as
+   if nothing had happened, the interrupt surviving only as the bazel-diff warning already printed. Added one
+   more check after the loop, before rendering, using the same `ProviderException("interrupted")` path.
+
+4. In `writeTsvAtomically`'s new-file branch, `tmp` was assigned *before* `CREATE_NEW` had actually succeeded;
+   a collision on the generated name (extremely unlikely, but possible) would have meant the catch block's
+   cleanup deleted a file this run never created. `tmp` is now only assigned once the open has actually
+   succeeded. Not tested — the collision can't be forced deterministically — noted in a comment instead.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index 7b12b70..99544b6 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -369,7 +369,7 @@ public final class Cli {
+      * Checked before any worktree is created or any git command beyond option parsing runs, so a bad
+      * {@code --tsv-out} path fails fast instead of after a whole range walk has already run.
+      */
+-    private void checkTsvOutWritable(Options o) throws UsageException {
++    private void checkTsvOutWritable(Options o) throws UsageException, ProviderException {
+         Path tsvOut = o.tsvOut();
+         if (tsvOut == null) {
+             return;
+@@ -377,10 +377,24 @@ public final class Cli {
+         if (Files.isDirectory(tsvOut)) {
+             throw new UsageException("--tsv-out '" + tsvOut + "' is a directory");
+         }
+-        if (Files.exists(tsvOut) && !Files.isWritable(tsvOut)) {
+-            throw new UsageException("--tsv-out '" + tsvOut + "' exists and is not writable");
++        if (Files.isSymbolicLink(tsvOut) && !Files.exists(tsvOut)) {
++            throw new UsageException("--tsv-out '" + tsvOut + "' is a symlink to a missing file");
+         }
+-        Path parent = tsvOut.toAbsolutePath().getParent();
++        // The parent checked below is the REAL target's parent, not the symlink's own: a symlinked --tsv-out is
++        // written through to whatever it points at (see writeTsvAtomically), so what matters is whether that
++        // real location is writable, not the directory the symlink itself happens to live in.
++        Path checkTarget = tsvOut;
++        if (Files.exists(tsvOut)) {
++            if (!Files.isWritable(tsvOut)) {
++                throw new UsageException("--tsv-out '" + tsvOut + "' exists and is not writable");
++            }
++            try {
++                checkTarget = tsvOut.toRealPath();
++            } catch (IOException e) {
++                throw new ProviderException("cannot resolve --tsv-out '" + tsvOut + "': " + ioReason(e, tsvOut), e);
++            }
++        }
++        Path parent = checkTarget.toAbsolutePath().getParent();
+         if (parent == null) {
+             parent = Path.of("").toAbsolutePath();
+         }
+@@ -460,6 +474,12 @@ public final class Cli {
+                 deleteScratchFiles();
+             }
+         }
++        // An interrupt during the *last* commit's bazel-diff call degrades silently like any other (the loop's
++        // own top-of-iteration check never gets a next iteration to catch it in), so it would otherwise survive
++        // only as that warning and let the walk finish normally. Catch it here too, before rendering anything.
++        if (Thread.currentThread().isInterrupted()) {
++            throw new ProviderException("interrupted");
++        }
+         String tsv = TableRenderer.renderTsv(rows);
+         if (o.tsv()) {
+             out.print(tsv);
+@@ -509,10 +529,14 @@ public final class Cli {
+                 // A brand-new file has no previous mode to preserve, so it's written plainly (mode follows the
+                 // umask like any other file this tool creates) rather than through createTempFile, which is
+                 // always 0600 regardless of umask.
+-                tmp = parent.resolve(realTarget.getFileName() + ".tmp" + System.nanoTime());
+-                try (OutputStream newFile = Files.newOutputStream(tmp, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
++                Path candidate = parent.resolve(realTarget.getFileName() + ".tmp" + System.nanoTime());
++                try (OutputStream newFile = Files.newOutputStream(candidate, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+                     newFile.write(content.getBytes(StandardCharsets.UTF_8));
+                 }
++                // Only assigned to tmp once CREATE_NEW has actually succeeded: if the name collided with a file
++                // this run didn't create, the catch below must never delete it. Not tested: the collision (a
++                // nanoTime() value reused) can't be forced deterministically.
++                tmp = candidate;
+             }
+             Files.move(tmp, realTarget, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+         } catch (IOException e) {
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index 93b5586..eec35be 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -277,6 +277,38 @@ class CliTest {
+         }
+     }
+ 
++    @Test void tsvOutThatIsADanglingSymlinkIsAUsageError() throws Exception {
++        Path link = tmp.resolve("rows.tsv");
++        Files.createSymbolicLink(link, tmp.resolve("missing-target"));
++
++        int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", link.toString());
++
++        assertEquals(Cli.EXIT_USAGE, code, err());
++        assertTrue(err().contains(link.toString()) && err().contains("symlink") && err().contains("missing"), err());
++        assertFalse(git.ran("git worktree"), "no worktree work before the tsv-out pre-check fails");
++    }
++
++    @Test void tsvOutThatIsASymlinkWithAReadOnlyRealParentIsAUsageError() throws Exception {
++        Path realDir = tmp.resolve("real-dir");
++        Files.createDirectory(realDir);
++        Path real = realDir.resolve("real-rows.tsv");
++        Files.writeString(real, "previous content\n");
++        Path link = tmp.resolve("rows.tsv");
++        Files.createSymbolicLink(link, real);
++        Set<PosixFilePermission> original = Files.getPosixFilePermissions(realDir);
++        try {
++            Files.setPosixFilePermissions(realDir, PosixFilePermissions.fromString("r-xr-xr-x"));
++
++            int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", link.toString());
++
++            assertEquals(Cli.EXIT_USAGE, code, err());
++            assertTrue(err().contains(realDir.toString()), err());
++            assertFalse(git.ran("git worktree"), "no worktree work before the tsv-out pre-check fails");
++        } finally {
++            Files.setPosixFilePermissions(realDir, original);
++        }
++    }
++
+     @Test void tsvOutWriteFailureMidWalkLeavesThePreviousFileIntact() throws Exception {
+         Path file = tmp.resolve("rows.tsv");
+         Files.writeString(file, "previous content\n");
+@@ -534,6 +566,33 @@ class CliTest {
+         }
+     }
+ 
++    @Test void interruptedBazelDiffOnTheLastCommitAbortsAfterTheLoop() throws Exception {
++        ImpactProvider interruptOnLastCommit = new ImpactProvider() {
++            @Override public Path hashes(Path worktree, Path output) throws ProviderException {
++                if (worktree.getFileName().toString().equals("wt-ccccccc")) {
++                    Thread.currentThread().interrupt();
++                    throw new ProviderException("boom");
++                }
++                try {
++                    return Files.writeString(output, "{}");
++                } catch (IOException e) {
++                    throw new ProviderException(e.getMessage(), e);
++                }
++            }
++            @Override public Set<String> impactedTargets(Path p, Path c) { return Set.of(); }
++        };
++        try {
++            int code = run(keys, interruptOnLastCommit, "appA", "--from", "base", "--to", "tip");
++
++            // With no post-loop check, this would render the table and exit 3 (a CHANGED row) instead, and the
++            // interrupt would survive only as the bazel-diff warning already printed.
++            assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
++            assertTrue(err().contains("interrupted"), err());
++        } finally {
++            Thread.interrupted();
++        }
++    }
++
+     @Test void staleScratchFilesAreSweptAndNewOnesRemoved() throws Exception {
+         createPrivateScratch();
+         Path stale = Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index edd4728..6b64908 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -140,15 +140,19 @@ an unexpected runtime exception — e.g. `UncheckedIOException` from a provider
+ caught in `Cli.run` and reported as "internal error: `<class>`: `<message>`" rather than escaping as a raw
+ stack trace; or the thread being interrupted mid-walk, reported as "interrupted" and aborting the range
+ immediately instead of limping through every remaining commit with the interrupt flag still set. The flag is
+-checked both after a failed key lookup and at the top of every iteration, since an interrupted bazel-diff call
+-degrades silently (as an ordinary bazel-diff failure, below) with the flag still set — the top-of-iteration
+-check is what catches that case before the next checkout, rather than letting it fail there with an unrelated
+-error — 3 at least one row is `CHANGED`. 2 wins over 3 when both apply in the same range.
++checked after a failed key lookup, at the top of every iteration, and once more after the loop (before
++rendering anything): an interrupted bazel-diff call degrades silently (as an ordinary bazel-diff failure,
++below) with the flag still set, and if that happens on the *last* commit there's no next iteration left to
++catch it in — only the final check does, aborting instead of rendering a table as if nothing had happened — 3
++at least one row is `CHANGED`. 2 wins over 3 when both apply in the same range.
+ 
+ `Cli.run` does its work in a fixed order: the app name is checked against `app/<app>` first (a usage error here
+ needs no scratch root or git at all); then, for a range, `--tsv-out <file>` is pre-checked (parent directory
+ must exist, be a directory and be writable; the target must not already be a directory; an existing target must
+-itself be writable); then the revision(s) are resolved (`RevisionRange.resolve` for a range, `resolveOne` for
++itself be writable; a *dangling* symlink — `Files.isSymbolicLink` true, `Files.exists` false — is rejected
++outright, since nothing exists yet to write through; for an existing target, the parent checked is the real
++target's — `toRealPath()` — not the symlink's own directory, since a symlinked `--tsv-out` is written through
++to whatever it points at); then the revision(s) are resolved (`RevisionRange.resolve` for a range, `resolveOne` for
+ `--at`) — this is read-only git, so it needs no lock, and a usage error here (unknown revision, empty range)
+ exits 1 with no scratch root or `.lock` file ever created; only once that succeeds does the scratch root get
+ created, locked (see "One run per scratch root" below), swept, and the worktree walk begin. Any violation along
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/tracer.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+fix(tracer): close the last --tsv-out symlink and interrupt gaps
+
+A dangling --tsv-out symlink passed the pre-check and would have been
+replaced by a plain file instead of rejected; an existing symlink's
+real parent, not its own, is what the pre-check should validate,
+since the write goes through to whatever the symlink points at. An
+interrupt on the last commit's bazel-diff call had no next iteration
+left to catch it in, so it rendered a table as if nothing happened;
+check once more after the loop. Also: assign the new-file temp path
+only after CREATE_NEW succeeds, so a name collision's cleanup never
+deletes a file this run didn't create.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: 244 tests (241 going into this commit, plus
+`tsvOutThatIsADanglingSymlinkIsAUsageError`, `tsvOutThatIsASymlinkWithAReadOnlyRealParentIsAUsageError` and
+`interruptedBazelDiffOnTheLastCommitAbortsAfterTheLoop`).
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**
