@@ -9,6 +9,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * The Bazel oracle: {@code bazel-diff generate-hashes} per worktree and {@code get-impacted-targets} per adjacent pair.
@@ -40,7 +41,12 @@ public final class BazelDiffProvider implements ImpactProvider {
 
     /** {@code $BAZEL_DIFF} if set, else the fetched copy under tools/bin, else whatever {@code bazel-diff} is on the PATH. */
     static Path defaultBinary(Path repo) {
-        String env = System.getenv("BAZEL_DIFF");
+        return defaultBinary(repo, System::getenv);
+    }
+
+    /** Same resolution, with the environment lookup injectable so tests do not depend on the real {@code $BAZEL_DIFF}. */
+    static Path defaultBinary(Path repo, Function<String, String> getenv) {
+        String env = getenv.apply("BAZEL_DIFF");
         if (env != null && !env.isBlank()) {
             return Path.of(env);
         }

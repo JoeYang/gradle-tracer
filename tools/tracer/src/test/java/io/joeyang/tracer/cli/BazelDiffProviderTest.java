@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -154,11 +155,22 @@ class BazelDiffProviderTest {
     }
 
     @Test void defaultBinaryPrefersTheFetchedCopy() throws IOException {
-        assertEquals(Path.of("bazel-diff"), BazelDiffProvider.defaultBinary(repo));
+        Function<String, String> noEnv = key -> null;
+        assertEquals(Path.of("bazel-diff"), BazelDiffProvider.defaultBinary(repo, noEnv));
         Path local = repo.resolve("tools/bin/bazel-diff");
         Files.createDirectories(local.getParent());
         Files.writeString(local, "#!/bin/sh\n");
         local.toFile().setExecutable(true);
-        assertEquals(local, BazelDiffProvider.defaultBinary(repo));
+        assertEquals(local, BazelDiffProvider.defaultBinary(repo, noEnv));
+    }
+
+    @Test void defaultBinaryUsesBazelDiffEnvVarWhenSet() {
+        Function<String, String> env = key -> "BAZEL_DIFF".equals(key) ? "/opt/bazel-diff" : null;
+        assertEquals(Path.of("/opt/bazel-diff"), BazelDiffProvider.defaultBinary(repo, env));
+    }
+
+    @Test void defaultBinaryIgnoresABlankEnvVar() {
+        Function<String, String> blankEnv = key -> "BAZEL_DIFF".equals(key) ? "   " : null;
+        assertEquals(Path.of("bazel-diff"), BazelDiffProvider.defaultBinary(repo, blankEnv));
     }
 }

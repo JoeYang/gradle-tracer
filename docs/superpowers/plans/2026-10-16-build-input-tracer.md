@@ -3524,6 +3524,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -3668,12 +3669,23 @@ class BazelDiffProviderTest {
     }
 
     @Test void defaultBinaryPrefersTheFetchedCopy() throws IOException {
-        assertEquals(Path.of("bazel-diff"), BazelDiffProvider.defaultBinary(repo));
+        Function<String, String> noEnv = key -> null;
+        assertEquals(Path.of("bazel-diff"), BazelDiffProvider.defaultBinary(repo, noEnv));
         Path local = repo.resolve("tools/bin/bazel-diff");
         Files.createDirectories(local.getParent());
         Files.writeString(local, "#!/bin/sh\n");
         local.toFile().setExecutable(true);
-        assertEquals(local, BazelDiffProvider.defaultBinary(repo));
+        assertEquals(local, BazelDiffProvider.defaultBinary(repo, noEnv));
+    }
+
+    @Test void defaultBinaryUsesBazelDiffEnvVarWhenSet() {
+        Function<String, String> env = key -> "BAZEL_DIFF".equals(key) ? "/opt/bazel-diff" : null;
+        assertEquals(Path.of("/opt/bazel-diff"), BazelDiffProvider.defaultBinary(repo, env));
+    }
+
+    @Test void defaultBinaryIgnoresABlankEnvVar() {
+        Function<String, String> blankEnv = key -> "BAZEL_DIFF".equals(key) ? "   " : null;
+        assertEquals(Path.of("bazel-diff"), BazelDiffProvider.defaultBinary(repo, blankEnv));
     }
 }
 ```
@@ -3698,6 +3710,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * The Bazel oracle: {@code bazel-diff generate-hashes} per worktree and {@code get-impacted-targets} per adjacent pair.
@@ -3729,7 +3742,12 @@ public final class BazelDiffProvider implements ImpactProvider {
 
     /** {@code $BAZEL_DIFF} if set, else the fetched copy under tools/bin, else whatever {@code bazel-diff} is on the PATH. */
     static Path defaultBinary(Path repo) {
-        String env = System.getenv("BAZEL_DIFF");
+        return defaultBinary(repo, System::getenv);
+    }
+
+    /** Same resolution, with the environment lookup injectable so tests do not depend on the real {@code $BAZEL_DIFF}. */
+    static Path defaultBinary(Path repo, Function<String, String> getenv) {
+        String env = getenv.apply("BAZEL_DIFF");
         if (env != null && !env.isBlank()) {
             return Path.of(env);
         }
