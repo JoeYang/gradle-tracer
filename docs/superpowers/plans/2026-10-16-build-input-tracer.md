@@ -8635,6 +8635,117 @@ Run `./gradlew :tools:tracer:test`: 227 tests (225 going into this commit, plus
 
 ---
 
+#### Commit N — `fix(tracer): stop the walk when interrupted`
+
+Why: an interrupted key lookup was recorded as an ordinary `BUILD-FAILED` row and the walk carried on — but the
+interrupt flag stays set (`DefaultProcessRunner` restores it before throwing), so every later process call was
+going to fail the exact same way. The run limped through the rest of the range producing a wall of
+`BUILD-FAILED` rows instead of the one honest signal that it was asked to stop.
+
+Fix: after a key-lookup failure, check `Thread.currentThread().isInterrupted()`; if set, abort the walk with a
+`ProviderException("interrupted", ...)` instead of recording a row and continuing. Cleanup (Commit L's
+`finally`) still runs, and the flag itself is left exactly as found — nothing here clears or re-sets it.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index 797cb73..ad6df2b 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -318,6 +318,12 @@ public final class Cli {
+                     try {
+                         key = Optional.of(keys.keyFor(worktree, o.taskPath()));
+                     } catch (ProviderException e) {
++                        // An interrupted process call fails this one lookup but leaves the interrupt flag set, so
++                        // every later process call would fail the same way; limping on would just produce a wall
++                        // of BUILD-FAILED rows instead of the one honest signal that the run was asked to stop.
++                        if (Thread.currentThread().isInterrupted()) {
++                            throw new ProviderException("interrupted", e);
++                        }
+                         error = Optional.of(e.getMessage());
+                     }
+                     BazelStatus bazel = BazelStatus.NONE;
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index 8210eab..4e3e858 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -348,6 +348,29 @@ class CliTest {
+         assertEquals(Cli.EXIT_CHANGED, second, err());
+     }
+ 
++    @Test void interruptedKeyLookupAbortsTheWalk() throws Exception {
++        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
++        KeyProvider interrupting = (wt, task) -> {
++            calls.incrementAndGet();
++            Thread.currentThread().interrupt();
++            throw new ProviderException("boom");
++        };
++        try {
++            int code = run(interrupting, impacts, "appA", "--from", "base", "--to", "tip");
++
++            assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
++            assertTrue(err().contains("interrupted"), err());
++            assertEquals(1, calls.get(), "the walk must stop at the first interrupted provider call");
++            assertTrue(Thread.currentThread().isInterrupted(), "the interrupt flag must still be set");
++            try (Stream<Path> left = Files.list(scratch)) {
++                assertTrue(left.noneMatch(p -> p.getFileName().toString().startsWith("hashes-")),
++                        "cleanup must still run when the walk is aborted by an interrupt");
++            }
++        } finally {
++            Thread.interrupted(); // clear it, so it doesn't leak into later tests on this thread
++        }
++    }
++
+     @Test void staleScratchFilesAreSweptAndNewOnesRemoved() throws Exception {
+         Files.createDirectories(scratch);
+         Path stale = Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 26e9439..22d6c03 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -125,10 +125,11 @@ rest of the Bazel column is `n/a` and a warning goes to stderr. A commit whose G
+ commit is compared against the last good key.
+ 
+ Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed (some row is
+-`BUILD-FAILED`, or an unexpected runtime exception — e.g. `UncheckedIOException` from a provider or from a
++`BUILD-FAILED`, an unexpected runtime exception — e.g. `UncheckedIOException` from a provider or from a
+ filesystem call — caught in `Cli.run` and reported as "internal error: `<class>`: `<message>`" rather than
+-escaping as a raw stack trace), 3 at least one row is `CHANGED` — and 2 wins over 3 when both apply in the same
+-range.
++escaping as a raw stack trace, or the thread being interrupted mid-walk, reported as "interrupted" and aborting
++the range immediately instead of limping through every remaining commit with the interrupt flag still set), 3
++at least one row is `CHANGED` — and 2 wins over 3 when both apply in the same range.
+ 
+ `Cli.run` does its work in a fixed order: the app name is checked against `app/<app>` first (a usage error here
+ needs no scratch root or git at all); then, for a range, `--tsv-out <file>` is pre-checked (parent directory
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/tracer.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+fix(tracer): stop the walk when interrupted
+
+An interrupted key lookup was recorded as an ordinary BUILD-FAILED row
+and the walk carried on, but the interrupt flag stays set, so every
+later process call was going to fail the same way regardless. Check
+isInterrupted() after a key-lookup failure and abort the whole walk
+instead of producing a wall of BUILD-FAILED rows for one real cause.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: 228 tests (227 going into this commit, plus
+`interruptedKeyLookupAbortsTheWalk`).
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**

@@ -348,6 +348,29 @@ class CliTest {
         assertEquals(Cli.EXIT_CHANGED, second, err());
     }
 
+    @Test void interruptedKeyLookupAbortsTheWalk() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        KeyProvider interrupting = (wt, task) -> {
+            calls.incrementAndGet();
+            Thread.currentThread().interrupt();
+            throw new ProviderException("boom");
+        };
+        try {
+            int code = run(interrupting, impacts, "appA", "--from", "base", "--to", "tip");
+
+            assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
+            assertTrue(err().contains("interrupted"), err());
+            assertEquals(1, calls.get(), "the walk must stop at the first interrupted provider call");
+            assertTrue(Thread.currentThread().isInterrupted(), "the interrupt flag must still be set");
+            try (Stream<Path> left = Files.list(scratch)) {
+                assertTrue(left.noneMatch(p -> p.getFileName().toString().startsWith("hashes-")),
+                        "cleanup must still run when the walk is aborted by an interrupt");
+            }
+        } finally {
+            Thread.interrupted(); // clear it, so it doesn't leak into later tests on this thread
+        }
+    }
+
     @Test void staleScratchFilesAreSweptAndNewOnesRemoved() throws Exception {
         Files.createDirectories(scratch);
         Path stale = Files.writeString(scratch.resolve("hashes-stale.json"), "{}");

@@ -318,6 +318,12 @@ public final class Cli {
                     try {
                         key = Optional.of(keys.keyFor(worktree, o.taskPath()));
                     } catch (ProviderException e) {
+                        // An interrupted process call fails this one lookup but leaves the interrupt flag set, so
+                        // every later process call would fail the same way; limping on would just produce a wall
+                        // of BUILD-FAILED rows instead of the one honest signal that the run was asked to stop.
+                        if (Thread.currentThread().isInterrupted()) {
+                            throw new ProviderException("interrupted", e);
+                        }
                         error = Optional.of(e.getMessage());
                     }
                     BazelStatus bazel = BazelStatus.NONE;
