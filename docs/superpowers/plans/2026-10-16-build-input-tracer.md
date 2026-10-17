@@ -3104,7 +3104,26 @@ Expected: `BUILD SUCCESSFUL`; 43 tests at this point in the sequence (26 from Ta
 
 - [ ] **Step 6: Document and commit**
 
-Append to `docs/tracer.md`:
+This task's single commit would run to roughly 360 hand-written lines, well past the project's 200-line commit
+target, so it lands as two commits at the parser/provider seam instead of one:
+
+**Commit A** — `CacheDebugLog`, `CacheDebugFixtures`, `CacheDebugLogTest`, and the two captured log fixtures:
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/CacheDebugLog.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CacheDebugFixtures.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CacheDebugLogTest.java \
+        tools/tracer/src/test/resources/cache-debug/appA-compileJava.log \
+        tools/tracer/src/test/resources/cache-debug/appA-fingerprint.log
+git commit -m "feat(tracer): parse Gradle cache-debug logs into task keys
+
+Parses the per-task block Gradle prints with -Dorg.gradle.caching.debug=true:
+implementation hash, scalar input fingerprints and per-file fingerprints,
+closed by the key line. Real captured logs are kept as fixtures so a Gradle
+upgrade that changes the format fails a test instead of producing silent
+'clean' verdicts."
+```
+
+Append to `docs/tracer.md`, then make **Commit B** — `GradleKeyProvider`, `GradleKeyProviderTest`, and this doc change:
 ```markdown
 ## Gradle oracle
 `GradleKeyProvider` runs `<worktree>/gradlew --console=plain --no-parallel --build-cache -Dorg.gradle.caching.debug=true <task>`
@@ -3120,14 +3139,16 @@ key line without input lines; the tracer always runs in a fresh worktree, so the
 ```
 
 ```bash
-git add tools/tracer docs/tracer.md
-git commit -m "feat(tracer): read a task's cache key from Gradle's cache debug output
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/GradleKeyProvider.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/GradleKeyProviderTest.java \
+        docs/tracer.md
+git commit -m "feat(tracer): resolve compileJava and fingerprint keys through Gradle
 
-Parses the per-task block Gradle prints with -Dorg.gradle.caching.debug=true:
-implementation hash, scalar input fingerprints and per-file fingerprints,
-closed by the key line. Runs with --no-parallel so blocks never interleave.
-Real captured logs are kept as fixtures so a Gradle upgrade that changes
-the format fails a test instead of producing silent 'clean' verdicts."
+GradleKeyProvider runs the worktree's own gradlew with cache debugging
+flags and hands the output to CacheDebugLog. Treats a non-zero exit, a
+timeout, and a successful run that printed no key (e.g. a non-cacheable
+task) as distinct ProviderException cases instead of a silent clean,
+since each needs a different fix from whoever is reading the report."
 ```
 
 ---
