@@ -191,6 +191,51 @@ class CliTest {
         }
     }
 
+    @Test void tsvOutThatIsAnExistingReadOnlyFileIsAUsageError() throws Exception {
+        Path file = tmp.resolve("rows.tsv");
+        Files.writeString(file, "old content\n");
+        Set<PosixFilePermission> original = Files.getPosixFilePermissions(file);
+        try {
+            Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("r--r--r--"));
+
+            int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", file.toString());
+
+            assertEquals(Cli.EXIT_USAGE, code, err());
+            assertTrue(err().contains(file.toString()), err());
+            assertFalse(git.ran("git worktree"), "no worktree work before the tsv-out pre-check fails");
+        } finally {
+            Files.setPosixFilePermissions(file, original);
+        }
+    }
+
+    @Test void tsvOutWriteFailureMidWalkLeavesThePreviousFileIntact() throws Exception {
+        Path file = tmp.resolve("rows.tsv");
+        Files.writeString(file, "previous content\n");
+        Set<PosixFilePermission> original = Files.getPosixFilePermissions(tmp);
+        // The temp file for the atomic write lands next to the target, i.e. directly under tmp; making tmp
+        // read-only (but still searchable) blocks creating it without touching scratch, which is a separate
+        // subdirectory with its own permissions.
+        KeyProvider breakWriteAfterLastCheckout = (wt, task) -> {
+            TaskKey key = keys.keyFor(wt, task);
+            if (wt.getFileName().toString().equals("wt-ccccccc")) {
+                try {
+                    Files.setPosixFilePermissions(tmp, PosixFilePermissions.fromString("r-xr-xr-x"));
+                } catch (IOException e) {
+                    throw new ProviderException(e.getMessage(), e);
+                }
+            }
+            return key;
+        };
+        try {
+            int code = run(breakWriteAfterLastCheckout, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", file.toString());
+
+            assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
+            assertEquals("previous content\n", Files.readString(file), "a failed atomic write must not touch the previous file");
+        } finally {
+            Files.setPosixFilePermissions(tmp, original);
+        }
+    }
+
     @Test void scratchRootLockedByAnotherRunIsAUsageError() throws Exception {
         Files.createDirectories(scratch);
         try (FileChannel locked = FileChannel.open(scratch.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);

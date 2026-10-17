@@ -8437,6 +8437,204 @@ Run `./gradlew :tools:tracer:test`: 225 tests (224 going into this commit, plus
 
 ---
 
+#### Commit M — `fix(tracer): reject a read-only --tsv-out file up front and write it atomically`
+
+Why: the `--tsv-out` pre-check validated the parent directory but never checked an *existing* target itself —
+an existing read-only file would pass the pre-check, run the whole range walk, and only then fail trying to
+write it. Separately, the final write was a plain `Files.writeString`, so a write that failed partway through
+(disk full, permissions revoked mid-walk) could leave the target truncated or corrupted, destroying whatever
+was there before.
+
+Fix: the pre-check now also rejects an existing, non-writable target. The write itself goes through a temp file
+in the same directory plus `Files.move(..., ATOMIC_MOVE, REPLACE_EXISTING)`, deleting the temp file on failure,
+so a failed write never touches the previous file.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index 504a59a..797cb73 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -7,6 +7,7 @@ import java.nio.channels.FileLock;
+ import java.nio.channels.OverlappingFileLockException;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
++import java.nio.file.StandardCopyOption;
+ import java.nio.file.StandardOpenOption;
+ import java.time.Duration;
+ import java.util.ArrayList;
+@@ -284,6 +285,9 @@ public final class Cli {
+         if (Files.isDirectory(tsvOut)) {
+             throw new UsageException("--tsv-out '" + tsvOut + "' is a directory");
+         }
++        if (Files.exists(tsvOut) && !Files.isWritable(tsvOut)) {
++            throw new UsageException("--tsv-out '" + tsvOut + "' exists and is not writable");
++        }
+         Path parent = tsvOut.toAbsolutePath().getParent();
+         if (parent == null) {
+             parent = Path.of("").toAbsolutePath();
+@@ -356,11 +360,7 @@ public final class Cli {
+             out.print(TableRenderer.render(o.taskPath(), impacts == null ? null : o.bazelTarget(), rows));
+         }
+         if (o.tsvOut() != null) {
+-            try {
+-                Files.writeString(o.tsvOut(), tsv);
+-            } catch (IOException e) {
+-                throw new ProviderException("cannot write " + o.tsvOut() + ": " + e.getMessage(), e);
+-            }
++            writeTsvAtomically(o.tsvOut(), tsv);
+         }
+         if (rows.stream().anyMatch(v -> v.status() == Status.BUILD_FAILED)) {
+             return EXIT_TOOL_FAILURE;
+@@ -368,6 +368,35 @@ public final class Cli {
+         return rows.stream().anyMatch(v -> v.status() == Status.CHANGED) ? EXIT_CHANGED : EXIT_OK;
+     }
+ 
++    /**
++     * Writes {@code content} to {@code target} via a temp file plus an atomic move, so a write that fails
++     * partway through (disk full, permissions revoked mid-walk, ...) never leaves {@code target} truncated or
++     * corrupted — the previous file, if any, is untouched.
++     */
++    private void writeTsvAtomically(Path target, String content) throws ProviderException {
++        Path parent = target.toAbsolutePath().getParent();
++        if (parent == null) {
++            parent = Path.of("").toAbsolutePath();
++        }
++        Path tmp;
++        try {
++            tmp = Files.createTempFile(parent, "trace-", ".tsv.tmp");
++        } catch (IOException e) {
++            throw new ProviderException("cannot write " + target + ": " + e.getMessage(), e);
++        }
++        try {
++            Files.writeString(tmp, content);
++            Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
++        } catch (IOException e) {
++            try {
++                Files.deleteIfExists(tmp);
++            } catch (IOException ignored) {
++                // best effort
++            }
++            throw new ProviderException("cannot write " + target + ": " + e.getMessage(), e);
++        }
++    }
++
+     /** Deletes bazel-diff hash and impacted-target files under the scratch root; returns how many went. */
+     private int deleteScratchFiles() {
+         if (!Files.isDirectory(scratch)) {
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index 912baac..8210eab 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -191,6 +191,51 @@ class CliTest {
+         }
+     }
+ 
++    @Test void tsvOutThatIsAnExistingReadOnlyFileIsAUsageError() throws Exception {
++        Path file = tmp.resolve("rows.tsv");
++        Files.writeString(file, "old content\n");
++        Set<PosixFilePermission> original = Files.getPosixFilePermissions(file);
++        try {
++            Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("r--r--r--"));
++
++            int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", file.toString());
++
++            assertEquals(Cli.EXIT_USAGE, code, err());
++            assertTrue(err().contains(file.toString()), err());
++            assertFalse(git.ran("git worktree"), "no worktree work before the tsv-out pre-check fails");
++        } finally {
++            Files.setPosixFilePermissions(file, original);
++        }
++    }
++
++    @Test void tsvOutWriteFailureMidWalkLeavesThePreviousFileIntact() throws Exception {
++        Path file = tmp.resolve("rows.tsv");
++        Files.writeString(file, "previous content\n");
++        Set<PosixFilePermission> original = Files.getPosixFilePermissions(tmp);
++        // The temp file for the atomic write lands next to the target, i.e. directly under tmp; making tmp
++        // read-only (but still searchable) blocks creating it without touching scratch, which is a separate
++        // subdirectory with its own permissions.
++        KeyProvider breakWriteAfterLastCheckout = (wt, task) -> {
++            TaskKey key = keys.keyFor(wt, task);
++            if (wt.getFileName().toString().equals("wt-ccccccc")) {
++                try {
++                    Files.setPosixFilePermissions(tmp, PosixFilePermissions.fromString("r-xr-xr-x"));
++                } catch (IOException e) {
++                    throw new ProviderException(e.getMessage(), e);
++                }
++            }
++            return key;
++        };
++        try {
++            int code = run(breakWriteAfterLastCheckout, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", file.toString());
++
++            assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
++            assertEquals("previous content\n", Files.readString(file), "a failed atomic write must not touch the previous file");
++        } finally {
++            Files.setPosixFilePermissions(tmp, original);
++        }
++    }
++
+     @Test void scratchRootLockedByAnotherRunIsAUsageError() throws Exception {
+         Files.createDirectories(scratch);
+         try (FileChannel locked = FileChannel.open(scratch.resolve(".lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 623967a..26e9439 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -132,12 +132,15 @@ range.
+ 
+ `Cli.run` does its work in a fixed order: the app name is checked against `app/<app>` first (a usage error here
+ needs no scratch root or git at all); then, for a range, `--tsv-out <file>` is pre-checked (parent directory
+-must exist, be a directory and be writable; the target must not already be a directory); then the revision(s)
+-are resolved (`RevisionRange.resolve` for a range, `resolveOne` for `--at`) — this is read-only git, so it needs
+-no lock, and a usage error here (unknown revision, empty range) exits 1 with no scratch root or `.lock` file
+-ever created; only once that succeeds does the scratch root get created, locked (see "One run per scratch root"
+-below), swept, and the worktree walk begin. Any violation along the way is a usage error naming the offending
+-app, path or revision, so a bad input fails immediately rather than after a whole range walk has run.
++must exist, be a directory and be writable; the target must not already be a directory; an existing target must
++itself be writable); then the revision(s) are resolved (`RevisionRange.resolve` for a range, `resolveOne` for
++`--at`) — this is read-only git, so it needs no lock, and a usage error here (unknown revision, empty range)
++exits 1 with no scratch root or `.lock` file ever created; only once that succeeds does the scratch root get
++created, locked (see "One run per scratch root" below), swept, and the worktree walk begin. Any violation along
++the way is a usage error naming the offending app, path or revision, so a bad input fails immediately rather
++than after a whole range walk has run. The TSV itself, once the walk succeeds, is written to `--tsv-out` via a
++temp file in the same directory plus an atomic move, so a write that fails partway through never truncates or
++corrupts a previous file at that path.
+ 
+ ### One run per scratch root
+ Before any sweep or worktree work — for both the range walk and `--at`, and only after their revisions are
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/tracer.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+fix(tracer): reject a read-only --tsv-out file up front and write it atomically
+
+The tsv-out pre-check never looked at an existing target's own
+writability, only its parent directory, so a read-only target passed
+the pre-check and only failed after a whole range walk had run. The
+final write was also a plain writeString, so a write that failed
+partway through could leave a previous file at that path truncated.
+Reject an unwritable existing target up front, and write via a temp
+file plus an atomic move so a failed write never touches what was
+there before.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: 227 tests (225 going into this commit, plus
+`tsvOutThatIsAnExistingReadOnlyFileIsAUsageError` and `tsvOutWriteFailureMidWalkLeavesThePreviousFileIntact`).
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**

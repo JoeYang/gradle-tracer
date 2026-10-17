@@ -132,12 +132,15 @@ range.
 
 `Cli.run` does its work in a fixed order: the app name is checked against `app/<app>` first (a usage error here
 needs no scratch root or git at all); then, for a range, `--tsv-out <file>` is pre-checked (parent directory
-must exist, be a directory and be writable; the target must not already be a directory); then the revision(s)
-are resolved (`RevisionRange.resolve` for a range, `resolveOne` for `--at`) — this is read-only git, so it needs
-no lock, and a usage error here (unknown revision, empty range) exits 1 with no scratch root or `.lock` file
-ever created; only once that succeeds does the scratch root get created, locked (see "One run per scratch root"
-below), swept, and the worktree walk begin. Any violation along the way is a usage error naming the offending
-app, path or revision, so a bad input fails immediately rather than after a whole range walk has run.
+must exist, be a directory and be writable; the target must not already be a directory; an existing target must
+itself be writable); then the revision(s) are resolved (`RevisionRange.resolve` for a range, `resolveOne` for
+`--at`) — this is read-only git, so it needs no lock, and a usage error here (unknown revision, empty range)
+exits 1 with no scratch root or `.lock` file ever created; only once that succeeds does the scratch root get
+created, locked (see "One run per scratch root" below), swept, and the worktree walk begin. Any violation along
+the way is a usage error naming the offending app, path or revision, so a bad input fails immediately rather
+than after a whole range walk has run. The TSV itself, once the walk succeeds, is written to `--tsv-out` via a
+temp file in the same directory plus an atomic move, so a write that fails partway through never truncates or
+corrupts a previous file at that path.
 
 ### One run per scratch root
 Before any sweep or worktree work — for both the range walk and `--at`, and only after their revisions are

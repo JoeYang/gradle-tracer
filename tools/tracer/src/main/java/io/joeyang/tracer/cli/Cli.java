@@ -7,6 +7,7 @@ import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -284,6 +285,9 @@ public final class Cli {
         if (Files.isDirectory(tsvOut)) {
             throw new UsageException("--tsv-out '" + tsvOut + "' is a directory");
         }
+        if (Files.exists(tsvOut) && !Files.isWritable(tsvOut)) {
+            throw new UsageException("--tsv-out '" + tsvOut + "' exists and is not writable");
+        }
         Path parent = tsvOut.toAbsolutePath().getParent();
         if (parent == null) {
             parent = Path.of("").toAbsolutePath();
@@ -356,16 +360,41 @@ public final class Cli {
             out.print(TableRenderer.render(o.taskPath(), impacts == null ? null : o.bazelTarget(), rows));
         }
         if (o.tsvOut() != null) {
-            try {
-                Files.writeString(o.tsvOut(), tsv);
-            } catch (IOException e) {
-                throw new ProviderException("cannot write " + o.tsvOut() + ": " + e.getMessage(), e);
-            }
+            writeTsvAtomically(o.tsvOut(), tsv);
         }
         if (rows.stream().anyMatch(v -> v.status() == Status.BUILD_FAILED)) {
             return EXIT_TOOL_FAILURE;
         }
         return rows.stream().anyMatch(v -> v.status() == Status.CHANGED) ? EXIT_CHANGED : EXIT_OK;
+    }
+
+    /**
+     * Writes {@code content} to {@code target} via a temp file plus an atomic move, so a write that fails
+     * partway through (disk full, permissions revoked mid-walk, ...) never leaves {@code target} truncated or
+     * corrupted — the previous file, if any, is untouched.
+     */
+    private void writeTsvAtomically(Path target, String content) throws ProviderException {
+        Path parent = target.toAbsolutePath().getParent();
+        if (parent == null) {
+            parent = Path.of("").toAbsolutePath();
+        }
+        Path tmp;
+        try {
+            tmp = Files.createTempFile(parent, "trace-", ".tsv.tmp");
+        } catch (IOException e) {
+            throw new ProviderException("cannot write " + target + ": " + e.getMessage(), e);
+        }
+        try {
+            Files.writeString(tmp, content);
+            Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            try {
+                Files.deleteIfExists(tmp);
+            } catch (IOException ignored) {
+                // best effort
+            }
+            throw new ProviderException("cannot write " + target + ": " + e.getMessage(), e);
+        }
     }
 
     /** Deletes bazel-diff hash and impacted-target files under the scratch root; returns how many went. */
