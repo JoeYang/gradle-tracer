@@ -3716,6 +3716,27 @@ class BazelDiffProviderTest {
         assertTrue(captured.toString().contains("disk full"), captured.toString());
     }
 
+    @Test void impactedTargetsNonZeroExitCarriesTheBazelErrorNamingTheRepo() throws Exception {
+        Path prev = Files.writeString(tmp.resolve("hashes-a.json"), "{}");
+        Path cur = Files.writeString(tmp.resolve("hashes-b.json"), "{}");
+        FakeProcessRunner runner = new FakeProcessRunner()
+                .on(binary + " get-impacted-targets", 1, "", "ERROR: no such target '//missing:target'\n");
+        ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, false).impactedTargets(prev, cur));
+        assertTrue(e.getMessage().contains("no such target"), e.getMessage());
+        assertTrue(e.getMessage().contains(repo.toString()), "must name the repo: " + e.getMessage());
+    }
+
+    @Test void impactedTargetsProcessExceptionCarriesTheFetchHint() throws Exception {
+        Path prev = Files.writeString(tmp.resolve("hashes-a.json"), "{}");
+        Path cur = Files.writeString(tmp.resolve("hashes-b.json"), "{}");
+        FakeProcessRunner runner = new FakeProcessRunner()
+                .failWith(binary + " get-impacted-targets",
+                        ProcessException.cannotStart(List.of(binary.toString()), new IOException("No such file")));
+        ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, false).impactedTargets(prev, cur));
+        assertTrue(e.getMessage().contains("cannot start"), e.getMessage());
+        assertTrue(e.getMessage().contains("fetch-bazel-diff"), "must tell the user how to get it: " + e.getMessage());
+    }
+
     @Test void impactedTargetsReadsTheOutputFile() throws Exception {
         Path prev = Files.writeString(tmp.resolve("hashes-a.json"), "{}");
         Path cur = Files.writeString(tmp.resolve("hashes-b.json"), "{}");
@@ -4048,7 +4069,9 @@ A re-review round found that a timed-out or interrupted `generate-hashes` left `
 `bazel clean --expunge` in exactly the case most likely to leave a Bazel server running. The fix adds an
 additive `startFailed()` accessor to `tools/tracer/src/main/java/io/joeyang/tracer/cli/ProcessException.java`
 (defined for Task 6, not reproduced here) distinguishing "could not launch" (`cannotStart`, cleanup skipped —
-there is nothing to clean up) from "ran but did not finish" (`timeout`/`interrupted`, cleanup still runs).
+there is nothing to clean up) from "ran but did not finish" (`timeout`/`interrupted`, cleanup still runs). The
+same round also added two `impactedTargets` failure-path tests that had no coverage: a non-zero bazel-diff
+exit (asserting the message names the repo) and a `ProcessException` (asserting it carries the fetch hint).
 
 ---
 ### Task 9: RevisionRange and WorktreePool (git)

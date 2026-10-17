@@ -188,6 +188,27 @@ class BazelDiffProviderTest {
         assertTrue(captured.toString().contains("disk full"), captured.toString());
     }
 
+    @Test void impactedTargetsNonZeroExitCarriesTheBazelErrorNamingTheRepo() throws Exception {
+        Path prev = Files.writeString(tmp.resolve("hashes-a.json"), "{}");
+        Path cur = Files.writeString(tmp.resolve("hashes-b.json"), "{}");
+        FakeProcessRunner runner = new FakeProcessRunner()
+                .on(binary + " get-impacted-targets", 1, "", "ERROR: no such target '//missing:target'\n");
+        ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, false).impactedTargets(prev, cur));
+        assertTrue(e.getMessage().contains("no such target"), e.getMessage());
+        assertTrue(e.getMessage().contains(repo.toString()), "must name the repo: " + e.getMessage());
+    }
+
+    @Test void impactedTargetsProcessExceptionCarriesTheFetchHint() throws Exception {
+        Path prev = Files.writeString(tmp.resolve("hashes-a.json"), "{}");
+        Path cur = Files.writeString(tmp.resolve("hashes-b.json"), "{}");
+        FakeProcessRunner runner = new FakeProcessRunner()
+                .failWith(binary + " get-impacted-targets",
+                        ProcessException.cannotStart(List.of(binary.toString()), new IOException("No such file")));
+        ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, false).impactedTargets(prev, cur));
+        assertTrue(e.getMessage().contains("cannot start"), e.getMessage());
+        assertTrue(e.getMessage().contains("fetch-bazel-diff"), "must tell the user how to get it: " + e.getMessage());
+    }
+
     @Test void impactedTargetsReadsTheOutputFile() throws Exception {
         Path prev = Files.writeString(tmp.resolve("hashes-a.json"), "{}");
         Path cur = Files.writeString(tmp.resolve("hashes-b.json"), "{}");
