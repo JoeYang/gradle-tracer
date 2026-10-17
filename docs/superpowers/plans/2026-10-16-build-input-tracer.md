@@ -7938,6 +7938,91 @@ Run `./gradlew :tools:tracer:test`: still 221 (docs-only commit).
 
 ---
 
+#### Commit I — `test(tracer): prove a bad revision creates no scratch root`
+
+Why: the two "…LeavesNoScratchRoot" tests added in Commit E only asserted that `.lock` was absent; they didn't
+assert that the scratch root *directory* itself was never created, and there was no equivalent test for an
+unknown `--to` or for an empty range (`--from`/`--to` resolving to the same commit) — spec §9's "nothing
+created" promise covers all of these the same way an unknown `--from` or `--at` does.
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index d6a7fb0..8920e48 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -202,23 +202,48 @@ class CliTest {
+     }
+ 
+     @Test void unknownFromRevisionLeavesNoScratchRoot() throws Exception {
+-        Path lock = scratch.resolve(".lock");
++        assertFalse(Files.exists(scratch), "fixture precondition: scratch must not exist before the run");
+         git.on("git rev-parse --verify --quiet nope^{commit}", 1, "", "");
+ 
+         int code = run(keys, impacts, "appA", "--from", "nope", "--to", "tip");
+ 
+         assertEquals(Cli.EXIT_USAGE, code, err());
+-        assertFalse(Files.exists(lock), ".lock must not be created for a revision that was never resolved");
++        assertFalse(Files.exists(scratch), "the scratch root must not be created for a revision that was never resolved");
++        assertFalse(Files.exists(scratch.resolve(".lock")), ".lock must not be created for a revision that was never resolved");
++    }
++
++    @Test void unknownToRevisionLeavesNoScratchRoot() throws Exception {
++        assertFalse(Files.exists(scratch), "fixture precondition: scratch must not exist before the run");
++        git.on("git rev-parse --verify --quiet nope^{commit}", 1, "", "");
++
++        int code = run(keys, impacts, "appA", "--from", "base", "--to", "nope");
++
++        assertEquals(Cli.EXIT_USAGE, code, err());
++        assertFalse(Files.exists(scratch), "the scratch root must not be created for a revision that was never resolved");
++        assertFalse(Files.exists(scratch.resolve(".lock")), ".lock must not be created for a revision that was never resolved");
+     }
+ 
+     @Test void unknownAtRevisionLeavesNoScratchRoot() throws Exception {
+-        Path lock = scratch.resolve(".lock");
++        assertFalse(Files.exists(scratch), "fixture precondition: scratch must not exist before the run");
+         git.on("git rev-parse --verify --quiet nope^{commit}", 1, "", "");
+ 
+         int code = run(keys, impacts, "appA", "--at", "nope");
+ 
+         assertEquals(Cli.EXIT_USAGE, code, err());
+-        assertFalse(Files.exists(lock), ".lock must not be created for a revision that was never resolved");
++        assertFalse(Files.exists(scratch), "the scratch root must not be created for a revision that was never resolved");
++        assertFalse(Files.exists(scratch.resolve(".lock")), ".lock must not be created for a revision that was never resolved");
++    }
++
++    @Test void emptyRangeLeavesNoScratchRoot() throws Exception {
++        assertFalse(Files.exists(scratch), "fixture precondition: scratch must not exist before the run");
++        git.on("git log --reverse --first-parent --format=%H%x1f%P%x1f%s " + C + ".." + C, 0, "", "");
++
++        int code = run(keys, impacts, "appA", "--from", "tip", "--to", "tip");
++
++        assertEquals(Cli.EXIT_USAGE, code, err());
++        assertTrue(err().contains("no commits"), err());
++        assertFalse(Files.exists(scratch), "the scratch root must not be created for an empty range");
++        assertFalse(Files.exists(scratch.resolve(".lock")), ".lock must not be created for an empty range");
+     }
+ 
+     @Test void lockIsReleasedAfterARunCompletes() throws Exception {
+```
+
+```bash
+git add tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+git commit -F - <<'EOF'
+test(tracer): prove a bad revision creates no scratch root
+
+The existing "...LeavesNoScratchRoot" tests only checked that .lock
+was absent, not the scratch root directory itself, and covered only
+--from and --at. Assert the directory too, and add the same coverage
+for an unknown --to and for an empty range, since spec §9's "nothing
+created" promise applies equally to all of these.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: 223 tests (221 going into this commit, plus `unknownToRevisionLeavesNoScratchRoot`
+and `emptyRangeLeavesNoScratchRoot`).
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**

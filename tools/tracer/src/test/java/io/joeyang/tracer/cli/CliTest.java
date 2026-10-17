@@ -202,23 +202,48 @@ class CliTest {
     }
 
     @Test void unknownFromRevisionLeavesNoScratchRoot() throws Exception {
-        Path lock = scratch.resolve(".lock");
+        assertFalse(Files.exists(scratch), "fixture precondition: scratch must not exist before the run");
         git.on("git rev-parse --verify --quiet nope^{commit}", 1, "", "");
 
         int code = run(keys, impacts, "appA", "--from", "nope", "--to", "tip");
 
         assertEquals(Cli.EXIT_USAGE, code, err());
-        assertFalse(Files.exists(lock), ".lock must not be created for a revision that was never resolved");
+        assertFalse(Files.exists(scratch), "the scratch root must not be created for a revision that was never resolved");
+        assertFalse(Files.exists(scratch.resolve(".lock")), ".lock must not be created for a revision that was never resolved");
+    }
+
+    @Test void unknownToRevisionLeavesNoScratchRoot() throws Exception {
+        assertFalse(Files.exists(scratch), "fixture precondition: scratch must not exist before the run");
+        git.on("git rev-parse --verify --quiet nope^{commit}", 1, "", "");
+
+        int code = run(keys, impacts, "appA", "--from", "base", "--to", "nope");
+
+        assertEquals(Cli.EXIT_USAGE, code, err());
+        assertFalse(Files.exists(scratch), "the scratch root must not be created for a revision that was never resolved");
+        assertFalse(Files.exists(scratch.resolve(".lock")), ".lock must not be created for a revision that was never resolved");
     }
 
     @Test void unknownAtRevisionLeavesNoScratchRoot() throws Exception {
-        Path lock = scratch.resolve(".lock");
+        assertFalse(Files.exists(scratch), "fixture precondition: scratch must not exist before the run");
         git.on("git rev-parse --verify --quiet nope^{commit}", 1, "", "");
 
         int code = run(keys, impacts, "appA", "--at", "nope");
 
         assertEquals(Cli.EXIT_USAGE, code, err());
-        assertFalse(Files.exists(lock), ".lock must not be created for a revision that was never resolved");
+        assertFalse(Files.exists(scratch), "the scratch root must not be created for a revision that was never resolved");
+        assertFalse(Files.exists(scratch.resolve(".lock")), ".lock must not be created for a revision that was never resolved");
+    }
+
+    @Test void emptyRangeLeavesNoScratchRoot() throws Exception {
+        assertFalse(Files.exists(scratch), "fixture precondition: scratch must not exist before the run");
+        git.on("git log --reverse --first-parent --format=%H%x1f%P%x1f%s " + C + ".." + C, 0, "", "");
+
+        int code = run(keys, impacts, "appA", "--from", "tip", "--to", "tip");
+
+        assertEquals(Cli.EXIT_USAGE, code, err());
+        assertTrue(err().contains("no commits"), err());
+        assertFalse(Files.exists(scratch), "the scratch root must not be created for an empty range");
+        assertFalse(Files.exists(scratch.resolve(".lock")), ".lock must not be created for an empty range");
     }
 
     @Test void lockIsReleasedAfterARunCompletes() throws Exception {
