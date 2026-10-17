@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Assumptions;
@@ -53,6 +54,24 @@ class WorktreePoolTest {
             pool.checkout(C1);
         }
         assertFalse(git.ran("git worktree remove"));
+    }
+
+    // Ctrl-C must leave --keep-worktrees' worktrees exactly where they were put, not wipe them via the shutdown
+    // hook; registering the hook unconditionally (keep or not) would delete them on an interrupted run anyway.
+    @Test void keepWorktreesRegistersNoShutdownHook() throws Exception {
+        List<Thread> registered = new ArrayList<>();
+        try (WorktreePool pool = new WorktreePool(happyGit(), repo, tmp.resolve("wts"), true, registered::add)) {
+            pool.checkout(C1);
+        }
+        assertTrue(registered.isEmpty(), "keep=true must not register a shutdown hook: " + registered);
+    }
+
+    @Test void notKeepingWorktreesRegistersAShutdownHook() throws Exception {
+        List<Thread> registered = new ArrayList<>();
+        try (WorktreePool pool = new WorktreePool(happyGit(), repo, tmp.resolve("wts"), false, registered::add)) {
+            pool.checkout(C1);
+        }
+        assertEquals(1, registered.size());
     }
 
     @Test void staleDirectoryIsDeletedBeforeAdd() throws Exception {

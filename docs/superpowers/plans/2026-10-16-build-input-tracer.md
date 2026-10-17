@@ -4213,6 +4213,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Assumptions;
@@ -4256,6 +4257,24 @@ class WorktreePoolTest {
             pool.checkout(C1);
         }
         assertFalse(git.ran("git worktree remove"));
+    }
+
+    // Ctrl-C must leave --keep-worktrees' worktrees exactly where they were put, not wipe them via the shutdown
+    // hook; registering the hook unconditionally (keep or not) would delete them on an interrupted run anyway.
+    @Test void keepWorktreesRegistersNoShutdownHook() throws Exception {
+        List<Thread> registered = new ArrayList<>();
+        try (WorktreePool pool = new WorktreePool(happyGit(), repo, tmp.resolve("wts"), true, registered::add)) {
+            pool.checkout(C1);
+        }
+        assertTrue(registered.isEmpty(), "keep=true must not register a shutdown hook: " + registered);
+    }
+
+    @Test void notKeepingWorktreesRegistersAShutdownHook() throws Exception {
+        List<Thread> registered = new ArrayList<>();
+        try (WorktreePool pool = new WorktreePool(happyGit(), repo, tmp.resolve("wts"), false, registered::add)) {
+            pool.checkout(C1);
+        }
+        assertEquals(1, registered.size());
     }
 
     @Test void staleDirectoryIsDeletedBeforeAdd() throws Exception {
@@ -4504,6 +4523,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 /**
@@ -4518,9 +4538,15 @@ public final class WorktreePool implements AutoCloseable {
     private final Path root;
     private final boolean keep;
     private final List<Path> created = new ArrayList<>();
-    private final Thread shutdownHook = new Thread(this::removeAll, "worktree-cleanup");
+    /** Null when {@code keep} is true: Ctrl-C must leave kept worktrees exactly where {@code --keep-worktrees} put them. */
+    private final Thread shutdownHook;
 
     public WorktreePool(ProcessRunner git, Path repo, Path root, boolean keep) throws ProviderException {
+        this(git, repo, root, keep, Runtime.getRuntime()::addShutdownHook);
+    }
+
+    /** Package-private seam: lets tests observe whether a shutdown hook was registered, without touching the real JVM hook list. */
+    WorktreePool(ProcessRunner git, Path repo, Path root, boolean keep, Consumer<Thread> hookRegistrar) throws ProviderException {
         this.git = git;
         this.repo = repo;
         this.root = root;
@@ -4536,7 +4562,10 @@ public final class WorktreePool implements AutoCloseable {
         } catch (IOException e) {
             throw new ProviderException("cannot create worktree root " + root + ": " + e.getMessage(), e);
         }
-        Runtime.getRuntime().addShutdownHook(shutdownHook);
+        this.shutdownHook = keep ? null : new Thread(this::removeAll, "worktree-cleanup");
+        if (shutdownHook != null) {
+            hookRegistrar.accept(shutdownHook);
+        }
     }
 
     /** A killed run leaves {@code wt-*} directories behind; git has already forgotten them (prune), so delete them. */
@@ -4587,10 +4616,12 @@ public final class WorktreePool implements AutoCloseable {
         if (!keep) {
             removeAll();
         }
-        try {
-            Runtime.getRuntime().removeShutdownHook(shutdownHook);
-        } catch (IllegalStateException alreadyShuttingDown) {
-            // the hook itself is running; nothing to do
+        if (shutdownHook != null) {
+            try {
+                Runtime.getRuntime().removeShutdownHook(shutdownHook);
+            } catch (IllegalStateException alreadyShuttingDown) {
+                // the hook itself is running; nothing to do
+            }
         }
     }
 
@@ -4640,7 +4671,7 @@ public final class WorktreePool implements AutoCloseable {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 93 tests at this point in the sequence (bumped from 74 by the Task 8 review rounds' 14 added tests, plus 1 for the code-review amendment's `malformedLogLineIsAProviderErrorNamingTheLine`, 2 for the quality-review fix's `sideBranchStartIsRejected`/`rootCommitWithEmptyParentFieldIsRejectedNotCrashed`, and 2 for the quality-review fix's `checkoutUnregistersBeforeDeletingAPreexistingDirectory`/`reopeningThePoolCanReuseACommitKeptByThePreviousRun`).
+Expected: `BUILD SUCCESSFUL`; 95 tests at this point in the sequence (bumped from 74 by the Task 8 review rounds' 14 added tests, plus 1 for the code-review amendment's `malformedLogLineIsAProviderErrorNamingTheLine`, 2 for the quality-review fix's `sideBranchStartIsRejected`/`rootCommitWithEmptyParentFieldIsRejectedNotCrashed`, 2 for the quality-review fix's `checkoutUnregistersBeforeDeletingAPreexistingDirectory`/`reopeningThePoolCanReuseACommitKeptByThePreviousRun`, and 2 for the quality-review fix's `keepWorktreesRegistersNoShutdownHook`/`notKeepingWorktreesRegistersAShutdownHook`).
 
 - [ ] **Step 5: Document and commit**
 
@@ -5087,7 +5118,7 @@ public final class TableRenderer {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 108 tests at this point in the sequence (bumped from 94 by the Task 8 review rounds' 14 added tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
+Expected: `BUILD SUCCESSFUL`; 110 tests at this point in the sequence (bumped from 96 by the Task 8 review rounds' 14 added tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
 
 - [ ] **Step 5: Document and commit**
 
@@ -5246,7 +5277,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 113 tests at this point in the sequence (bumped from 99 by the Task 8 review rounds' 14 added tests); the timeout test finishes in well under a second.
+Expected: `BUILD SUCCESSFUL`; 115 tests at this point in the sequence (bumped from 101 by the Task 8 review rounds' 14 added tests); the timeout test finishes in well under a second.
 
 - [ ] **Step 5: Commit**
 
@@ -5467,7 +5498,7 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 125 tests at this point in the sequence (bumped from 111 by the Task 8 review rounds' 14 added tests; the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 127 tests at this point in the sequence (bumped from 113 by the Task 8 review rounds' 14 added tests; the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -5970,7 +6001,7 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 136 tests at this point in the sequence (bumped from 122 by the Task 8 review rounds' 14 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 138 tests at this point in the sequence (bumped from 124 by the Task 8 review rounds' 14 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 

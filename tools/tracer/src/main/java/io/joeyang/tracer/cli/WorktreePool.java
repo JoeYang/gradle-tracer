@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 /**
@@ -21,9 +22,15 @@ public final class WorktreePool implements AutoCloseable {
     private final Path root;
     private final boolean keep;
     private final List<Path> created = new ArrayList<>();
-    private final Thread shutdownHook = new Thread(this::removeAll, "worktree-cleanup");
+    /** Null when {@code keep} is true: Ctrl-C must leave kept worktrees exactly where {@code --keep-worktrees} put them. */
+    private final Thread shutdownHook;
 
     public WorktreePool(ProcessRunner git, Path repo, Path root, boolean keep) throws ProviderException {
+        this(git, repo, root, keep, Runtime.getRuntime()::addShutdownHook);
+    }
+
+    /** Package-private seam: lets tests observe whether a shutdown hook was registered, without touching the real JVM hook list. */
+    WorktreePool(ProcessRunner git, Path repo, Path root, boolean keep, Consumer<Thread> hookRegistrar) throws ProviderException {
         this.git = git;
         this.repo = repo;
         this.root = root;
@@ -39,7 +46,10 @@ public final class WorktreePool implements AutoCloseable {
         } catch (IOException e) {
             throw new ProviderException("cannot create worktree root " + root + ": " + e.getMessage(), e);
         }
-        Runtime.getRuntime().addShutdownHook(shutdownHook);
+        this.shutdownHook = keep ? null : new Thread(this::removeAll, "worktree-cleanup");
+        if (shutdownHook != null) {
+            hookRegistrar.accept(shutdownHook);
+        }
     }
 
     /** A killed run leaves {@code wt-*} directories behind; git has already forgotten them (prune), so delete them. */
@@ -90,10 +100,12 @@ public final class WorktreePool implements AutoCloseable {
         if (!keep) {
             removeAll();
         }
-        try {
-            Runtime.getRuntime().removeShutdownHook(shutdownHook);
-        } catch (IllegalStateException alreadyShuttingDown) {
-            // the hook itself is running; nothing to do
+        if (shutdownHook != null) {
+            try {
+                Runtime.getRuntime().removeShutdownHook(shutdownHook);
+            } catch (IllegalStateException alreadyShuttingDown) {
+                // the hook itself is running; nothing to do
+            }
         }
     }
 
