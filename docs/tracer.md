@@ -171,17 +171,23 @@ directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/`*.impacted.tx
 its own one-line message on stderr, not the full usage text — it isn't a command-line mistake — though the exit
 code still reads as a usage error (1). The held `FileLock` is released via try-with-resources rather than a
 manual `release()` in a `finally`, so if the locked work also fails, `release()`'s own `IOException` is
-suppressed onto that failure instead of replacing it. Any `IOException` naming only the path again (a quirk of
-some `IOException` subtypes) falls back to the exception's class name instead of repeating the path a second
-time, the same fallback `BazelDiffProvider` already used.
+suppressed onto that failure instead of replacing it. For a `FileSystemException` (which includes `FileAlreadyExistsException`, `AccessDeniedException`, ...),
+`ioReason` prefers its structured `getReason()` over `getMessage()`: the message often just repeats the path
+already named alongside it ("`<path>`: Is a directory", or for some failures the path with no reason at all),
+which would otherwise print it twice (`"...lock: .../.lock: Is a directory"`) or show the wrong path (a failed
+write under `--tsv-out` used to show the temp file's path as the "reason", not the real target's). When
+`getReason()` itself is unavailable, this falls back to the exception's class name — the same fallback
+`BazelDiffProvider` already used, and what any other `IOException` here still falls back to when its message is
+missing or is just the path again.
 
 ### The scratch root must be private
 `$TMPDIR/gradle-tracer` is a predictable, fixed path (spec §9), often under a shared `/tmp`: another local user
 could pre-create it and tamper with the worktrees whose `gradlew` this tool executes, or hold `.lock` to block
 every run. `Cli` creates a fresh root `rwx------`; an existing one must already be owned by the current user
 with no group or other write permission, or the run refuses to touch it — exit 1, naming the path ("scratch
-root `<path>` is not private to you; remove it or set `TMPDIR` to a private directory") — before any sweep,
-lock or worktree work. The fixed path itself is unchanged; this only narrows who may use it. Ownership is
+root `<path>` is not private to you; remove it or set `TMPDIR` to a private directory"), printing just that one
+line rather than the full usage text (not a command-line mistake, same as lock contention above) — before any
+sweep, lock or worktree work. The fixed path itself is unchanged; this only narrows who may use it. Ownership is
 compared by uid (`unix:uid`, against `com.sun.security.auth.module.UnixSystem`'s uid), not by
 `Files.getOwner()`'s user name: a uid with no passwd entry (common for a container run as `-u $(id -u)`) makes
 the JVM report `user.name` as `"?"`, so a name comparison would call every later run on the same root "not

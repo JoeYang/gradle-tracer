@@ -10068,6 +10068,199 @@ Run `./gradlew :tools:tracer:test`: 240 tests (238 going into this commit, plus
 
 ---
 
+#### Commit X — `fix(tracer): report the filesystem reason in IO errors and skip usage for a non-private root`
+
+Why: `ioReason` fell back to the exception's class name only when `getMessage()` was null or exactly equal to
+the path; a `FileSystemException`'s `getMessage()` usually isn't exactly that path, so the fallback never
+triggered where it most mattered — `".lock: Is a directory"` printed as `"...lock: .../.lock: Is a directory"`
+(the path doubled), and a `--tsv-out` write failure printed the *temp file's* path as if it were a reason,
+rather than the real target's. Separately, a non-private scratch root's rejection went through the generic
+`usage()` helper, printing the full usage block for something that, like lock contention after Commit O, isn't
+a command-line mistake.
+
+Fix: for a `FileSystemException`, prefer its structured `getReason()` over `getMessage()`, falling back to the
+class name only when `getReason()` itself is null. `checkScratchRootIsPrivate`/`ensurePrivateScratchRoot` now
+print their own message and return a boolean instead of throwing `UsageException`, so `withScratchLock` can
+return `EXIT_USAGE` directly — the same shape as lock contention's existing special case.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index 868839c..f354e7a 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -8,6 +8,7 @@ import java.nio.channels.FileChannel;
+ import java.nio.channels.FileLock;
+ import java.nio.channels.OverlappingFileLockException;
+ import java.nio.charset.StandardCharsets;
++import java.nio.file.FileSystemException;
+ import java.nio.file.Files;
+ import java.nio.file.LinkOption;
+ import java.nio.file.Path;
+@@ -264,7 +265,9 @@ public final class Cli {
+      * {@link OverlappingFileLockException} for one held elsewhere in this same JVM; both mean the root is busy.
+      */
+     private int withScratchLock(PrintStream err, LockedWork work) throws UsageException, ProviderException {
+-        ensurePrivateScratchRoot();
++        if (!ensurePrivateScratchRoot(err)) {
++            return EXIT_USAGE;
++        }
+         Path lockPath = scratch.resolve(".lock");
+         try (FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+             FileLock lock;
+@@ -298,13 +301,13 @@ public final class Cli {
+      * to block every run. A fresh root is created {@code rwx------}; an existing one must already be owned by
+      * the current user with no group/other write bit, or the run refuses to touch it.
+      */
+-    private void ensurePrivateScratchRoot() throws UsageException, ProviderException {
++    /** @return false (after printing the reason) when the root exists but isn't private; true otherwise. */
++    private boolean ensurePrivateScratchRoot(PrintStream err) throws ProviderException {
+         // isSymbolicLink alongside isDirectory: a symlinked scratch root must go through the privacy check too
+         // (which reads the link's own attributes, not its target's — see checkScratchRootIsPrivate), not get
+         // treated as "doesn't exist yet" and recreated or (for a symlink to a file) fail as a generic IO error.
+         if (Files.isDirectory(scratch, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(scratch)) {
+-            checkScratchRootIsPrivate();
+-            return;
++            return checkScratchRootIsPrivate(err);
+         }
+         try {
+             Path parent = scratch.getParent();
+@@ -315,9 +318,10 @@ public final class Cli {
+         } catch (IOException e) {
+             throw new ProviderException("cannot create scratch root " + scratch + ": " + ioReason(e, scratch), e);
+         }
++        return true;
+     }
+ 
+-    private void checkScratchRootIsPrivate() throws UsageException, ProviderException {
++    private boolean checkScratchRootIsPrivate(PrintStream err) throws ProviderException {
+         try {
+             // NOFOLLOW_LINKS throughout: a symlinked scratch root is checked on the link itself, never on
+             // whatever it points to. On Linux a symlink's own permissions report as world-read/write/execute
+@@ -332,9 +336,13 @@ public final class Cli {
+             long owner = ((Number) Files.getAttribute(scratch, "unix:uid", LinkOption.NOFOLLOW_LINKS)).longValue();
+             boolean notOwnedByMe = owner != currentUid.getAsLong();
+             if (groupOrOtherWrite || notOwnedByMe) {
+-                throw new UsageException("scratch root " + scratch
++                // Not a command-line mistake, so it gets its own message, not the full usage text, same as lock
++                // contention below; the exit code still reads as a usage error.
++                err.println("trace: scratch root " + scratch
+                         + " is not private to you; remove it or set TMPDIR to a private directory");
++                return false;
+             }
++            return true;
+         } catch (IOException e) {
+             throw new ProviderException("cannot check scratch root " + scratch + ": " + ioReason(e, scratch), e);
+         }
+@@ -347,6 +355,12 @@ public final class Cli {
+      * {@code BazelDiffProvider}'s identical fallback for the same class of message.
+      */
+     private static String ioReason(IOException e, Path path) {
++        // FileSystemException's own getMessage() typically repeats the path we're already naming ("<path>: Is a
++        // directory", or for some failures just "<path>" with no reason at all), so prefer its structured
++        // getReason() first; a plain IOException's getMessage() doesn't have this problem.
++        if (e instanceof FileSystemException fse) {
++            return fse.getReason() != null ? fse.getReason() : e.getClass().getSimpleName();
++        }
+         String message = e.getMessage();
+         return (message == null || message.equals(path.toString())) ? e.getClass().getSimpleName() : message;
+     }
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index 833a43d..6eb6733 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -18,6 +18,7 @@ import java.nio.file.attribute.PosixFilePermissions;
+ import java.util.Map;
+ import java.util.Set;
+ import java.util.function.LongSupplier;
++import java.util.regex.Pattern;
+ import java.util.stream.Stream;
+ import org.junit.jupiter.api.BeforeEach;
+ import org.junit.jupiter.api.Test;
+@@ -388,6 +389,7 @@ class CliTest {
+         assertEquals(Cli.EXIT_USAGE, code, err());
+         assertTrue(err().contains(scratch.toString()) && err().contains("not private"), err());
+         assertFalse(git.ran("git worktree"), "no worktree work when the scratch root isn't private");
++        assertFalse(err().contains("usage: trace"), "not private is not a command-line mistake; no usage text: " + err());
+     }
+ 
+     @Test void freshlyCreatedScratchRootHasMode700() throws Exception {
+@@ -434,7 +436,11 @@ class CliTest {
+         int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
+ 
+         assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
+-        assertTrue(err().contains(scratch.resolve(".lock").toString()), err());
++        // FileSystemException.getReason() ("Is a directory"), not its getMessage() (which already repeats the
++        // path), so the path isn't doubled: "...lock: .../.lock: Is a directory".
++        assertTrue(err().contains(scratch.resolve(".lock").toString()) && err().contains("Is a directory"), err());
++        assertEquals(1, err().split(Pattern.quote(scratch.resolve(".lock").toString()), -1).length - 1,
++                "the .lock path must appear exactly once, not duplicated by the exception's own message: " + err());
+     }
+ 
+     @Test void lockFileSurvivesScratchSweep() throws Exception {
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 3b275db..ab041b9 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -171,17 +171,23 @@ directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/`*.impacted.tx
+ its own one-line message on stderr, not the full usage text — it isn't a command-line mistake — though the exit
+ code still reads as a usage error (1). The held `FileLock` is released via try-with-resources rather than a
+ manual `release()` in a `finally`, so if the locked work also fails, `release()`'s own `IOException` is
+-suppressed onto that failure instead of replacing it. Any `IOException` naming only the path again (a quirk of
+-some `IOException` subtypes) falls back to the exception's class name instead of repeating the path a second
+-time, the same fallback `BazelDiffProvider` already used.
++suppressed onto that failure instead of replacing it. For a `FileSystemException` (which includes `FileAlreadyExistsException`, `AccessDeniedException`, ...),
++`ioReason` prefers its structured `getReason()` over `getMessage()`: the message often just repeats the path
++already named alongside it ("`<path>`: Is a directory", or for some failures the path with no reason at all),
++which would otherwise print it twice (`"...lock: .../.lock: Is a directory"`) or show the wrong path (a failed
++write under `--tsv-out` used to show the temp file's path as the "reason", not the real target's). When
++`getReason()` itself is unavailable, this falls back to the exception's class name — the same fallback
++`BazelDiffProvider` already used, and what any other `IOException` here still falls back to when its message is
++missing or is just the path again.
+ 
+ ### The scratch root must be private
+ `$TMPDIR/gradle-tracer` is a predictable, fixed path (spec §9), often under a shared `/tmp`: another local user
+ could pre-create it and tamper with the worktrees whose `gradlew` this tool executes, or hold `.lock` to block
+ every run. `Cli` creates a fresh root `rwx------`; an existing one must already be owned by the current user
+ with no group or other write permission, or the run refuses to touch it — exit 1, naming the path ("scratch
+-root `<path>` is not private to you; remove it or set `TMPDIR` to a private directory") — before any sweep,
+-lock or worktree work. The fixed path itself is unchanged; this only narrows who may use it. Ownership is
++root `<path>` is not private to you; remove it or set `TMPDIR` to a private directory"), printing just that one
++line rather than the full usage text (not a command-line mistake, same as lock contention above) — before any
++sweep, lock or worktree work. The fixed path itself is unchanged; this only narrows who may use it. Ownership is
+ compared by uid (`unix:uid`, against `com.sun.security.auth.module.UnixSystem`'s uid), not by
+ `Files.getOwner()`'s user name: a uid with no passwd entry (common for a container run as `-u $(id -u)`) makes
+ the JVM report `user.name` as `"?"`, so a name comparison would call every later run on the same root "not
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/tracer.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+fix(tracer): report the filesystem reason in IO errors and skip usage for a non-private root
+
+ioReason's fallback to the exception's class name only triggered when
+getMessage() was exactly the path, which a FileSystemException's
+message rarely is — so ".lock: Is a directory" printed with the path
+doubled, and a --tsv-out write failure showed the temp file's path as
+if it were the reason. Prefer FileSystemException.getReason() first.
+Also: a non-private scratch root now prints just its own message and
+returns EXIT_USAGE directly, instead of going through the full usage
+block, the same as lock contention's existing special case.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: still 240 (two existing tests tightened, none added or removed).
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**

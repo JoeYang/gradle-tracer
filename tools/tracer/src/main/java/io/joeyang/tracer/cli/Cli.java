@@ -8,6 +8,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -264,7 +265,9 @@ public final class Cli {
      * {@link OverlappingFileLockException} for one held elsewhere in this same JVM; both mean the root is busy.
      */
     private int withScratchLock(PrintStream err, LockedWork work) throws UsageException, ProviderException {
-        ensurePrivateScratchRoot();
+        if (!ensurePrivateScratchRoot(err)) {
+            return EXIT_USAGE;
+        }
         Path lockPath = scratch.resolve(".lock");
         try (FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
             FileLock lock;
@@ -298,13 +301,13 @@ public final class Cli {
      * to block every run. A fresh root is created {@code rwx------}; an existing one must already be owned by
      * the current user with no group/other write bit, or the run refuses to touch it.
      */
-    private void ensurePrivateScratchRoot() throws UsageException, ProviderException {
+    /** @return false (after printing the reason) when the root exists but isn't private; true otherwise. */
+    private boolean ensurePrivateScratchRoot(PrintStream err) throws ProviderException {
         // isSymbolicLink alongside isDirectory: a symlinked scratch root must go through the privacy check too
         // (which reads the link's own attributes, not its target's — see checkScratchRootIsPrivate), not get
         // treated as "doesn't exist yet" and recreated or (for a symlink to a file) fail as a generic IO error.
         if (Files.isDirectory(scratch, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(scratch)) {
-            checkScratchRootIsPrivate();
-            return;
+            return checkScratchRootIsPrivate(err);
         }
         try {
             Path parent = scratch.getParent();
@@ -315,9 +318,10 @@ public final class Cli {
         } catch (IOException e) {
             throw new ProviderException("cannot create scratch root " + scratch + ": " + ioReason(e, scratch), e);
         }
+        return true;
     }
 
-    private void checkScratchRootIsPrivate() throws UsageException, ProviderException {
+    private boolean checkScratchRootIsPrivate(PrintStream err) throws ProviderException {
         try {
             // NOFOLLOW_LINKS throughout: a symlinked scratch root is checked on the link itself, never on
             // whatever it points to. On Linux a symlink's own permissions report as world-read/write/execute
@@ -332,9 +336,13 @@ public final class Cli {
             long owner = ((Number) Files.getAttribute(scratch, "unix:uid", LinkOption.NOFOLLOW_LINKS)).longValue();
             boolean notOwnedByMe = owner != currentUid.getAsLong();
             if (groupOrOtherWrite || notOwnedByMe) {
-                throw new UsageException("scratch root " + scratch
+                // Not a command-line mistake, so it gets its own message, not the full usage text, same as lock
+                // contention below; the exit code still reads as a usage error.
+                err.println("trace: scratch root " + scratch
                         + " is not private to you; remove it or set TMPDIR to a private directory");
+                return false;
             }
+            return true;
         } catch (IOException e) {
             throw new ProviderException("cannot check scratch root " + scratch + ": " + ioReason(e, scratch), e);
         }
@@ -347,6 +355,12 @@ public final class Cli {
      * {@code BazelDiffProvider}'s identical fallback for the same class of message.
      */
     private static String ioReason(IOException e, Path path) {
+        // FileSystemException's own getMessage() typically repeats the path we're already naming ("<path>: Is a
+        // directory", or for some failures just "<path>" with no reason at all), so prefer its structured
+        // getReason() first; a plain IOException's getMessage() doesn't have this problem.
+        if (e instanceof FileSystemException fse) {
+            return fse.getReason() != null ? fse.getReason() : e.getClass().getSimpleName();
+        }
         String message = e.getMessage();
         return (message == null || message.equals(path.toString())) ? e.getClass().getSimpleName() : message;
     }

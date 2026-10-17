@@ -18,6 +18,7 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.LongSupplier;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -388,6 +389,7 @@ class CliTest {
         assertEquals(Cli.EXIT_USAGE, code, err());
         assertTrue(err().contains(scratch.toString()) && err().contains("not private"), err());
         assertFalse(git.ran("git worktree"), "no worktree work when the scratch root isn't private");
+        assertFalse(err().contains("usage: trace"), "not private is not a command-line mistake; no usage text: " + err());
     }
 
     @Test void freshlyCreatedScratchRootHasMode700() throws Exception {
@@ -434,7 +436,11 @@ class CliTest {
         int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
 
         assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
-        assertTrue(err().contains(scratch.resolve(".lock").toString()), err());
+        // FileSystemException.getReason() ("Is a directory"), not its getMessage() (which already repeats the
+        // path), so the path isn't doubled: "...lock: .../.lock: Is a directory".
+        assertTrue(err().contains(scratch.resolve(".lock").toString()) && err().contains("Is a directory"), err());
+        assertEquals(1, err().split(Pattern.quote(scratch.resolve(".lock").toString()), -1).length - 1,
+                "the .lock path must appear exactly once, not duplicated by the exception's own message: " + err());
     }
 
     @Test void lockFileSurvivesScratchSweep() throws Exception {
