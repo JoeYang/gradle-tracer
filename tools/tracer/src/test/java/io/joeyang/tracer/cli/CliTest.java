@@ -118,6 +118,29 @@ class CliTest {
         assertTrue(Files.readString(file).contains(B + "\tcore: add shout\tk2\timpacted\tCHANGED\tcore.jar"));
     }
 
+    @Test void tsvOutKeepsAnExistingTargetsMode() throws Exception {
+        Path file = tmp.resolve("rows.tsv");
+        Files.writeString(file, "previous content\n");
+        Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-r--r--"));
+
+        run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", file.toString());
+
+        assertEquals(PosixFilePermissions.fromString("rw-r--r--"), Files.getPosixFilePermissions(file));
+    }
+
+    @Test void tsvOutThroughASymlinkWritesTheRealTargetAndKeepsTheSymlink() throws Exception {
+        Path real = tmp.resolve("real-rows.tsv");
+        Files.writeString(real, "previous content\n");
+        Path link = tmp.resolve("rows.tsv");
+        Files.createSymbolicLink(link, real);
+
+        run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", link.toString());
+
+        assertTrue(Files.isSymbolicLink(link), "the symlink itself must still be a symlink, not replaced by a regular file");
+        assertTrue(Files.readString(real).contains(B + "\tcore: add shout\tk2\timpacted\tCHANGED\tcore.jar"),
+                "the real target behind the symlink must hold the new content");
+    }
+
     @Test void keyFailureForOneCommitGivesBuildFailedRowAndExit2() throws Exception {
         KeyProvider flaky = (wt, task) -> {
             if (wt.getFileName().toString().equals("wt-bbbbbbb")) {

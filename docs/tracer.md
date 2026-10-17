@@ -149,8 +149,14 @@ exits 1 with no scratch root or `.lock` file ever created; only once that succee
 created, locked (see "One run per scratch root" below), swept, and the worktree walk begin. Any violation along
 the way is a usage error naming the offending app, path or revision, so a bad input fails immediately rather
 than after a whole range walk has run. The TSV itself, once the walk succeeds, is written to `--tsv-out` via a
-temp file in the same directory plus an atomic move, so a write that fails partway through never truncates or
-corrupts a previous file at that path.
+temp file next to the real target plus an atomic move, so a write that fails partway through never truncates or
+corrupts a previous file at that path. "Real target" matters when `--tsv-out` names a symlink: the write
+resolves it with `toRealPath()` first and replaces what it points to, so the symlink itself survives — an
+atomic move onto the symlink's own path would instead replace the symlink's directory entry with a plain file.
+An existing target's permissions are preserved across the replacement (copied onto the temp file before the
+move, since the move discards the old inode and keeps the temp file's own mode otherwise); a brand-new target
+has no previous mode to preserve, so it's written directly rather than through `Files.createTempFile` (always
+`0600`), letting its mode follow the umask like any other file this tool creates.
 
 ### One run per scratch root
 Before any sweep or worktree work — for both the range walk and `--at`, and only after their revisions are

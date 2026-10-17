@@ -2,10 +2,12 @@ package io.joeyang.tracer.cli;
 
 import com.sun.security.auth.module.UnixSystem;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -456,24 +458,47 @@ public final class Cli {
      * corrupted — the previous file, if any, is untouched.
      */
     private void writeTsvAtomically(Path target, String content) throws ProviderException {
-        Path parent = target.toAbsolutePath().getParent();
+        // toRealPath, not target itself: a symlinked --tsv-out must have its real target replaced, not the
+        // symlink's own directory entry (which is what an atomic move onto the symlink's path would replace).
+        Path realTarget = target;
+        Set<PosixFilePermission> previousPermissions = null;
+        try {
+            if (Files.exists(target)) {
+                realTarget = target.toRealPath();
+                previousPermissions = Files.getPosixFilePermissions(realTarget);
+            }
+        } catch (IOException e) {
+            throw new ProviderException("cannot write " + target + ": " + ioReason(e, target), e);
+        }
+        Path parent = realTarget.toAbsolutePath().getParent();
         if (parent == null) {
             parent = Path.of("").toAbsolutePath();
         }
-        Path tmp;
+        Path tmp = null;
         try {
-            tmp = Files.createTempFile(parent, "trace-", ".tsv.tmp");
+            if (previousPermissions != null) {
+                // An existing target's mode must survive the replacement: createTempFile's own (always 0600)
+                // would otherwise silently become the new mode once the move discards the old inode.
+                tmp = Files.createTempFile(parent, "trace-", ".tsv.tmp");
+                Files.writeString(tmp, content);
+                Files.setPosixFilePermissions(tmp, previousPermissions);
+            } else {
+                // A brand-new file has no previous mode to preserve, so it's written plainly (mode follows the
+                // umask like any other file this tool creates) rather than through createTempFile, which is
+                // always 0600 regardless of umask.
+                tmp = parent.resolve(realTarget.getFileName() + ".tmp" + System.nanoTime());
+                try (OutputStream newFile = Files.newOutputStream(tmp, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+                    newFile.write(content.getBytes(StandardCharsets.UTF_8));
+                }
+            }
+            Files.move(tmp, realTarget, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
-            throw new ProviderException("cannot write " + target + ": " + ioReason(e, parent), e);
-        }
-        try {
-            Files.writeString(tmp, content);
-            Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } catch (IOException e) {
-            try {
-                Files.deleteIfExists(tmp);
-            } catch (IOException ignored) {
-                // best effort
+            if (tmp != null) {
+                try {
+                    Files.deleteIfExists(tmp);
+                } catch (IOException ignored) {
+                    // best effort
+                }
             }
             throw new ProviderException("cannot write " + target + ": " + ioReason(e, target), e);
         }

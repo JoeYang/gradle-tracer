@@ -9888,6 +9888,186 @@ Run `./gradlew :tools:tracer:test`: 238 tests (237 going into this commit, plus
 
 ---
 
+#### Commit W — `fix(tracer): keep the --tsv-out file's mode and write through a symlink`
+
+Why: after Commit M, every write went through `Files.createTempFile` (always `0600`) then an atomic move, which
+discards the old target's inode and keeps the temp file's own mode — so an existing, more permissive target
+(e.g. `0644`) silently became `0600` on every run. Separately, moving onto `--tsv-out`'s own path when it's a
+symlink replaces the symlink's directory entry itself, turning it into a plain file instead of writing through
+it to whatever it pointed at.
+
+Fix: if the target exists, resolve it with `toRealPath()` first and write/move next to the *real* target, and
+copy its existing POSIX permissions onto the temp file before the move. If the target is new, skip
+`createTempFile` entirely — write through `Files.newOutputStream(tmp, CREATE_NEW, WRITE)` under a unique
+sibling name instead, so the new file's mode follows the umask like any other file this tool creates, rather
+than being pinned to `0600`. Cleanup of the temp file on failure is unchanged.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index 42812f3..868839c 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -2,10 +2,12 @@ package io.joeyang.tracer.cli;
+ 
+ import com.sun.security.auth.module.UnixSystem;
+ import java.io.IOException;
++import java.io.OutputStream;
+ import java.io.PrintStream;
+ import java.nio.channels.FileChannel;
+ import java.nio.channels.FileLock;
+ import java.nio.channels.OverlappingFileLockException;
++import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.LinkOption;
+ import java.nio.file.Path;
+@@ -456,24 +458,47 @@ public final class Cli {
+      * corrupted — the previous file, if any, is untouched.
+      */
+     private void writeTsvAtomically(Path target, String content) throws ProviderException {
+-        Path parent = target.toAbsolutePath().getParent();
+-        if (parent == null) {
+-            parent = Path.of("").toAbsolutePath();
+-        }
+-        Path tmp;
++        // toRealPath, not target itself: a symlinked --tsv-out must have its real target replaced, not the
++        // symlink's own directory entry (which is what an atomic move onto the symlink's path would replace).
++        Path realTarget = target;
++        Set<PosixFilePermission> previousPermissions = null;
+         try {
+-            tmp = Files.createTempFile(parent, "trace-", ".tsv.tmp");
++            if (Files.exists(target)) {
++                realTarget = target.toRealPath();
++                previousPermissions = Files.getPosixFilePermissions(realTarget);
++            }
+         } catch (IOException e) {
+-            throw new ProviderException("cannot write " + target + ": " + ioReason(e, parent), e);
++            throw new ProviderException("cannot write " + target + ": " + ioReason(e, target), e);
++        }
++        Path parent = realTarget.toAbsolutePath().getParent();
++        if (parent == null) {
++            parent = Path.of("").toAbsolutePath();
+         }
++        Path tmp = null;
+         try {
+-            Files.writeString(tmp, content);
+-            Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
++            if (previousPermissions != null) {
++                // An existing target's mode must survive the replacement: createTempFile's own (always 0600)
++                // would otherwise silently become the new mode once the move discards the old inode.
++                tmp = Files.createTempFile(parent, "trace-", ".tsv.tmp");
++                Files.writeString(tmp, content);
++                Files.setPosixFilePermissions(tmp, previousPermissions);
++            } else {
++                // A brand-new file has no previous mode to preserve, so it's written plainly (mode follows the
++                // umask like any other file this tool creates) rather than through createTempFile, which is
++                // always 0600 regardless of umask.
++                tmp = parent.resolve(realTarget.getFileName() + ".tmp" + System.nanoTime());
++                try (OutputStream newFile = Files.newOutputStream(tmp, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
++                    newFile.write(content.getBytes(StandardCharsets.UTF_8));
++                }
++            }
++            Files.move(tmp, realTarget, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+         } catch (IOException e) {
+-            try {
+-                Files.deleteIfExists(tmp);
+-            } catch (IOException ignored) {
+-                // best effort
++            if (tmp != null) {
++                try {
++                    Files.deleteIfExists(tmp);
++                } catch (IOException ignored) {
++                    // best effort
++                }
+             }
+             throw new ProviderException("cannot write " + target + ": " + ioReason(e, target), e);
+         }
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index 4e93cc7..833a43d 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -118,6 +118,29 @@ class CliTest {
+         assertTrue(Files.readString(file).contains(B + "\tcore: add shout\tk2\timpacted\tCHANGED\tcore.jar"));
+     }
+ 
++    @Test void tsvOutKeepsAnExistingTargetsMode() throws Exception {
++        Path file = tmp.resolve("rows.tsv");
++        Files.writeString(file, "previous content\n");
++        Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-r--r--"));
++
++        run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", file.toString());
++
++        assertEquals(PosixFilePermissions.fromString("rw-r--r--"), Files.getPosixFilePermissions(file));
++    }
++
++    @Test void tsvOutThroughASymlinkWritesTheRealTargetAndKeepsTheSymlink() throws Exception {
++        Path real = tmp.resolve("real-rows.tsv");
++        Files.writeString(real, "previous content\n");
++        Path link = tmp.resolve("rows.tsv");
++        Files.createSymbolicLink(link, real);
++
++        run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", link.toString());
++
++        assertTrue(Files.isSymbolicLink(link), "the symlink itself must still be a symlink, not replaced by a regular file");
++        assertTrue(Files.readString(real).contains(B + "\tcore: add shout\tk2\timpacted\tCHANGED\tcore.jar"),
++                "the real target behind the symlink must hold the new content");
++    }
++
+     @Test void keyFailureForOneCommitGivesBuildFailedRowAndExit2() throws Exception {
+         KeyProvider flaky = (wt, task) -> {
+             if (wt.getFileName().toString().equals("wt-bbbbbbb")) {
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index bb9b3bc..3b275db 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -149,8 +149,14 @@ exits 1 with no scratch root or `.lock` file ever created; only once that succee
+ created, locked (see "One run per scratch root" below), swept, and the worktree walk begin. Any violation along
+ the way is a usage error naming the offending app, path or revision, so a bad input fails immediately rather
+ than after a whole range walk has run. The TSV itself, once the walk succeeds, is written to `--tsv-out` via a
+-temp file in the same directory plus an atomic move, so a write that fails partway through never truncates or
+-corrupts a previous file at that path.
++temp file next to the real target plus an atomic move, so a write that fails partway through never truncates or
++corrupts a previous file at that path. "Real target" matters when `--tsv-out` names a symlink: the write
++resolves it with `toRealPath()` first and replaces what it points to, so the symlink itself survives — an
++atomic move onto the symlink's own path would instead replace the symlink's directory entry with a plain file.
++An existing target's permissions are preserved across the replacement (copied onto the temp file before the
++move, since the move discards the old inode and keeps the temp file's own mode otherwise); a brand-new target
++has no previous mode to preserve, so it's written directly rather than through `Files.createTempFile` (always
++`0600`), letting its mode follow the umask like any other file this tool creates.
+ 
+ ### One run per scratch root
+ Before any sweep or worktree work — for both the range walk and `--at`, and only after their revisions are
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/tracer.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+fix(tracer): keep the --tsv-out file's mode and write through a symlink
+
+The atomic-write temp file was always created via createTempFile
+(always 0600), so an existing target with a more permissive mode
+silently lost it on every run, and moving onto a symlinked --tsv-out
+replaced the symlink itself instead of writing through it. Resolve
+an existing target with toRealPath() and copy its mode onto the temp
+file before the move; for a new target, write through a plain
+CREATE_NEW file instead of createTempFile, so its mode follows the
+umask like any other file this tool creates.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: 240 tests (238 going into this commit, plus
+`tsvOutKeepsAnExistingTargetsMode` and `tsvOutThroughASymlinkWritesTheRealTargetAndKeepsTheSymlink`).
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**
