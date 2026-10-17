@@ -5283,14 +5283,32 @@ implementation hash differs. Capped at four plus `+N more`.
 `TableRenderer.render` prints the fixed-width table and a summary line; `renderTsv` prints `sha\tsubject\tkey\tbazel\tverdict\tculprits` for scripts.
 ```
 
-```bash
-git add tools/tracer docs/tracer.md
-git commit -m "feat(tracer): compare adjacent keys and render the verdict table
+This step lands as two commits, split at the natural seam between the two independent, pure
+classes, so each one stays comfortably under the 200-line target instead of landing as a single
+~370-line commit:
 
-Culprits are derived by diffing per-input fingerprints under a
-location-independent name so the same jar in two worktrees compares equal.
-The renderer is pure so the table layout is pinned by tests, and the TSV
-form exists for the scenario script's assertions."
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/KeyComparator.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/KeyComparatorTest.java
+git commit -m "feat(tracer): compare adjacent keys and name the culprits
+
+Two adjacent TaskKeys differ by worktree-local paths even when nothing
+meaningful changed, so culprits are derived by diffing per-input
+fingerprints under a location-independent display name (jar/source/file
+name, or group:artifact for module-cache jars) rather than raw paths.
+This keeps a dependency version bump or a renamed worktree from showing
+up as noise in the verdict table."
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/TableRenderer.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/TableRendererTest.java \
+        docs/tracer.md
+git commit -m "feat(tracer): render the verdict table
+
+A pure renderer keeps the fixed-width table layout pinned by unit tests
+rather than visual inspection, and the TSV form gives the planned
+scenario script a stable, header-free format to assert against."
 ```
 
 ---
