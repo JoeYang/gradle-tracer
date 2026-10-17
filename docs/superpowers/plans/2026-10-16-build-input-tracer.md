@@ -4059,7 +4059,7 @@ there afterwards to stop the server and free the disk; that cleanup failure is
 swallowed rather than masking the real hashing result."
 ```
 
-A later review round added four more fixup commits (bazelError, a testable binary override, impacted-target
+A later review round added five more fixup commits (bazelError, a testable binary override, impacted-target
 validation, a hardened fetch script, a doc correction) plus one extra commit, `build(bazel): record the module
 extensions bazel-diff's mod graph evaluates`, committing the `MODULE.bazel.lock` growth (`bazel mod graph`
 evaluating `rules_android`'s `apksig_extension`/`com_android_dex_extension`, ~36 lines) that bazel-diff's first
@@ -4072,6 +4072,10 @@ additive `startFailed()` accessor to `tools/tracer/src/main/java/io/joeyang/trac
 there is nothing to clean up) from "ran but did not finish" (`timeout`/`interrupted`, cleanup still runs). The
 same round also added two `impactedTargets` failure-path tests that had no coverage: a non-zero bazel-diff
 exit (asserting the message names the repo) and a `ProcessException` (asserting it carries the fetch hint).
+It also corrected `docs/bazel-build.md`'s bazel-diff section: the measured hashes are identical with or without
+the extra `MODULE.bazel.lock` entries, so the real effect of letting the lockfile drift is a dirty `git status`,
+not drifting hashes as an earlier draft claimed; and `get-impacted-targets`, not just `generate-hashes`, also
+runs `bazel mod graph` in the repo checkout.
 
 ---
 ### Task 9: RevisionRange and WorktreePool (git)
