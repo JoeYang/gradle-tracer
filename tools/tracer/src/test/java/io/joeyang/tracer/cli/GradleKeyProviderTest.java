@@ -66,24 +66,65 @@ class GradleKeyProviderTest {
         assertTrue(e.getMessage().contains("';' expected"), e.getMessage());
     }
 
-    @Test void buildFailureSurfacesWhatWentWrongOverTheGenericFailureLine() {
-        String stdout = """
-                > Task :app:appB:compileJava FAILED
+    @Test void unknownTaskJoinsWhatWentWrongWithItsContinuationLine() {
+        // Captured verbatim from `./gradlew :app:appA:nope --console=plain` against Gradle 9.8.1: the cause
+        // is not on the "* What went wrong:" line itself but on the indented line right after it.
+        String stderr = """
 
                 FAILURE: Build failed with an exception.
 
                 * What went wrong:
-                Task ':app:appB:compileJava' not found in root project 'gradle-tracer'.
+                Selection failed
+                  Cannot locate tasks that match ':app:appA:nope' as task 'nope' not found in project ':app:appA'.
 
                 * Try:
-                > Run gradle tasks to get a list of available tasks.
+                > Run gradlew tasks to get a list of available tasks.
+                > For more on name expansion, please refer to https://docs.gradle.org/9.8.1/userguide/command_line_interface.html#sec:name_abbreviation in the Gradle documentation.
+                > Run with --stacktrace option to get the stack trace.
+                > Run with --info or --debug option to get more log output.
+                > Run with --scan to get full insights from a Build Scan (powered by Develocity).
+                > Get more help at https://help.gradle.org.
 
-                BUILD FAILED in 1s
+                BUILD FAILED in 488ms
                 """;
-        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 1, stdout, "");
+        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 1, "", stderr);
         ProviderException e = assertThrows(ProviderException.class,
                 () -> new GradleKeyProvider(runner, false, Duration.ofMinutes(1)).keyFor(worktree, TASK));
-        assertTrue(e.getMessage().contains("not found in root project 'gradle-tracer'"), e.getMessage());
+        assertTrue(e.getMessage().contains("Selection failed"), e.getMessage());
+        assertTrue(e.getMessage().contains("Cannot locate tasks that match ':app:appA:nope'"), e.getMessage());
+        assertTrue(e.getMessage().contains(TASK), e.getMessage());
+    }
+
+    @Test void compileErrorSurfacesTheJavacErrorOverTheGenericWhatWentWrongLine() {
+        // Captured verbatim from a real `:app:appA:compileJava` failure against Gradle 9.8.1: "* What went
+        // wrong:" only says "Compilation failed; see the compiler output below." — the actual javac error
+        // is further down (and also printed, unindented, before the FAILURE banner).
+        String stderr = """
+                /repo/app/appA/src/main/java/io/joeyang/tracer/app/a/AppA.java:11: error: ';' expected
+                    static int broken() { return 1 }
+                                                  ^
+                1 error
+
+                FAILURE: Build failed with an exception.
+
+                * What went wrong:
+                Execution failed for task ':app:appA:compileJava' (registered by plugin class 'org.gradle.api.plugins.JavaBasePlugin').
+                > Compilation failed; see the compiler output below.
+                  /repo/app/appA/src/main/java/io/joeyang/tracer/app/a/AppA.java:11: error: ';' expected
+                      static int broken() { return 1 }
+                                                    ^
+                  1 error
+
+                * Try:
+                > Check your code and dependencies to fix the compilation error(s)
+                > Run with --scan to get full insights from a Build Scan (powered by Develocity).
+
+                BUILD FAILED in 452ms
+                """;
+        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 1, "", stderr);
+        ProviderException e = assertThrows(ProviderException.class,
+                () -> new GradleKeyProvider(runner, false, Duration.ofMinutes(1)).keyFor(worktree, TASK));
+        assertTrue(e.getMessage().contains("error: ';' expected"), e.getMessage());
         assertTrue(e.getMessage().contains(TASK), e.getMessage());
     }
 

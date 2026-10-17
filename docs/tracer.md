@@ -37,8 +37,13 @@ debug output" naming the line, per spec §9, rather than silently dropping or mi
 UP-TO-DATE task prints the key line without input lines; the tracer always runs in a fresh worktree, so the inputs are
 present whenever the key changed.
 
-When `gradlew` exits non-zero, the provider looks for Gradle's own `* What went wrong:` header and reports the first
-non-blank line after it (falling back to the first non-blank stderr/stdout line when Gradle didn't print that header),
-naming the task path in the message either way — so a real compile error or an unknown task reads as the actual cause
-instead of the generic "FAILURE: Build failed with an exception." banner. Computing *which* culprit changed between two
-commits' `TaskKey`s, and the `./trace` revision-range walk that drives this provider, arrive in later commits.
+When `gradlew` exits non-zero, the provider first looks for a javac error line (`<file>.java:<line>: error: <message>`)
+anywhere in the output, since Gradle's `* What went wrong:` header for a compile failure only says "Compilation failed;
+see the compiler output below." — not the actual error. Failing that, it looks for the header and joins its first
+non-blank line with the following line when that one is indented (e.g. "Selection failed" / "Cannot locate tasks that
+match ..." for an unknown task, where the real cause is the indented continuation, not the header's own first line).
+Failing that, it falls back to the first non-blank stderr/stdout line. The task path is named in the message either way.
+A line inside the target task's own cache-debug block that CacheDebugLog cannot recognise is reported the same way, as a
+`ProviderException` naming the task and the offending line, instead of escaping uncaught. Computing *which* culprit
+changed between two commits' `TaskKey`s, and the `./trace` revision-range walk that drives this provider, arrive in
+later commits.

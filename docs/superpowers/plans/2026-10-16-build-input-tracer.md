@@ -3003,24 +3003,65 @@ class GradleKeyProviderTest {
         assertTrue(e.getMessage().contains("';' expected"), e.getMessage());
     }
 
-    @Test void buildFailureSurfacesWhatWentWrongOverTheGenericFailureLine() {
-        String stdout = """
-                > Task :app:appB:compileJava FAILED
+    @Test void unknownTaskJoinsWhatWentWrongWithItsContinuationLine() {
+        // Captured verbatim from `./gradlew :app:appA:nope --console=plain` against Gradle 9.8.1: the cause
+        // is not on the "* What went wrong:" line itself but on the indented line right after it.
+        String stderr = """
 
                 FAILURE: Build failed with an exception.
 
                 * What went wrong:
-                Task ':app:appB:compileJava' not found in root project 'gradle-tracer'.
+                Selection failed
+                  Cannot locate tasks that match ':app:appA:nope' as task 'nope' not found in project ':app:appA'.
 
                 * Try:
-                > Run gradle tasks to get a list of available tasks.
+                > Run gradlew tasks to get a list of available tasks.
+                > For more on name expansion, please refer to https://docs.gradle.org/9.8.1/userguide/command_line_interface.html#sec:name_abbreviation in the Gradle documentation.
+                > Run with --stacktrace option to get the stack trace.
+                > Run with --info or --debug option to get more log output.
+                > Run with --scan to get full insights from a Build Scan (powered by Develocity).
+                > Get more help at https://help.gradle.org.
 
-                BUILD FAILED in 1s
+                BUILD FAILED in 488ms
                 """;
-        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 1, stdout, "");
+        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 1, "", stderr);
         ProviderException e = assertThrows(ProviderException.class,
                 () -> new GradleKeyProvider(runner, false, Duration.ofMinutes(1)).keyFor(worktree, TASK));
-        assertTrue(e.getMessage().contains("not found in root project 'gradle-tracer'"), e.getMessage());
+        assertTrue(e.getMessage().contains("Selection failed"), e.getMessage());
+        assertTrue(e.getMessage().contains("Cannot locate tasks that match ':app:appA:nope'"), e.getMessage());
+        assertTrue(e.getMessage().contains(TASK), e.getMessage());
+    }
+
+    @Test void compileErrorSurfacesTheJavacErrorOverTheGenericWhatWentWrongLine() {
+        // Captured verbatim from a real `:app:appA:compileJava` failure against Gradle 9.8.1: "* What went
+        // wrong:" only says "Compilation failed; see the compiler output below." — the actual javac error
+        // is further down (and also printed, unindented, before the FAILURE banner).
+        String stderr = """
+                /repo/app/appA/src/main/java/io/joeyang/tracer/app/a/AppA.java:11: error: ';' expected
+                    static int broken() { return 1 }
+                                                  ^
+                1 error
+
+                FAILURE: Build failed with an exception.
+
+                * What went wrong:
+                Execution failed for task ':app:appA:compileJava' (registered by plugin class 'org.gradle.api.plugins.JavaBasePlugin').
+                > Compilation failed; see the compiler output below.
+                  /repo/app/appA/src/main/java/io/joeyang/tracer/app/a/AppA.java:11: error: ';' expected
+                      static int broken() { return 1 }
+                                                    ^
+                  1 error
+
+                * Try:
+                > Check your code and dependencies to fix the compilation error(s)
+                > Run with --scan to get full insights from a Build Scan (powered by Develocity).
+
+                BUILD FAILED in 452ms
+                """;
+        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 1, "", stderr);
+        ProviderException e = assertThrows(ProviderException.class,
+                () -> new GradleKeyProvider(runner, false, Duration.ofMinutes(1)).keyFor(worktree, TASK));
+        assertTrue(e.getMessage().contains("error: ';' expected"), e.getMessage());
         assertTrue(e.getMessage().contains(TASK), e.getMessage());
     }
 
@@ -3216,10 +3257,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 /** Runs the worktree's own {@code gradlew} with cache debugging on and parses the task's key out of the output. */
 public final class GradleKeyProvider implements KeyProvider {
     private static final String WHAT_WENT_WRONG_HEADER = "* What went wrong:";
+    /** A javac error line such as {@code AppA.java:11: error: ';' expected}, with or without a leading path. */
+    private static final Pattern JAVAC_ERROR = Pattern.compile("^\\S+\\.java:\\d+: error: .+$");
 
     private final ProcessRunner runner;
     private final boolean offline;
@@ -3249,7 +3293,8 @@ public final class GradleKeyProvider implements KeyProvider {
             throw new ProviderException("gradle: " + e.getMessage(), e);
         }
         if (!result.ok()) {
-            throw new ProviderException("gradle failed for " + taskPath + ": " + whatWentWrong(result).orElseGet(result::firstErrorLine));
+            String cause = javacError(result).or(() -> whatWentWrong(result)).orElseGet(result::firstErrorLine);
+            throw new ProviderException("gradle failed for " + taskPath + ": " + cause);
         }
         String output = result.stdout() + "\n" + result.stderr();
         try {
@@ -3263,17 +3308,39 @@ public final class GradleKeyProvider implements KeyProvider {
         }
     }
 
-    /** The first non-blank line after Gradle's {@code * What went wrong:} header, when it printed one. */
+    /** The first javac error line ({@code <file>.java:<line>: error: <message>}) anywhere in the output, if any. */
+    private static Optional<String> javacError(ProcessRunner.Result result) {
+        return (result.stdout() + "\n" + result.stderr()).lines()
+                .map(String::strip)
+                .filter(line -> JAVAC_ERROR.matcher(line).matches())
+                .findFirst();
+    }
+
+    /**
+     * The first non-blank line after Gradle's {@code * What went wrong:} header, joined with its first
+     * continuation line (the line right after it, when that line is indented and non-blank) — Gradle often
+     * puts the actual cause there rather than on the header's own first line, e.g. "Selection failed" /
+     * "  Cannot locate tasks that match ...".
+     */
     private static Optional<String> whatWentWrong(ProcessRunner.Result result) {
         List<String> lines = (result.stdout() + "\n" + result.stderr()).lines().toList();
         for (int i = 0; i < lines.size(); i++) {
-            if (lines.get(i).strip().equals(WHAT_WENT_WRONG_HEADER)) {
-                for (int j = i + 1; j < lines.size(); j++) {
-                    String candidate = lines.get(j).strip();
-                    if (!candidate.isEmpty()) {
-                        return Optional.of(candidate);
+            if (!lines.get(i).strip().equals(WHAT_WENT_WRONG_HEADER)) {
+                continue;
+            }
+            for (int j = i + 1; j < lines.size(); j++) {
+                String first = lines.get(j).strip();
+                if (first.isEmpty()) {
+                    continue;
+                }
+                if (j + 1 < lines.size()) {
+                    String continuationRaw = lines.get(j + 1);
+                    String continuation = continuationRaw.strip();
+                    if (!continuation.isEmpty() && (continuationRaw.startsWith(" ") || continuationRaw.startsWith("\t"))) {
+                        return Optional.of(first + ": " + continuation);
                     }
                 }
+                return Optional.of(first);
             }
         }
         return Optional.empty();
@@ -3284,7 +3351,7 @@ public final class GradleKeyProvider implements KeyProvider {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 51 tests at this point in the sequence (26 from Task 6 plus 25 here — 17 from the original parser/provider tests plus 8 added by review fixes: 5 for `/ DIR`, `/ MISSING`, a quoted path, an unknown normalization token, and `rootSpec$1`'s real entry count; 2 for the "What went wrong" extraction and null constructor arguments; and 1 for mapping an unrecognised cache-debug line to `ProviderException` instead of letting it escape uncaught). Then `bazel test //tools/tracer/...` must also pass — the fixtures are on the Bazel test classpath through the `resources` attribute.
+Expected: `BUILD SUCCESSFUL`; 52 tests at this point in the sequence (26 from Task 6 plus 26 here — 17 from the original parser/provider tests plus 9 added by review fixes: 5 for `/ DIR`, `/ MISSING`, a quoted path, an unknown normalization token, and `rootSpec$1`'s real entry count; 1 for mapping an unrecognised cache-debug line to `ProviderException` instead of letting it escape uncaught; 1 for null constructor arguments; and 2 for the "What went wrong" extraction, including its real Gradle 9.8.1 javac-error and continuation-line shapes). Then `bazel test //tools/tracer/...` must also pass — the fixtures are on the Bazel test classpath through the `resources` attribute.
 
 - [ ] **Step 6: Document and commit**
 
@@ -3327,11 +3394,16 @@ debug output" naming the line, per spec §9, rather than silently dropping or mi
 UP-TO-DATE task prints the key line without input lines; the tracer always runs in a fresh worktree, so the inputs are
 present whenever the key changed.
 
-When `gradlew` exits non-zero, the provider looks for Gradle's own `* What went wrong:` header and reports the first
-non-blank line after it (falling back to the first non-blank stderr/stdout line when Gradle didn't print that header),
-naming the task path in the message either way — so a real compile error or an unknown task reads as the actual cause
-instead of the generic "FAILURE: Build failed with an exception." banner. Computing *which* culprit changed between two
-commits' `TaskKey`s, and the `./trace` revision-range walk that drives this provider, arrive in later commits.
+When `gradlew` exits non-zero, the provider first looks for a javac error line (`<file>.java:<line>: error: <message>`)
+anywhere in the output, since Gradle's `* What went wrong:` header for a compile failure only says "Compilation failed;
+see the compiler output below." — not the actual error. Failing that, it looks for the header and joins its first
+non-blank line with the following line when that one is indented (e.g. "Selection failed" / "Cannot locate tasks that
+match ..." for an unknown task, where the real cause is the indented continuation, not the header's own first line).
+Failing that, it falls back to the first non-blank stderr/stdout line. The task path is named in the message either way.
+A line inside the target task's own cache-debug block that CacheDebugLog cannot recognise is reported the same way, as a
+`ProviderException` naming the task and the offending line, instead of escaping uncaught. Computing *which* culprit
+changed between two commits' `TaskKey`s, and the `./trace` revision-range walk that drives this provider, arrive in
+later commits.
 ```
 
 ```bash
@@ -3633,7 +3705,7 @@ public final class BazelDiffProvider implements ImpactProvider {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 60 tests at this point in the sequence (the Task 7 review fixes added 8, across two rounds). Also `bazel test //tools/tracer/...` passes.
+Expected: `BUILD SUCCESSFUL`; 61 tests at this point in the sequence (the Task 7 review fixes added 9, across two rounds). Also `bazel test //tools/tracer/...` passes.
 
 - [ ] **Step 6: Try it for real against the repo**
 
@@ -4041,7 +4113,7 @@ public final class WorktreePool implements AutoCloseable {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 71 tests at this point in the sequence.
+Expected: `BUILD SUCCESSFUL`; 72 tests at this point in the sequence.
 
 - [ ] **Step 5: Document and commit**
 
@@ -4469,7 +4541,7 @@ public final class TableRenderer {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 86 tests at this point in the sequence. Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
+Expected: `BUILD SUCCESSFUL`; 87 tests at this point in the sequence. Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
 
 - [ ] **Step 5: Document and commit**
 
@@ -4628,7 +4700,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 91 tests at this point in the sequence; the timeout test finishes in well under a second.
+Expected: `BUILD SUCCESSFUL`; 92 tests at this point in the sequence; the timeout test finishes in well under a second.
 
 - [ ] **Step 5: Commit**
 
@@ -4849,7 +4921,7 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 103 tests at this point in the sequence (the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 104 tests at this point in the sequence (the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -5352,7 +5424,7 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 114 tests at this point in the sequence. Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 115 tests at this point in the sequence. Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 
