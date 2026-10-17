@@ -18,6 +18,6 @@ public final class Greeter {
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("name must not be blank");
         }
-        return Formatter.pad("Hello,", column) + name + "!";
+        return Formatter.pad("Hello,", column) + name + "! this is a test.";
     }
 }
