@@ -119,7 +119,8 @@ passing one through.
 ## Range walk
 Worktrees and bazel-diff hash files live under one fixed root, `$TMPDIR/gradle-tracer/`. At start the tracer prunes git's
 worktree list, deletes stale `wt-*` directories and stale `hashes-*.json`/`*.impacted.txt` files left by a killed run, and
-reports how many it removed; at the end it removes what it created unless `--keep-worktrees`. If bazel-diff fails once, the
+reports how many it removed; at the end — including when a checkout or provider failure aborts the walk partway
+through — it removes what it created unless `--keep-worktrees`. If bazel-diff fails once, the
 rest of the Bazel column is `n/a` and a warning goes to stderr. A commit whose Gradle run fails is `BUILD-FAILED`; the next
 commit is compared against the last good key.
 

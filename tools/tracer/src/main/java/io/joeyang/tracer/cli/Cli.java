@@ -302,47 +302,52 @@ public final class Cli {
             err.println("trace: removed " + swept + " stale scratch file(s) under " + scratch);
         }
         List<Verdict> rows = new ArrayList<>();
-        try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
-            Optional<TaskKey> previousGood = Optional.empty();
-            Path previousHashes = null;
-            boolean bazelAlive = impacts != null;
-            for (Commit commit : commits) {
-                Path worktree = pool.checkout(commit);
-                Optional<TaskKey> key = Optional.empty();
-                Optional<String> error = Optional.empty();
-                try {
-                    key = Optional.of(keys.keyFor(worktree, o.taskPath()));
-                } catch (ProviderException e) {
-                    error = Optional.of(e.getMessage());
-                }
-                BazelStatus bazel = BazelStatus.NONE;
-                if (bazelAlive) {
+        try {
+            try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
+                Optional<TaskKey> previousGood = Optional.empty();
+                Path previousHashes = null;
+                boolean bazelAlive = impacts != null;
+                for (Commit commit : commits) {
+                    Path worktree = pool.checkout(commit);
+                    Optional<TaskKey> key = Optional.empty();
+                    Optional<String> error = Optional.empty();
                     try {
-                        Path hashes = impacts.hashes(worktree, scratch.resolve("hashes-" + commit.shortSha() + ".json"));
-                        if (previousHashes != null) {
-                            Set<String> impacted = impacts.impactedTargets(previousHashes, hashes);
-                            bazel = impacted.contains(o.bazelTarget()) ? BazelStatus.IMPACTED : BazelStatus.CLEAN;
-                        }
-                        previousHashes = hashes;
+                        key = Optional.of(keys.keyFor(worktree, o.taskPath()));
                     } catch (ProviderException e) {
-                        err.println("trace: bazel-diff unavailable: " + e.getMessage());
-                        bazelAlive = false;
+                        error = Optional.of(e.getMessage());
+                    }
+                    BazelStatus bazel = BazelStatus.NONE;
+                    if (bazelAlive) {
+                        try {
+                            Path hashes = impacts.hashes(worktree, scratch.resolve("hashes-" + commit.shortSha() + ".json"));
+                            if (previousHashes != null) {
+                                Set<String> impacted = impacts.impactedTargets(previousHashes, hashes);
+                                bazel = impacted.contains(o.bazelTarget()) ? BazelStatus.IMPACTED : BazelStatus.CLEAN;
+                            }
+                            previousHashes = hashes;
+                        } catch (ProviderException e) {
+                            err.println("trace: bazel-diff unavailable: " + e.getMessage());
+                            bazelAlive = false;
+                            bazel = BazelStatus.NOT_AVAILABLE;
+                        }
+                    } else if (impacts != null) {
                         bazel = BazelStatus.NOT_AVAILABLE;
                     }
-                } else if (impacts != null) {
-                    bazel = BazelStatus.NOT_AVAILABLE;
-                }
-                rows.add(KeyComparator.verdict(commit, previousGood, key, error, bazel));
-                if (key.isPresent()) {
-                    previousGood = key;
-                }
-                if (!o.keepWorktrees()) {
-                    pool.release(worktree);
+                    rows.add(KeyComparator.verdict(commit, previousGood, key, error, bazel));
+                    if (key.isPresent()) {
+                        previousGood = key;
+                    }
+                    if (!o.keepWorktrees()) {
+                        pool.release(worktree);
+                    }
                 }
             }
-        }
-        if (!o.keepWorktrees()) {
-            deleteScratchFiles();
+        } finally {
+            // Runs whether the walk finished or a checkout/pool failure aborted it partway through: a killed
+            // walk must leave no more behind than a killed run would (docs/tracer.md's "Range walk" promise).
+            if (!o.keepWorktrees()) {
+                deleteScratchFiles();
+            }
         }
         String tsv = TableRenderer.renderTsv(rows);
         if (o.tsv()) {

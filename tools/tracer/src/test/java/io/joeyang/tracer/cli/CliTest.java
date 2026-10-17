@@ -70,7 +70,12 @@ class CliTest {
     };
 
     int run(KeyProvider k, ImpactProvider i, String... args) throws UsageException {
-        return new Cli(git, repo, scratch, k, i).run(Cli.Options.parse(args),
+        return run(git, k, i, args);
+    }
+
+    /** For tests that need a worktree-level failure the shared {@code git} fixture's catch-all can't script. */
+    int run(ProcessRunner runner, KeyProvider k, ImpactProvider i, String... args) throws UsageException {
+        return new Cli(runner, repo, scratch, k, i).run(Cli.Options.parse(args),
                 new PrintStream(out, true, StandardCharsets.UTF_8), new PrintStream(err, true, StandardCharsets.UTF_8));
     }
 
@@ -272,6 +277,30 @@ class CliTest {
         assertEquals(Cli.EXIT_TOOL_FAILURE, code);
         assertTrue(err().contains("internal error") && err().contains("UncheckedIOException") && err().contains("disk gone"), err());
         assertFalse(err().contains("\tat "), "no stack trace printed: " + err());
+    }
+
+    @Test void hashFilesAreRemovedWhenCheckoutFailsMidWalk() throws Exception {
+        FakeProcessRunner failingThirdCheckout = new FakeProcessRunner()
+                .on("git rev-parse --verify --quiet base^{commit}", 0, A + "\n", "")
+                .on("git rev-parse --verify --quiet tip^{commit}", 0, C + "\n", "")
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + A, 0, A + "\u001f\u001fbaseline\n", "")
+                .on("git log --reverse --first-parent --format=%H%x1f%P%x1f%s " + A + ".." + C, 0,
+                        B + "\u001f" + A + "\u001fcore: add shout\n" + C + "\u001f" + B + "\u001fdocs only\n", "")
+                .on("git worktree add --detach " + scratch.resolve("wt-ccccccc"), 1, "", "fatal: boom")
+                .on("git worktree", 0, "", "");
+
+        int code = run(failingThirdCheckout, keys, impacts, "appA", "--from", "base", "--to", "tip");
+
+        assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
+        assertTrue(err().contains("boom"), err());
+        try (Stream<Path> left = Files.list(scratch)) {
+            assertTrue(left.noneMatch(p -> p.getFileName().toString().startsWith("hashes-")),
+                    "hash files for the commits processed before the failure must still be cleaned up");
+        }
+
+        // The lock must have been released despite the failure above, so a plain second run succeeds.
+        int second = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
+        assertEquals(Cli.EXIT_CHANGED, second, err());
     }
 
     @Test void staleScratchFilesAreSweptAndNewOnesRemoved() throws Exception {

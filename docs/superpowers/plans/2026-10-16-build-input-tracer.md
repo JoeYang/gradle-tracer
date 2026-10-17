@@ -8240,6 +8240,203 @@ Run `./gradlew :tools:tracer:test`: 224 tests (223 going into this commit, plus
 
 ---
 
+#### Commit L — `fix(tracer): clean up hash files when the walk aborts`
+
+Why: the end-of-run `deleteScratchFiles()` call sat after the `WorktreePool` try-with-resources block, not in a
+`finally`, so when e.g. `git worktree add` failed partway through a range (quality review's probe: the 3rd
+commit), `hashes-*.json` files for the commits already processed were left behind — contradicting
+`docs/tracer.md`'s "at the end it removes what it created" promise, which was only ever true for the
+happy path.
+
+Fix: wrap the `WorktreePool` block in `try Ellipsis finally { if (!keepWorktrees) deleteScratchFiles(); }`, so
+the cleanup runs whether the walk finished normally or a checkout/pool failure aborted it. No partial-row output
+is added for the aborted case — that's deferred; the run still just reports the failure and exits 2.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index 5d1f69c..504a59a 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -302,47 +302,52 @@ public final class Cli {
+             err.println("trace: removed " + swept + " stale scratch file(s) under " + scratch);
+         }
+         List<Verdict> rows = new ArrayList<>();
+-        try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
+-            Optional<TaskKey> previousGood = Optional.empty();
+-            Path previousHashes = null;
+-            boolean bazelAlive = impacts != null;
+-            for (Commit commit : commits) {
+-                Path worktree = pool.checkout(commit);
+-                Optional<TaskKey> key = Optional.empty();
+-                Optional<String> error = Optional.empty();
+-                try {
+-                    key = Optional.of(keys.keyFor(worktree, o.taskPath()));
+-                } catch (ProviderException e) {
+-                    error = Optional.of(e.getMessage());
+-                }
+-                BazelStatus bazel = BazelStatus.NONE;
+-                if (bazelAlive) {
++        try {
++            try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
++                Optional<TaskKey> previousGood = Optional.empty();
++                Path previousHashes = null;
++                boolean bazelAlive = impacts != null;
++                for (Commit commit : commits) {
++                    Path worktree = pool.checkout(commit);
++                    Optional<TaskKey> key = Optional.empty();
++                    Optional<String> error = Optional.empty();
+                     try {
+-                        Path hashes = impacts.hashes(worktree, scratch.resolve("hashes-" + commit.shortSha() + ".json"));
+-                        if (previousHashes != null) {
+-                            Set<String> impacted = impacts.impactedTargets(previousHashes, hashes);
+-                            bazel = impacted.contains(o.bazelTarget()) ? BazelStatus.IMPACTED : BazelStatus.CLEAN;
+-                        }
+-                        previousHashes = hashes;
++                        key = Optional.of(keys.keyFor(worktree, o.taskPath()));
+                     } catch (ProviderException e) {
+-                        err.println("trace: bazel-diff unavailable: " + e.getMessage());
+-                        bazelAlive = false;
++                        error = Optional.of(e.getMessage());
++                    }
++                    BazelStatus bazel = BazelStatus.NONE;
++                    if (bazelAlive) {
++                        try {
++                            Path hashes = impacts.hashes(worktree, scratch.resolve("hashes-" + commit.shortSha() + ".json"));
++                            if (previousHashes != null) {
++                                Set<String> impacted = impacts.impactedTargets(previousHashes, hashes);
++                                bazel = impacted.contains(o.bazelTarget()) ? BazelStatus.IMPACTED : BazelStatus.CLEAN;
++                            }
++                            previousHashes = hashes;
++                        } catch (ProviderException e) {
++                            err.println("trace: bazel-diff unavailable: " + e.getMessage());
++                            bazelAlive = false;
++                            bazel = BazelStatus.NOT_AVAILABLE;
++                        }
++                    } else if (impacts != null) {
+                         bazel = BazelStatus.NOT_AVAILABLE;
+                     }
+-                } else if (impacts != null) {
+-                    bazel = BazelStatus.NOT_AVAILABLE;
+-                }
+-                rows.add(KeyComparator.verdict(commit, previousGood, key, error, bazel));
+-                if (key.isPresent()) {
+-                    previousGood = key;
+-                }
+-                if (!o.keepWorktrees()) {
+-                    pool.release(worktree);
++                    rows.add(KeyComparator.verdict(commit, previousGood, key, error, bazel));
++                    if (key.isPresent()) {
++                        previousGood = key;
++                    }
++                    if (!o.keepWorktrees()) {
++                        pool.release(worktree);
++                    }
+                 }
+             }
+-        }
+-        if (!o.keepWorktrees()) {
+-            deleteScratchFiles();
++        } finally {
++            // Runs whether the walk finished or a checkout/pool failure aborted it partway through: a killed
++            // walk must leave no more behind than a killed run would (docs/tracer.md's "Range walk" promise).
++            if (!o.keepWorktrees()) {
++                deleteScratchFiles();
++            }
+         }
+         String tsv = TableRenderer.renderTsv(rows);
+         if (o.tsv()) {
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index 40d3476..912baac 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -70,7 +70,12 @@ class CliTest {
+     };
+ 
+     int run(KeyProvider k, ImpactProvider i, String... args) throws UsageException {
+-        return new Cli(git, repo, scratch, k, i).run(Cli.Options.parse(args),
++        return run(git, k, i, args);
++    }
++
++    /** For tests that need a worktree-level failure the shared {@code git} fixture's catch-all can't script. */
++    int run(ProcessRunner runner, KeyProvider k, ImpactProvider i, String... args) throws UsageException {
++        return new Cli(runner, repo, scratch, k, i).run(Cli.Options.parse(args),
+                 new PrintStream(out, true, StandardCharsets.UTF_8), new PrintStream(err, true, StandardCharsets.UTF_8));
+     }
+ 
+@@ -274,6 +279,30 @@ class CliTest {
+         assertFalse(err().contains("\tat "), "no stack trace printed: " + err());
+     }
+ 
++    @Test void hashFilesAreRemovedWhenCheckoutFailsMidWalk() throws Exception {
++        FakeProcessRunner failingThirdCheckout = new FakeProcessRunner()
++                .on("git rev-parse --verify --quiet base^{commit}", 0, A + "\n", "")
++                .on("git rev-parse --verify --quiet tip^{commit}", 0, C + "\n", "")
++                .on("git log -1 --format=%H%x1f%P%x1f%s " + A, 0, A + "\u001f\u001fbaseline\n", "")
++                .on("git log --reverse --first-parent --format=%H%x1f%P%x1f%s " + A + ".." + C, 0,
++                        B + "\u001f" + A + "\u001fcore: add shout\n" + C + "\u001f" + B + "\u001fdocs only\n", "")
++                .on("git worktree add --detach " + scratch.resolve("wt-ccccccc"), 1, "", "fatal: boom")
++                .on("git worktree", 0, "", "");
++
++        int code = run(failingThirdCheckout, keys, impacts, "appA", "--from", "base", "--to", "tip");
++
++        assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
++        assertTrue(err().contains("boom"), err());
++        try (Stream<Path> left = Files.list(scratch)) {
++            assertTrue(left.noneMatch(p -> p.getFileName().toString().startsWith("hashes-")),
++                    "hash files for the commits processed before the failure must still be cleaned up");
++        }
++
++        // The lock must have been released despite the failure above, so a plain second run succeeds.
++        int second = run(keys, impacts, "appA", "--from", "base", "--to", "tip");
++        assertEquals(Cli.EXIT_CHANGED, second, err());
++    }
++
+     @Test void staleScratchFilesAreSweptAndNewOnesRemoved() throws Exception {
+         Files.createDirectories(scratch);
+         Path stale = Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 3b68913..623967a 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -119,7 +119,8 @@ passing one through.
+ ## Range walk
+ Worktrees and bazel-diff hash files live under one fixed root, `$TMPDIR/gradle-tracer/`. At start the tracer prunes git's
+ worktree list, deletes stale `wt-*` directories and stale `hashes-*.json`/`*.impacted.txt` files left by a killed run, and
+-reports how many it removed; at the end it removes what it created unless `--keep-worktrees`. If bazel-diff fails once, the
++reports how many it removed; at the end — including when a checkout or provider failure aborts the walk partway
++through — it removes what it created unless `--keep-worktrees`. If bazel-diff fails once, the
+ rest of the Bazel column is `n/a` and a warning goes to stderr. A commit whose Gradle run fails is `BUILD-FAILED`; the next
+ commit is compared against the last good key.
+ 
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/tracer.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+fix(tracer): clean up hash files when the walk aborts
+
+deleteScratchFiles() at the end of range() ran only after the
+WorktreePool try-with-resources block, not in a finally, so a
+checkout failure partway through a range left that run's hash files
+behind, contradicting the documented "removes what it created"
+promise. Move the cleanup into a finally so it runs either way.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: 225 tests (224 going into this commit, plus
+`hashFilesAreRemovedWhenCheckoutFailsMidWalk`).
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**
