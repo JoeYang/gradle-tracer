@@ -264,6 +264,16 @@ class CliTest {
         assertTrue(Files.exists(lock), ".lock must never be swept, by WorktreePool or Cli.deleteScratchFiles");
     }
 
+    @Test void unexpectedRuntimeExceptionIsReportedAsExit2() throws Exception {
+        KeyProvider broken = (wt, task) -> { throw new java.io.UncheckedIOException(new IOException("disk gone")); };
+
+        int code = run(broken, impacts, "appA", "--from", "base", "--to", "tip");
+
+        assertEquals(Cli.EXIT_TOOL_FAILURE, code);
+        assertTrue(err().contains("internal error") && err().contains("UncheckedIOException") && err().contains("disk gone"), err());
+        assertFalse(err().contains("\tat "), "no stack trace printed: " + err());
+    }
+
     @Test void staleScratchFilesAreSweptAndNewOnesRemoved() throws Exception {
         Files.createDirectories(scratch);
         Path stale = Files.writeString(scratch.resolve("hashes-stale.json"), "{}");

@@ -124,7 +124,10 @@ rest of the Bazel column is `n/a` and a warning goes to stderr. A commit whose G
 commit is compared against the last good key.
 
 Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed (some row is
-`BUILD-FAILED`), 3 at least one row is `CHANGED` — and 2 wins over 3 when both apply in the same range.
+`BUILD-FAILED`, or an unexpected runtime exception — e.g. `UncheckedIOException` from a provider or from a
+filesystem call — caught in `Cli.run` and reported as "internal error: `<class>`: `<message>`" rather than
+escaping as a raw stack trace), 3 at least one row is `CHANGED` — and 2 wins over 3 when both apply in the same
+range.
 
 `Cli.run` does its work in a fixed order: the app name is checked against `app/<app>` first (a usage error here
 needs no scratch root or git at all); then, for a range, `--tsv-out <file>` is pre-checked (parent directory

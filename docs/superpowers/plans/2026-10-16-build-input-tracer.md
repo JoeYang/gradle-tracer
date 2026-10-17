@@ -8143,6 +8143,103 @@ Run `./gradlew :tools:tracer:test`: still 223 (docs-only commit).
 
 ---
 
+#### Commit K — `fix(tracer): report unexpected runtime exceptions as exit 2`
+
+Why: a provider or a filesystem call can throw an unchecked exception `Cli.run` wasn't catching — quality
+review confirmed the trigger experimentally: `WorktreePool.deleteRecursively`'s `Files.walk` throws
+`UncheckedIOException` on an unreadable subdirectory, and `Cli.deleteScratchFiles`'s `Files.list(...).toList()`
+can throw the same way. Previously that escaped `run` as a raw stack trace with whatever exit code the JVM
+happened to pick, instead of the tool's own exit-2 convention.
+
+Fix: a final `catch (RuntimeException e)` in `run`, after the existing `UsageException`/`ProviderException`
+catches, reports it as `trace: internal error: <class>: <message>` and returns `EXIT_TOOL_FAILURE` — no stack
+trace printed.
+
+```diff
+diff --git a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+index 474aa31..5d1f69c 100644
+--- a/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
++++ b/tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java
+@@ -224,6 +224,12 @@ public final class Cli {
+         } catch (ProviderException e) {
+             err.println("trace: " + e.getMessage());
+             return EXIT_TOOL_FAILURE;
++        } catch (RuntimeException e) {
++            // A provider or a filesystem call can throw an unchecked exception we didn't anticipate (e.g.
++            // UncheckedIOException from Files.walk on an unreadable subdirectory); report it as a tool failure
++            // instead of letting it escape as a raw stack trace with the JVM's own non-zero exit code.
++            err.println("trace: internal error: " + e.getClass().getName() + ": " + e.getMessage());
++            return EXIT_TOOL_FAILURE;
+         }
+     }
+ 
+```
+
+```diff
+diff --git a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+index 8920e48..40d3476 100644
+--- a/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
++++ b/tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java
+@@ -264,6 +264,16 @@ class CliTest {
+         assertTrue(Files.exists(lock), ".lock must never be swept, by WorktreePool or Cli.deleteScratchFiles");
+     }
+ 
++    @Test void unexpectedRuntimeExceptionIsReportedAsExit2() throws Exception {
++        KeyProvider broken = (wt, task) -> { throw new java.io.UncheckedIOException(new IOException("disk gone")); };
++
++        int code = run(broken, impacts, "appA", "--from", "base", "--to", "tip");
++
++        assertEquals(Cli.EXIT_TOOL_FAILURE, code);
++        assertTrue(err().contains("internal error") && err().contains("UncheckedIOException") && err().contains("disk gone"), err());
++        assertFalse(err().contains("\tat "), "no stack trace printed: " + err());
++    }
++
+     @Test void staleScratchFilesAreSweptAndNewOnesRemoved() throws Exception {
+         Files.createDirectories(scratch);
+         Path stale = Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
+```
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 0ff48ea..3b68913 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -124,7 +124,10 @@ rest of the Bazel column is `n/a` and a warning goes to stderr. A commit whose G
+ commit is compared against the last good key.
+ 
+ Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed (some row is
+-`BUILD-FAILED`), 3 at least one row is `CHANGED` — and 2 wins over 3 when both apply in the same range.
++`BUILD-FAILED`, or an unexpected runtime exception — e.g. `UncheckedIOException` from a provider or from a
++filesystem call — caught in `Cli.run` and reported as "internal error: `<class>`: `<message>`" rather than
++escaping as a raw stack trace), 3 at least one row is `CHANGED` — and 2 wins over 3 when both apply in the same
++range.
+ 
+ `Cli.run` does its work in a fixed order: the app name is checked against `app/<app>` first (a usage error here
+ needs no scratch root or git at all); then, for a range, `--tsv-out <file>` is pre-checked (parent directory
+```
+
+```bash
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/CliTest.java \
+        docs/tracer.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+fix(tracer): report unexpected runtime exceptions as exit 2
+
+WorktreePool.deleteRecursively's Files.walk throws UncheckedIOException
+on an unreadable subdirectory, and Cli.deleteScratchFiles' Files.list
+can throw the same way; neither is caught, so either escapes run() as
+a raw stack trace with an arbitrary exit code. Catch RuntimeException
+as a last resort and report it the same way every other tool failure
+is reported: exit 2, one line on stderr, no stack trace.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: 224 tests (223 going into this commit, plus
+`unexpectedRuntimeExceptionIsReportedAsExit2`).
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**

@@ -224,6 +224,12 @@ public final class Cli {
         } catch (ProviderException e) {
             err.println("trace: " + e.getMessage());
             return EXIT_TOOL_FAILURE;
+        } catch (RuntimeException e) {
+            // A provider or a filesystem call can throw an unchecked exception we didn't anticipate (e.g.
+            // UncheckedIOException from Files.walk on an unreadable subdirectory); report it as a tool failure
+            // instead of letting it escape as a raw stack trace with the JVM's own non-zero exit code.
+            err.println("trace: internal error: " + e.getClass().getName() + ": " + e.getMessage());
+            return EXIT_TOOL_FAILURE;
         }
     }
 
