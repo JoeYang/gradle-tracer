@@ -10376,6 +10376,92 @@ Run `./gradlew :tools:tracer:test`: 241 tests (240 going into this commit, plus
 
 ---
 
+#### Commit Z — `docs(tracer): make the exit-code and range-walk docs consistent`
+
+Three accuracy fixes, docs-only, found by re-review:
+
+a. `tracer.md:21-24`'s top-level "Exit codes" section listed only two exit-2 causes ("some row is
+   BUILD-FAILED, or --at's checkout/key lookup failed"), stale since Commits K–Y added five more. Rather than
+   duplicate the full list in two places, it now points at "Range walk" below, which has it.
+
+b. The exit-2 list's `--tsv-out` parenthetical cross-referenced "'The scratch root must be private' and the
+   TSV atomic-write note above" — wrong on both counts: the scratch-root-privacy section has nothing to do
+   with `--tsv-out`, and the atomic-write note is below this paragraph, not above it. Fixed to point at the one
+   relevant section, correctly placed.
+
+c. "a checkout or *provider* failure aborts the walk partway through" was wrong: a key-provider failure becomes
+   that commit's `BUILD-FAILED` row and the walk continues; a bazel-diff failure just degrades the Bazel column
+   to `n/a`. Neither aborts anything. Reworded to say exactly what does abort the walk (a checkout failure, an
+   interrupt, an unexpected runtime exception) and name the two provider-failure cases that explicitly don't.
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index ee3b88e..edd4728 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -19,9 +19,9 @@ composed from. On a usage error it exits 1 with the usage text. The `./trace` wr
+ | `UsageException` → exit 1; `ProviderException` → exit 2 | error classes |
+ 
+ ## Exit codes
+-0 no change in range (or `--at` succeeded) · 1 usage error · 2 a tool failed (some row is BUILD-FAILED, or
+-`--at`'s checkout/key lookup failed) · 3 at least one CHANGED. 2 wins over 3 when a range has both a
+-BUILD-FAILED row and a CHANGED row.
++0 no change in range (or `--at` succeeded) · 1 usage error · 2 a tool failed · 3 at least one CHANGED. 2 wins
++over 3 when a range has both a BUILD-FAILED row and a CHANGED row. See "Range walk" below for the full list of
++what counts as a 2 — it's grown well past "some row is BUILD-FAILED" since this was first written.
+ 
+ ## Gradle oracle
+ `GradleKeyProvider` runs `<worktree>/gradlew --console=plain --no-parallel --build-cache -Dorg.gradle.caching.debug=true <task>`
+@@ -123,17 +123,19 @@ Worktrees and bazel-diff hash files live under one fixed root, `$TMPDIR/gradle-t
+ deletes stale scratch files left by a killed run — any file whose name starts with `hashes-` (any extension,
+ not just `.json`) or ends with `.impacted.txt` — and reports how many; only then does `WorktreePool` delete
+ stale `wt-*` directories and prune git's worktree list, in that order (hash files first, since they're Cli's own
+-and cheap to check; worktree directories and git's own bookkeeping after). At the end — including when a
+-checkout or provider failure aborts the walk partway through — it removes what it created unless
+-`--keep-worktrees`, which keeps the worktrees themselves (their `git worktree` registrations too) and every
+-hash file this run wrote. If bazel-diff fails once, the rest of the Bazel column is `n/a` and exactly one
+-warning goes to stderr for the whole run, not one per remaining commit. A commit whose Gradle run fails is
+-`BUILD-FAILED`; the next commit is compared against the last good key.
++and cheap to check; worktree directories and git's own bookkeeping after). At the end — including when the
++walk is aborted partway through — it removes what it created unless `--keep-worktrees`, which keeps the
++worktrees themselves (their `git worktree` registrations too) and every hash file this run wrote. What actually
++aborts the walk: a checkout failure (`WorktreePool.checkout`, e.g. `git worktree add` failing), the thread being
++interrupted (checked at the top of every iteration and after a failed key lookup), or an unexpected runtime
++exception. A key-provider failure does *not* abort it — it becomes that commit's `BUILD-FAILED` row, and the
++next commit is compared against the last good key; nor does a bazel-diff failure — the rest of the Bazel column
++just degrades to `n/a`, with exactly one warning on stderr for the whole run, not one per remaining commit.
+ 
+ Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed — any of: some row is
+ `BUILD-FAILED`; a `git` failure outside revision resolution (e.g. a `git worktree add` that fails mid-walk); an
+ IO failure creating or checking the scratch root, or opening `.lock`; a `--tsv-out` write failure (the previous
+-file, if any, is left untouched — see "The scratch root must be private" and the TSV atomic-write note above);
++file, if any, is left untouched — see the atomic-write note below, in "`Cli.run` does its work in a fixed order");
+ an unexpected runtime exception — e.g. `UncheckedIOException` from a provider or from a filesystem call —
+ caught in `Cli.run` and reported as "internal error: `<class>`: `<message>`" rather than escaping as a raw
+ stack trace; or the thread being interrupted mid-walk, reported as "interrupted" and aborting the range
+```
+
+```bash
+git add docs/tracer.md \
+        docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+docs(tracer): make the exit-code and range-walk docs consistent
+
+The top-level Exit codes section listed only two of what are now
+seven exit-2 causes; point at the full list instead of duplicating
+it. The --tsv-out exit-2 note cross-referenced the wrong section and
+pointed "above" at something that's actually below. "A checkout or
+provider failure aborts the walk" was also wrong — a key-provider or
+bazel-diff failure doesn't abort anything, it becomes a BUILD-FAILED
+row or degrades the Bazel column. Say exactly what does abort it.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: still 241 (docs-only commit). Run `bazel test //...` and
+`git diff --exit-code MODULE.bazel.lock` to confirm nothing else drifted.
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**
