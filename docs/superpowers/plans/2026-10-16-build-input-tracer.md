@@ -5532,7 +5532,7 @@ These tests run real processes (`sh`, `sleep`, `pwd`); Linux is assumed.
 
 - [ ] **Step 1: Write the failing tests**
 
-`tools/tracer/src/test/java/io/joeyang/tracer/cli/DefaultProcessRunnerTest.java`:
+`tools/tracer/src/test/java/io/joeyang/tracer/cli/DefaultProcessRunnerTest.java` (as amended by the Task 11 quality-review fixes):
 ```java
 package io.joeyang.tracer.cli;
 
@@ -5583,6 +5583,58 @@ class DefaultProcessRunnerTest {
         assertEquals(3_000_000, r.stdout().length());
         assertEquals("e\n", r.stderr());
     }
+
+    @Test void nullCwdIsRejected() {
+        assertThrows(NullPointerException.class,
+                () -> runner.run(null, Duration.ofSeconds(1), List.of("pwd")));
+    }
+
+    @Test void nullTimeoutIsRejected() {
+        assertThrows(NullPointerException.class,
+                () -> runner.run(tmp, null, List.of("pwd")));
+    }
+
+    @Test void nullCommandIsRejected() {
+        assertThrows(NullPointerException.class,
+                () -> runner.run(tmp, Duration.ofSeconds(1), null));
+    }
+
+    @Test void emptyCommandIsRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> runner.run(tmp, Duration.ofSeconds(1), List.of()));
+    }
+
+    @Test void nonPositiveTimeoutIsRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> runner.run(tmp, Duration.ZERO, List.of("pwd")));
+        assertThrows(IllegalArgumentException.class,
+                () -> runner.run(tmp, Duration.ofSeconds(-1), List.of("pwd")));
+    }
+
+    @Test void aBackgroundOrphanDoesNotExtendTheWaitPastTheDeadline() {
+        long start = System.nanoTime();
+        ProcessException e = assertThrows(ProcessException.class,
+                () -> runner.run(tmp, Duration.ofSeconds(2),
+                        List.of("sh", "-c", "sleep 4 & sleep 0.5; echo hi")));
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        assertTrue(e.getMessage().contains("did not finish"), e.getMessage());
+        assertTrue(elapsedMs < 3_500,
+                "took " + elapsedMs + "ms; a backgrounded grandchild holding the pipe open must not extend the wait to 4s");
+    }
+
+    @Test void hugeTimeoutDoesNotOverflow() throws Exception {
+        var r = runner.run(tmp, Duration.ofSeconds(Long.MAX_VALUE), List.of("pwd"));
+        assertEquals(0, r.exitCode());
+    }
+
+    @Test void commandReadingStdinReturnsPromptlyBecauseStdinIsClosed() throws Exception {
+        long start = System.nanoTime();
+        var r = runner.run(tmp, Duration.ofSeconds(5), List.of("cat"));
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        assertEquals(0, r.exitCode());
+        assertEquals("", r.stdout());
+        assertTrue(elapsedMs < 2_000, "took " + elapsedMs + "ms; cat must see immediate EOF on stdin, not hang");
+    }
 }
 ```
 
@@ -5593,27 +5645,47 @@ Expected: FAIL at compile, `cannot find symbol: class DefaultProcessRunner`.
 
 - [ ] **Step 3: Implement**
 
-`tools/tracer/src/main/java/io/joeyang/tracer/cli/DefaultProcessRunner.java`:
+`tools/tracer/src/main/java/io/joeyang/tracer/cli/DefaultProcessRunner.java` (as amended by the Task 11 quality-review fixes — see below for why):
 ```java
 package io.joeyang.tracer.cli;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.DateTimeException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /** Runs commands with {@link ProcessBuilder}; streams are drained concurrently so large output cannot deadlock. */
 public final class DefaultProcessRunner implements ProcessRunner {
 
     @Override
     public Result run(Path cwd, Duration timeout, List<String> command) throws ProcessException {
+        Objects.requireNonNull(cwd, "cwd must not be null");
+        Objects.requireNonNull(timeout, "timeout must not be null");
+        Objects.requireNonNull(command, "command must not be null");
+        if (command.isEmpty()) {
+            throw new IllegalArgumentException("command must not be empty");
+        }
+        if (timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be positive, got " + timeout);
+        }
+
+        Instant deadline = safeDeadline(timeout);
         Process process;
         try {
-            process = new ProcessBuilder(command).directory(cwd.toFile()).start();
+            process = new ProcessBuilder(command)
+                    .directory(cwd.toFile())
+                    .redirectInput(ProcessBuilder.Redirect.from(new File("/dev/null")))
+                    .start();
         } catch (IOException e) {
             throw ProcessException.cannotStart(command, e);
         }
@@ -5621,7 +5693,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
         CompletableFuture<String> stderr = drain(process.getErrorStream());
         boolean finished;
         try {
-            finished = process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            finished = process.waitFor(safeMillis(timeout), TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             killTree(process);
             Thread.currentThread().interrupt();
@@ -5631,7 +5703,55 @@ public final class DefaultProcessRunner implements ProcessRunner {
             killTree(process);
             throw ProcessException.timeout(command, timeout);
         }
-        return new Result(process.exitValue(), stdout.join(), stderr.join());
+
+        String out;
+        String err;
+        try {
+            Duration remaining = remainingUntil(deadline);
+            CompletableFuture.allOf(stdout, stderr).get(safeMillis(remaining), TimeUnit.MILLISECONDS);
+            out = stdout.join();
+            err = stderr.join();
+        } catch (TimeoutException e) {
+            killTree(process);
+            throw ProcessException.timeout(command, timeout);
+        } catch (ExecutionException e) {
+            // drain() never completes exceptionally today; kept to satisfy Future#get's checked signature.
+            killTree(process);
+            throw new IllegalStateException("unexpected drain failure", e);
+        } catch (InterruptedException e) {
+            killTree(process);
+            Thread.currentThread().interrupt();
+            throw ProcessException.interrupted(command);
+        }
+        return new Result(process.exitValue(), out, err);
+    }
+
+    /** The budget still left before {@code deadline}; never negative, so a {@code get} call never blocks past it. */
+    private static Duration remainingUntil(Instant deadline) {
+        try {
+            Duration remaining = Duration.between(Instant.now(), deadline);
+            return remaining.isNegative() ? Duration.ZERO : remaining;
+        } catch (ArithmeticException overflow) {
+            return Duration.ofMillis(Long.MAX_VALUE);
+        }
+    }
+
+    /** {@code Instant.now().plus(timeout)}, clamped instead of overflowing for an absurdly large timeout. */
+    private static Instant safeDeadline(Duration timeout) {
+        try {
+            return Instant.now().plus(timeout);
+        } catch (ArithmeticException | DateTimeException overflow) {
+            return Instant.MAX;
+        }
+    }
+
+    /** {@code duration.toMillis()}, clamped instead of overflowing for an absurdly large duration. */
+    private static long safeMillis(Duration duration) {
+        try {
+            return duration.toMillis();
+        } catch (ArithmeticException overflow) {
+            return Long.MAX_VALUE;
+        }
     }
 
     private static void killTree(Process process) {
@@ -5651,10 +5771,12 @@ public final class DefaultProcessRunner implements ProcessRunner {
 }
 ```
 
+(The original implementation shown in the Step 1 draft above used `process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)` and `stdout.join()`/`stderr.join()` unconditionally; the Task 11 quality-review rounds hardened it with input validation, overflow-safe millisecond conversion, a single deadline shared across the wait and the drain so a backgrounded grandchild holding a pipe open cannot extend the call past the caller's timeout, and `/dev/null` stdin so a command that reads stdin cannot hang. See the Task 11 quality-review commits for the full rationale.)
+
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 139 tests at this point in the sequence (bumped from 124 by the Task 10 quality-review rounds' 15 added tests); the timeout test finishes in well under a second.
+Expected (after the Task 11 quality-review fixes land): `BUILD SUCCESSFUL`; 147 tests at this point in the sequence (139 after the original Task 11 implementation, plus 8 more from the first quality-review fix commit: input validation, overflow-safe duration handling, and the deadline-bounded drain); the timeout test finishes in well under a second.
 
 - [ ] **Step 5: Commit**
 
@@ -5875,7 +5997,7 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 151 tests at this point in the sequence (bumped from 136 by the Task 10 quality-review rounds' 15 added tests; the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 159 tests at this point in the sequence (bumped from 136 by the Task 10 quality-review rounds' 15 added tests, plus 8 more carried forward from the first Task 11 quality-review fix commit; the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -6382,7 +6504,7 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 162 tests at this point in the sequence (bumped from 147 by the Task 10 quality-review rounds' 15 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 170 tests at this point in the sequence (bumped from 147 by the Task 10 quality-review rounds' 15 added tests, plus 8 more carried forward from the first Task 11 quality-review fix commit). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 

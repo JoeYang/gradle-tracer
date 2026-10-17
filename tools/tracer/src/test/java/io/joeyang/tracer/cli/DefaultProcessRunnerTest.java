@@ -47,4 +47,56 @@ class DefaultProcessRunnerTest {
         assertEquals(3_000_000, r.stdout().length());
         assertEquals("e\n", r.stderr());
     }
+
+    @Test void nullCwdIsRejected() {
+        assertThrows(NullPointerException.class,
+                () -> runner.run(null, Duration.ofSeconds(1), List.of("pwd")));
+    }
+
+    @Test void nullTimeoutIsRejected() {
+        assertThrows(NullPointerException.class,
+                () -> runner.run(tmp, null, List.of("pwd")));
+    }
+
+    @Test void nullCommandIsRejected() {
+        assertThrows(NullPointerException.class,
+                () -> runner.run(tmp, Duration.ofSeconds(1), null));
+    }
+
+    @Test void emptyCommandIsRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> runner.run(tmp, Duration.ofSeconds(1), List.of()));
+    }
+
+    @Test void nonPositiveTimeoutIsRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> runner.run(tmp, Duration.ZERO, List.of("pwd")));
+        assertThrows(IllegalArgumentException.class,
+                () -> runner.run(tmp, Duration.ofSeconds(-1), List.of("pwd")));
+    }
+
+    @Test void aBackgroundOrphanDoesNotExtendTheWaitPastTheDeadline() {
+        long start = System.nanoTime();
+        ProcessException e = assertThrows(ProcessException.class,
+                () -> runner.run(tmp, Duration.ofSeconds(2),
+                        List.of("sh", "-c", "sleep 4 & sleep 0.5; echo hi")));
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        assertTrue(e.getMessage().contains("did not finish"), e.getMessage());
+        assertTrue(elapsedMs < 3_500,
+                "took " + elapsedMs + "ms; a backgrounded grandchild holding the pipe open must not extend the wait to 4s");
+    }
+
+    @Test void hugeTimeoutDoesNotOverflow() throws Exception {
+        var r = runner.run(tmp, Duration.ofSeconds(Long.MAX_VALUE), List.of("pwd"));
+        assertEquals(0, r.exitCode());
+    }
+
+    @Test void commandReadingStdinReturnsPromptlyBecauseStdinIsClosed() throws Exception {
+        long start = System.nanoTime();
+        var r = runner.run(tmp, Duration.ofSeconds(5), List.of("cat"));
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        assertEquals(0, r.exitCode());
+        assertEquals("", r.stdout());
+        assertTrue(elapsedMs < 2_000, "took " + elapsedMs + "ms; cat must see immediate EOF on stdin, not hang");
+    }
 }
