@@ -5,7 +5,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -60,7 +62,7 @@ class WorktreePoolTest {
     // hook; registering the hook unconditionally (keep or not) would delete them on an interrupted run anyway.
     @Test void keepWorktreesRegistersNoShutdownHook() throws Exception {
         List<Thread> registered = new ArrayList<>();
-        try (WorktreePool pool = new WorktreePool(happyGit(), repo, tmp.resolve("wts"), true, registered::add)) {
+        try (WorktreePool pool = new WorktreePool(happyGit(), repo, tmp.resolve("wts"), true, System.err, registered::add)) {
             pool.checkout(C1);
         }
         assertTrue(registered.isEmpty(), "keep=true must not register a shutdown hook: " + registered);
@@ -68,10 +70,66 @@ class WorktreePoolTest {
 
     @Test void notKeepingWorktreesRegistersAShutdownHook() throws Exception {
         List<Thread> registered = new ArrayList<>();
-        try (WorktreePool pool = new WorktreePool(happyGit(), repo, tmp.resolve("wts"), false, registered::add)) {
+        try (WorktreePool pool = new WorktreePool(happyGit(), repo, tmp.resolve("wts"), false, System.err, registered::add)) {
             pool.checkout(C1);
         }
         assertEquals(1, registered.size());
+    }
+
+    @Test void pruneFailureIsAProviderError() {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git worktree prune", 1, "", "fatal: prune failed\n");
+
+        ProviderException e = assertThrows(ProviderException.class,
+                () -> new WorktreePool(git, repo, tmp.resolve("wts"), false));
+        assertTrue(e.getMessage().contains("prune failed"), e.getMessage());
+    }
+
+    @Test void releaseOfAnUntrackedPathIsRejected() throws Exception {
+        try (WorktreePool pool = new WorktreePool(happyGit(), repo, tmp.resolve("wts"), false)) {
+            Path untracked = tmp.resolve("wts").resolve("wt-9999999");
+            assertThrows(IllegalArgumentException.class, () -> pool.release(untracked));
+        }
+    }
+
+    @Test void worktreeOperationsUseTheirOwnTwoMinuteTimeout() throws Exception {
+        FakeProcessRunner git = happyGit();
+        try (WorktreePool pool = new WorktreePool(git, repo, tmp.resolve("wts"), false)) {
+            pool.checkout(C1);
+        }
+        assertTrue(!git.timeouts.isEmpty() && git.timeouts.stream().allMatch(t -> t.equals(Duration.ofMinutes(2))),
+                git.timeouts.toString());
+    }
+
+    // A failed removal must be visible, not silently swallowed: the warnings stream is injected (rather than
+    // always System.err) exactly so a test can see it without capturing the real stream.
+    @Test void removeFailureWarningNamesTheDirAndReason() throws Exception {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git worktree prune", 0, "", "")
+                .on("git worktree add --detach", 0, "", "")
+                .on("git worktree remove --force", 1, "", "fatal: not a working tree\n");
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        PrintStream warnings = new PrintStream(captured, true, StandardCharsets.UTF_8);
+        Path dir;
+        try (WorktreePool pool = new WorktreePool(git, repo, tmp.resolve("wts"), false, warnings, Runtime.getRuntime()::addShutdownHook)) {
+            dir = pool.checkout(C1);
+        }
+        String output = captured.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains(dir.toString()) && output.contains("not a working tree"), output);
+    }
+
+    @Test void sweepIgnoresEntriesThatDoNotLookLikeAWorktreeDirectory() throws Exception {
+        Path root = tmp.resolve("wts");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("wt-README.txt"), "not a dir, even though the name matches the prefix");
+        Files.createDirectories(root.resolve("wt-tooshort")); // dir, but not 7 hex chars
+        Files.createDirectories(root.resolve("other"));       // dir, wrong prefix entirely
+
+        try (WorktreePool pool = new WorktreePool(happyGit(), repo, root, false)) {
+            assertTrue(Files.exists(root.resolve("wt-README.txt")));
+            assertTrue(Files.exists(root.resolve("wt-tooshort")));
+            assertTrue(Files.exists(root.resolve("other")));
+        }
     }
 
     @Test void staleDirectoryIsDeletedBeforeAdd() throws Exception {

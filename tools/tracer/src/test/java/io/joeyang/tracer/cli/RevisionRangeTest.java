@@ -26,12 +26,48 @@ class RevisionRangeTest {
         assertEquals(repo, git.cwds.get(0));
     }
 
+    // Real git, under --quiet, exits 1 with no stderr for an unresolvable revision (verified against a real repo).
     @Test void unknownRevisionIsAUsageError() {
         FakeProcessRunner git = new FakeProcessRunner()
-                .on("git rev-parse --verify --quiet nope^{commit}", 128, "", "fatal: Needed a single revision\n");
+                .on("git rev-parse --verify --quiet nope^{commit}", 1, "", "");
 
         UsageException e = assertThrows(UsageException.class, () -> new RevisionRange(git, repo).resolve("nope", "HEAD"));
         assertTrue(e.getMessage().contains("nope"), e.getMessage());
+    }
+
+    // Exit 128 ("fatal: not a git repository", a broken worktree, ...) is a tool failure, not a usage error: the
+    // revision itself may well be fine, so this must not be reported (or exit-coded) as if it were unknown.
+    @Test void revParseFailureOtherThanExitOneIsAProviderError() {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git rev-parse --verify --quiet HEAD^{commit}", 128, "", "fatal: not a git repository\n");
+
+        ProviderException e = assertThrows(ProviderException.class, () -> new RevisionRange(git, repo).resolve("HEAD", "v2"));
+        assertTrue(e.getMessage().contains("not a git repository"), e.getMessage());
+    }
+
+    @Test void baseLogFailureIsAProviderError() {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git rev-parse --verify --quiet v1^{commit}", 0, A + "\n", "")
+                .on("git rev-parse --verify --quiet HEAD^{commit}", 0, C + "\n", "")
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + A, 128, "", "fatal: bad object\n");
+
+        ProviderException e = assertThrows(ProviderException.class, () -> new RevisionRange(git, repo).resolve("v1", "HEAD"));
+        assertTrue(e.getMessage().contains("bad object"), e.getMessage());
+    }
+
+    // String.lines() treats a bare \r as a line terminator too; a commit subject that happens to contain one must
+    // not be split into a spurious extra "row" that then fails to parse as sha\x1fparents\x1fsubject.
+    @Test void subjectContainingCarriageReturnIsNotSplitIntoAnExtraRow() throws Exception {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git rev-parse --verify --quiet v1^{commit}", 0, A + "\n", "")
+                .on("git rev-parse --verify --quiet HEAD^{commit}", 0, C + "\n", "")
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + A, 0, A + "\u001f\u001fbaseline\n", "")
+                .on("git log --reverse --first-parent --format=%H%x1f%P%x1f%s " + A + ".." + C, 0,
+                        B + "\u001f" + A + "\u001fsome\rtitle\n" + C + "\u001f" + B + "\u001ffinal\n", "");
+
+        List<Commit> commits = new RevisionRange(git, repo).resolve("v1", "HEAD");
+
+        assertEquals(List.of(new Commit(A, "baseline"), new Commit(B, "some\rtitle"), new Commit(C, "final")), commits);
     }
 
     @Test void emptyRangeIsAUsageError() {

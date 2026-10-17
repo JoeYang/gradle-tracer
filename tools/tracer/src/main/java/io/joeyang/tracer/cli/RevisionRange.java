@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /** Turns {@code --from/--to} into an ordered commit list: the base commit first, then every first-parent commit in from..to. */
 public final class RevisionRange {
@@ -16,15 +17,19 @@ public final class RevisionRange {
     private final Path repo;
 
     public RevisionRange(ProcessRunner git, Path repo) {
-        this.git = git;
-        this.repo = repo;
+        this.git = Objects.requireNonNull(git, "git must not be null");
+        this.repo = Objects.requireNonNull(repo, "repo must not be null");
     }
 
     public List<Commit> resolve(String from, String to) throws UsageException, ProviderException {
         String fromSha = revParse(from);
         String toSha = revParse(to);
         List<Commit> commits = new ArrayList<>();
-        commits.add(parse(run("git", "log", "-1", FORMAT, fromSha).stdout().strip()));
+        ProcessRunner.Result base = run("git", "log", "-1", FORMAT, fromSha);
+        if (!base.ok()) {
+            throw new ProviderException("git log failed for '" + fromSha + "': " + base.firstErrorLine());
+        }
+        commits.add(parse(base.stdout().strip()));
         ProcessRunner.Result log = run("git", "log", "--reverse", "--first-parent", FORMAT, fromSha + ".." + toSha);
         if (!log.ok()) {
             throw new ProviderException("git log failed: " + log.firstErrorLine());
@@ -33,7 +38,12 @@ public final class RevisionRange {
         // any other commit not actually on that line) would otherwise pair up with an unrelated predecessor and
         // silently compare the wrong build inputs.
         String previousSha = fromSha;
-        for (String line : log.stdout().lines().filter(l -> !l.isBlank()).toList()) {
+        // split("\n") only: String.lines() also treats a bare \r as a line terminator, and %s keeps whatever
+        // characters the subject has, including one, so a bare \r would otherwise split one row into two.
+        for (String line : log.stdout().split("\n", -1)) {
+            if (line.isBlank()) {
+                continue;
+            }
             Row row = parseRow(line);
             if (!row.firstParent().equals(previousSha)) {
                 throw new UsageException("commit '" + row.commit().sha() + "' is not a first-parent descendant of '"
@@ -50,8 +60,14 @@ public final class RevisionRange {
 
     private String revParse(String rev) throws UsageException, ProviderException {
         ProcessRunner.Result r = run("git", "rev-parse", "--verify", "--quiet", rev + "^{commit}");
-        if (!r.ok()) {
+        // Under --quiet, real git exits 1 (with no stderr) for a revision it simply cannot resolve. Any other
+        // non-zero exit (128 for "fatal: not a git repository", a detached/broken worktree, ...) is a tool
+        // failure unrelated to whether the revision itself is valid.
+        if (r.exitCode() == 1) {
             throw new UsageException("unknown revision '" + rev + "'");
+        }
+        if (!r.ok()) {
+            throw new ProviderException("git rev-parse failed for '" + rev + "': " + r.firstErrorLine());
         }
         return r.stdout().strip();
     }

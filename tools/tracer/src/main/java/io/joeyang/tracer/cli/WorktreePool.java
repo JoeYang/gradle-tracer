@@ -1,13 +1,19 @@
 package io.joeyang.tracer.cli;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -16,31 +22,40 @@ import java.util.stream.Stream;
  */
 public final class WorktreePool implements AutoCloseable {
     private static final Duration TIMEOUT = Duration.ofMinutes(2);
+    /** A worktree directory's own name: {@code wt-} plus a 7-hex-char short sha, nothing else. */
+    private static final Pattern WT_DIR_NAME = Pattern.compile("wt-[0-9a-f]{7}");
 
     private final ProcessRunner git;
     private final Path repo;
     private final Path root;
     private final boolean keep;
-    private final List<Path> created = new ArrayList<>();
+    private final PrintStream warnings;
+    private final Set<Path> created = Collections.synchronizedSet(new LinkedHashSet<>());
     /** Null when {@code keep} is true: Ctrl-C must leave kept worktrees exactly where {@code --keep-worktrees} put them. */
     private final Thread shutdownHook;
 
     public WorktreePool(ProcessRunner git, Path repo, Path root, boolean keep) throws ProviderException {
-        this(git, repo, root, keep, Runtime.getRuntime()::addShutdownHook);
+        this(git, repo, root, keep, System.err, Runtime.getRuntime()::addShutdownHook);
     }
 
-    /** Package-private seam: lets tests observe whether a shutdown hook was registered, without touching the real JVM hook list. */
-    WorktreePool(ProcessRunner git, Path repo, Path root, boolean keep, Consumer<Thread> hookRegistrar) throws ProviderException {
-        this.git = git;
-        this.repo = repo;
-        this.root = root;
+    /** Package-private seam: lets tests capture warnings and observe hook registration without touching real I/O or the JVM hook list. */
+    WorktreePool(ProcessRunner git, Path repo, Path root, boolean keep, PrintStream warnings, Consumer<Thread> hookRegistrar)
+            throws ProviderException {
+        this.git = Objects.requireNonNull(git, "git must not be null");
+        this.repo = Objects.requireNonNull(repo, "repo must not be null");
+        this.root = Objects.requireNonNull(root, "root must not be null");
         this.keep = keep;
+        this.warnings = Objects.requireNonNull(warnings, "warnings must not be null");
+        Objects.requireNonNull(hookRegistrar, "hookRegistrar must not be null");
         // Sweep before prune: 'git worktree prune' only forgets a worktree whose directory is already missing.
         // After --keep-worktrees or a killed run the directory is still there, so pruning first is a no-op; the
         // sweep then deletes the directory out from under git, leaving a dangling registration that makes the
         // next 'worktree add' of the same path fail with "is a missing but already registered worktree".
         sweepStaleDirectories();
-        run("git", "worktree", "prune");
+        ProcessRunner.Result pruneResult = run("git", "worktree", "prune");
+        if (!pruneResult.ok()) {
+            throw new ProviderException("git worktree prune failed: " + pruneResult.firstErrorLine());
+        }
         try {
             Files.createDirectories(root);
         } catch (IOException e) {
@@ -58,10 +73,12 @@ public final class WorktreePool implements AutoCloseable {
             return;
         }
         try (Stream<Path> entries = Files.list(root)) {
-            List<Path> stale = entries.filter(d -> d.getFileName().toString().startsWith("wt-")).toList();
+            List<Path> stale = entries.filter(Files::isDirectory)
+                    .filter(d -> WT_DIR_NAME.matcher(d.getFileName().toString()).matches())
+                    .toList();
             stale.forEach(WorktreePool::deleteRecursively);
             if (!stale.isEmpty()) {
-                System.err.println("trace: removed " + stale.size() + " stale worktree dir(s) under " + root);
+                warnings.println("trace: removed " + stale.size() + " stale worktree dir(s) under " + root);
             }
         } catch (IOException ignored) {
             // best effort; checkout() deletes a same-named leftover anyway
@@ -92,6 +109,9 @@ public final class WorktreePool implements AutoCloseable {
 
     /** Removes one worktree early to bound disk usage during long ranges. */
     public void release(Path dir) {
+        if (!created.contains(dir)) {
+            throw new IllegalArgumentException("not a tracked worktree: " + dir);
+        }
         remove(dir);
     }
 
@@ -110,16 +130,23 @@ public final class WorktreePool implements AutoCloseable {
     }
 
     private void removeAll() {
-        for (Path dir : new ArrayList<>(created)) {
+        List<Path> snapshot;
+        synchronized (created) {
+            snapshot = new ArrayList<>(created);
+        }
+        for (Path dir : snapshot) {
             remove(dir);
         }
     }
 
     private void remove(Path dir) {
         try {
-            git.run(repo, TIMEOUT, List.of("git", "worktree", "remove", "--force", dir.toString()));
+            ProcessRunner.Result r = git.run(repo, TIMEOUT, List.of("git", "worktree", "remove", "--force", dir.toString()));
+            if (!r.ok()) {
+                warnings.println("trace: could not remove worktree " + dir + " (" + r.firstErrorLine() + ")");
+            }
         } catch (ProcessException e) {
-            System.err.println("trace: could not remove worktree " + dir + " (" + e.getMessage() + ")");
+            warnings.println("trace: could not remove worktree " + dir + " (" + e.getMessage() + ")");
         }
         deleteRecursively(dir);
         created.remove(dir);

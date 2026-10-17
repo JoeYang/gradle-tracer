@@ -4130,12 +4130,48 @@ class RevisionRangeTest {
         assertEquals(repo, git.cwds.get(0));
     }
 
+    // Real git, under --quiet, exits 1 with no stderr for an unresolvable revision (verified against a real repo).
     @Test void unknownRevisionIsAUsageError() {
         FakeProcessRunner git = new FakeProcessRunner()
-                .on("git rev-parse --verify --quiet nope^{commit}", 128, "", "fatal: Needed a single revision\n");
+                .on("git rev-parse --verify --quiet nope^{commit}", 1, "", "");
 
         UsageException e = assertThrows(UsageException.class, () -> new RevisionRange(git, repo).resolve("nope", "HEAD"));
         assertTrue(e.getMessage().contains("nope"), e.getMessage());
+    }
+
+    // Exit 128 ("fatal: not a git repository", a broken worktree, ...) is a tool failure, not a usage error: the
+    // revision itself may well be fine, so this must not be reported (or exit-coded) as if it were unknown.
+    @Test void revParseFailureOtherThanExitOneIsAProviderError() {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git rev-parse --verify --quiet HEAD^{commit}", 128, "", "fatal: not a git repository\n");
+
+        ProviderException e = assertThrows(ProviderException.class, () -> new RevisionRange(git, repo).resolve("HEAD", "v2"));
+        assertTrue(e.getMessage().contains("not a git repository"), e.getMessage());
+    }
+
+    @Test void baseLogFailureIsAProviderError() {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git rev-parse --verify --quiet v1^{commit}", 0, A + "\n", "")
+                .on("git rev-parse --verify --quiet HEAD^{commit}", 0, C + "\n", "")
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + A, 128, "", "fatal: bad object\n");
+
+        ProviderException e = assertThrows(ProviderException.class, () -> new RevisionRange(git, repo).resolve("v1", "HEAD"));
+        assertTrue(e.getMessage().contains("bad object"), e.getMessage());
+    }
+
+    // String.lines() treats a bare \r as a line terminator too; a commit subject that happens to contain one must
+    // not be split into a spurious extra "row" that then fails to parse as sha\x1fparents\x1fsubject.
+    @Test void subjectContainingCarriageReturnIsNotSplitIntoAnExtraRow() throws Exception {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git rev-parse --verify --quiet v1^{commit}", 0, A + "\n", "")
+                .on("git rev-parse --verify --quiet HEAD^{commit}", 0, C + "\n", "")
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + A, 0, A + "\u001f\u001fbaseline\n", "")
+                .on("git log --reverse --first-parent --format=%H%x1f%P%x1f%s " + A + ".." + C, 0,
+                        B + "\u001f" + A + "\u001fsome\rtitle\n" + C + "\u001f" + B + "\u001ffinal\n", "");
+
+        List<Commit> commits = new RevisionRange(git, repo).resolve("v1", "HEAD");
+
+        assertEquals(List.of(new Commit(A, "baseline"), new Commit(B, "some\rtitle"), new Commit(C, "final")), commits);
     }
 
     @Test void emptyRangeIsAUsageError() {
@@ -4208,7 +4244,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -4263,7 +4301,7 @@ class WorktreePoolTest {
     // hook; registering the hook unconditionally (keep or not) would delete them on an interrupted run anyway.
     @Test void keepWorktreesRegistersNoShutdownHook() throws Exception {
         List<Thread> registered = new ArrayList<>();
-        try (WorktreePool pool = new WorktreePool(happyGit(), repo, tmp.resolve("wts"), true, registered::add)) {
+        try (WorktreePool pool = new WorktreePool(happyGit(), repo, tmp.resolve("wts"), true, System.err, registered::add)) {
             pool.checkout(C1);
         }
         assertTrue(registered.isEmpty(), "keep=true must not register a shutdown hook: " + registered);
@@ -4271,10 +4309,66 @@ class WorktreePoolTest {
 
     @Test void notKeepingWorktreesRegistersAShutdownHook() throws Exception {
         List<Thread> registered = new ArrayList<>();
-        try (WorktreePool pool = new WorktreePool(happyGit(), repo, tmp.resolve("wts"), false, registered::add)) {
+        try (WorktreePool pool = new WorktreePool(happyGit(), repo, tmp.resolve("wts"), false, System.err, registered::add)) {
             pool.checkout(C1);
         }
         assertEquals(1, registered.size());
+    }
+
+    @Test void pruneFailureIsAProviderError() {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git worktree prune", 1, "", "fatal: prune failed\n");
+
+        ProviderException e = assertThrows(ProviderException.class,
+                () -> new WorktreePool(git, repo, tmp.resolve("wts"), false));
+        assertTrue(e.getMessage().contains("prune failed"), e.getMessage());
+    }
+
+    @Test void releaseOfAnUntrackedPathIsRejected() throws Exception {
+        try (WorktreePool pool = new WorktreePool(happyGit(), repo, tmp.resolve("wts"), false)) {
+            Path untracked = tmp.resolve("wts").resolve("wt-9999999");
+            assertThrows(IllegalArgumentException.class, () -> pool.release(untracked));
+        }
+    }
+
+    @Test void worktreeOperationsUseTheirOwnTwoMinuteTimeout() throws Exception {
+        FakeProcessRunner git = happyGit();
+        try (WorktreePool pool = new WorktreePool(git, repo, tmp.resolve("wts"), false)) {
+            pool.checkout(C1);
+        }
+        assertTrue(!git.timeouts.isEmpty() && git.timeouts.stream().allMatch(t -> t.equals(Duration.ofMinutes(2))),
+                git.timeouts.toString());
+    }
+
+    // A failed removal must be visible, not silently swallowed: the warnings stream is injected (rather than
+    // always System.err) exactly so a test can see it without capturing the real stream.
+    @Test void removeFailureWarningNamesTheDirAndReason() throws Exception {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git worktree prune", 0, "", "")
+                .on("git worktree add --detach", 0, "", "")
+                .on("git worktree remove --force", 1, "", "fatal: not a working tree\n");
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        PrintStream warnings = new PrintStream(captured, true, StandardCharsets.UTF_8);
+        Path dir;
+        try (WorktreePool pool = new WorktreePool(git, repo, tmp.resolve("wts"), false, warnings, Runtime.getRuntime()::addShutdownHook)) {
+            dir = pool.checkout(C1);
+        }
+        String output = captured.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains(dir.toString()) && output.contains("not a working tree"), output);
+    }
+
+    @Test void sweepIgnoresEntriesThatDoNotLookLikeAWorktreeDirectory() throws Exception {
+        Path root = tmp.resolve("wts");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("wt-README.txt"), "not a dir, even though the name matches the prefix");
+        Files.createDirectories(root.resolve("wt-tooshort")); // dir, but not 7 hex chars
+        Files.createDirectories(root.resolve("other"));       // dir, wrong prefix entirely
+
+        try (WorktreePool pool = new WorktreePool(happyGit(), repo, root, false)) {
+            assertTrue(Files.exists(root.resolve("wt-README.txt")));
+            assertTrue(Files.exists(root.resolve("wt-tooshort")));
+            assertTrue(Files.exists(root.resolve("other")));
+        }
     }
 
     @Test void staleDirectoryIsDeletedBeforeAdd() throws Exception {
@@ -4426,6 +4520,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /** Turns {@code --from/--to} into an ordered commit list: the base commit first, then every first-parent commit in from..to. */
 public final class RevisionRange {
@@ -4438,15 +4533,19 @@ public final class RevisionRange {
     private final Path repo;
 
     public RevisionRange(ProcessRunner git, Path repo) {
-        this.git = git;
-        this.repo = repo;
+        this.git = Objects.requireNonNull(git, "git must not be null");
+        this.repo = Objects.requireNonNull(repo, "repo must not be null");
     }
 
     public List<Commit> resolve(String from, String to) throws UsageException, ProviderException {
         String fromSha = revParse(from);
         String toSha = revParse(to);
         List<Commit> commits = new ArrayList<>();
-        commits.add(parse(run("git", "log", "-1", FORMAT, fromSha).stdout().strip()));
+        ProcessRunner.Result base = run("git", "log", "-1", FORMAT, fromSha);
+        if (!base.ok()) {
+            throw new ProviderException("git log failed for '" + fromSha + "': " + base.firstErrorLine());
+        }
+        commits.add(parse(base.stdout().strip()));
         ProcessRunner.Result log = run("git", "log", "--reverse", "--first-parent", FORMAT, fromSha + ".." + toSha);
         if (!log.ok()) {
             throw new ProviderException("git log failed: " + log.firstErrorLine());
@@ -4455,7 +4554,12 @@ public final class RevisionRange {
         // any other commit not actually on that line) would otherwise pair up with an unrelated predecessor and
         // silently compare the wrong build inputs.
         String previousSha = fromSha;
-        for (String line : log.stdout().lines().filter(l -> !l.isBlank()).toList()) {
+        // split("\n") only: String.lines() also treats a bare \r as a line terminator, and %s keeps whatever
+        // characters the subject has, including one, so a bare \r would otherwise split one row into two.
+        for (String line : log.stdout().split("\n", -1)) {
+            if (line.isBlank()) {
+                continue;
+            }
             Row row = parseRow(line);
             if (!row.firstParent().equals(previousSha)) {
                 throw new UsageException("commit '" + row.commit().sha() + "' is not a first-parent descendant of '"
@@ -4472,8 +4576,14 @@ public final class RevisionRange {
 
     private String revParse(String rev) throws UsageException, ProviderException {
         ProcessRunner.Result r = run("git", "rev-parse", "--verify", "--quiet", rev + "^{commit}");
-        if (!r.ok()) {
+        // Under --quiet, real git exits 1 (with no stderr) for a revision it simply cannot resolve. Any other
+        // non-zero exit (128 for "fatal: not a git repository", a detached/broken worktree, ...) is a tool
+        // failure unrelated to whether the revision itself is valid.
+        if (r.exitCode() == 1) {
             throw new UsageException("unknown revision '" + rev + "'");
+        }
+        if (!r.ok()) {
+            throw new ProviderException("git rev-parse failed for '" + rev + "': " + r.firstErrorLine());
         }
         return r.stdout().strip();
     }
@@ -4517,13 +4627,19 @@ public final class RevisionRange {
 package io.joeyang.tracer.cli;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -4532,31 +4648,40 @@ import java.util.stream.Stream;
  */
 public final class WorktreePool implements AutoCloseable {
     private static final Duration TIMEOUT = Duration.ofMinutes(2);
+    /** A worktree directory's own name: {@code wt-} plus a 7-hex-char short sha, nothing else. */
+    private static final Pattern WT_DIR_NAME = Pattern.compile("wt-[0-9a-f]{7}");
 
     private final ProcessRunner git;
     private final Path repo;
     private final Path root;
     private final boolean keep;
-    private final List<Path> created = new ArrayList<>();
+    private final PrintStream warnings;
+    private final Set<Path> created = Collections.synchronizedSet(new LinkedHashSet<>());
     /** Null when {@code keep} is true: Ctrl-C must leave kept worktrees exactly where {@code --keep-worktrees} put them. */
     private final Thread shutdownHook;
 
     public WorktreePool(ProcessRunner git, Path repo, Path root, boolean keep) throws ProviderException {
-        this(git, repo, root, keep, Runtime.getRuntime()::addShutdownHook);
+        this(git, repo, root, keep, System.err, Runtime.getRuntime()::addShutdownHook);
     }
 
-    /** Package-private seam: lets tests observe whether a shutdown hook was registered, without touching the real JVM hook list. */
-    WorktreePool(ProcessRunner git, Path repo, Path root, boolean keep, Consumer<Thread> hookRegistrar) throws ProviderException {
-        this.git = git;
-        this.repo = repo;
-        this.root = root;
+    /** Package-private seam: lets tests capture warnings and observe hook registration without touching real I/O or the JVM hook list. */
+    WorktreePool(ProcessRunner git, Path repo, Path root, boolean keep, PrintStream warnings, Consumer<Thread> hookRegistrar)
+            throws ProviderException {
+        this.git = Objects.requireNonNull(git, "git must not be null");
+        this.repo = Objects.requireNonNull(repo, "repo must not be null");
+        this.root = Objects.requireNonNull(root, "root must not be null");
         this.keep = keep;
+        this.warnings = Objects.requireNonNull(warnings, "warnings must not be null");
+        Objects.requireNonNull(hookRegistrar, "hookRegistrar must not be null");
         // Sweep before prune: 'git worktree prune' only forgets a worktree whose directory is already missing.
         // After --keep-worktrees or a killed run the directory is still there, so pruning first is a no-op; the
         // sweep then deletes the directory out from under git, leaving a dangling registration that makes the
         // next 'worktree add' of the same path fail with "is a missing but already registered worktree".
         sweepStaleDirectories();
-        run("git", "worktree", "prune");
+        ProcessRunner.Result pruneResult = run("git", "worktree", "prune");
+        if (!pruneResult.ok()) {
+            throw new ProviderException("git worktree prune failed: " + pruneResult.firstErrorLine());
+        }
         try {
             Files.createDirectories(root);
         } catch (IOException e) {
@@ -4574,10 +4699,12 @@ public final class WorktreePool implements AutoCloseable {
             return;
         }
         try (Stream<Path> entries = Files.list(root)) {
-            List<Path> stale = entries.filter(d -> d.getFileName().toString().startsWith("wt-")).toList();
+            List<Path> stale = entries.filter(Files::isDirectory)
+                    .filter(d -> WT_DIR_NAME.matcher(d.getFileName().toString()).matches())
+                    .toList();
             stale.forEach(WorktreePool::deleteRecursively);
             if (!stale.isEmpty()) {
-                System.err.println("trace: removed " + stale.size() + " stale worktree dir(s) under " + root);
+                warnings.println("trace: removed " + stale.size() + " stale worktree dir(s) under " + root);
             }
         } catch (IOException ignored) {
             // best effort; checkout() deletes a same-named leftover anyway
@@ -4608,6 +4735,9 @@ public final class WorktreePool implements AutoCloseable {
 
     /** Removes one worktree early to bound disk usage during long ranges. */
     public void release(Path dir) {
+        if (!created.contains(dir)) {
+            throw new IllegalArgumentException("not a tracked worktree: " + dir);
+        }
         remove(dir);
     }
 
@@ -4626,16 +4756,23 @@ public final class WorktreePool implements AutoCloseable {
     }
 
     private void removeAll() {
-        for (Path dir : new ArrayList<>(created)) {
+        List<Path> snapshot;
+        synchronized (created) {
+            snapshot = new ArrayList<>(created);
+        }
+        for (Path dir : snapshot) {
             remove(dir);
         }
     }
 
     private void remove(Path dir) {
         try {
-            git.run(repo, TIMEOUT, List.of("git", "worktree", "remove", "--force", dir.toString()));
+            ProcessRunner.Result r = git.run(repo, TIMEOUT, List.of("git", "worktree", "remove", "--force", dir.toString()));
+            if (!r.ok()) {
+                warnings.println("trace: could not remove worktree " + dir + " (" + r.firstErrorLine() + ")");
+            }
         } catch (ProcessException e) {
-            System.err.println("trace: could not remove worktree " + dir + " (" + e.getMessage() + ")");
+            warnings.println("trace: could not remove worktree " + dir + " (" + e.getMessage() + ")");
         }
         deleteRecursively(dir);
         created.remove(dir);
@@ -4671,7 +4808,7 @@ public final class WorktreePool implements AutoCloseable {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 95 tests at this point in the sequence (bumped from 74 by the Task 8 review rounds' 14 added tests, plus 1 for the code-review amendment's `malformedLogLineIsAProviderErrorNamingTheLine`, 2 for the quality-review fix's `sideBranchStartIsRejected`/`rootCommitWithEmptyParentFieldIsRejectedNotCrashed`, 2 for the quality-review fix's `checkoutUnregistersBeforeDeletingAPreexistingDirectory`/`reopeningThePoolCanReuseACommitKeptByThePreviousRun`, and 2 for the quality-review fix's `keepWorktreesRegistersNoShutdownHook`/`notKeepingWorktreesRegistersAShutdownHook`).
+Expected: `BUILD SUCCESSFUL`; 103 tests at this point in the sequence (bumped from 74 by the Task 8 review rounds' 14 added tests, plus 1 for the code-review amendment's `malformedLogLineIsAProviderErrorNamingTheLine`, 2 for the quality-review fix's `sideBranchStartIsRejected`/`rootCommitWithEmptyParentFieldIsRejectedNotCrashed`, 2 for the quality-review fix's `checkoutUnregistersBeforeDeletingAPreexistingDirectory`/`reopeningThePoolCanReuseACommitKeptByThePreviousRun`, 2 for the quality-review fix's `keepWorktreesRegistersNoShutdownHook`/`notKeepingWorktreesRegistersAShutdownHook`, and 8 for the quality-review hardening fix's remaining git-error-mapping and worktree-bookkeeping tests).
 
 - [ ] **Step 5: Document and commit**
 
@@ -5118,7 +5255,7 @@ public final class TableRenderer {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 110 tests at this point in the sequence (bumped from 96 by the Task 8 review rounds' 14 added tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
+Expected: `BUILD SUCCESSFUL`; 118 tests at this point in the sequence (bumped from 104 by the Task 8 review rounds' 14 added tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
 
 - [ ] **Step 5: Document and commit**
 
@@ -5277,7 +5414,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 115 tests at this point in the sequence (bumped from 101 by the Task 8 review rounds' 14 added tests); the timeout test finishes in well under a second.
+Expected: `BUILD SUCCESSFUL`; 123 tests at this point in the sequence (bumped from 109 by the Task 8 review rounds' 14 added tests); the timeout test finishes in well under a second.
 
 - [ ] **Step 5: Commit**
 
@@ -5498,7 +5635,7 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 127 tests at this point in the sequence (bumped from 113 by the Task 8 review rounds' 14 added tests; the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 135 tests at this point in the sequence (bumped from 121 by the Task 8 review rounds' 14 added tests; the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -6001,7 +6138,7 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 138 tests at this point in the sequence (bumped from 124 by the Task 8 review rounds' 14 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 146 tests at this point in the sequence (bumped from 132 by the Task 8 review rounds' 14 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 
