@@ -5643,7 +5643,9 @@ Append to `docs/tracer.md`:
 ```markdown
 ## Cli
 `trace <app> --from A --to B [--task T] [--no-bazel] [--offline] [--keep-worktrees] [--tsv | --tsv-out F] [--timeout-minutes N]`
-and `trace <app> --at REV [--task T]`. Worktrees live under `$TMPDIR/gradle-tracer/<pid>/`. The Bazel column is
+and `trace <app> --at REV [--task T]`. Worktrees live under one fixed scratch root, `$TMPDIR/gradle-tracer` (never
+per pid: see Task 13's scratch hygiene note — a fixed root is how the next run finds and sweeps a killed run's
+leftovers). The Bazel column is
 computed from `bazel-diff get-impacted-targets` between adjacent commits; if bazel-diff fails once, the rest of the
 column is `n/a` and a warning goes to stderr. A commit whose Gradle run fails is `BUILD-FAILED`; the next commit is
 compared against the last good key.
