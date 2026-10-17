@@ -1,0 +1,284 @@
+
+> Task :build-logic:compileJava
+Appending implementation to build cache key: org.gradle.api.tasks.compile.JavaCompile_Decorated@24e2faca60f298b259707146aa9a3e40
+Appending additional implementation to build cache key: org.gradle.api.tasks.compile.JavaCompile_Decorated@24e2faca60f298b259707146aa9a3e40
+Appending input value fingerprint for 'javaCompiler' to build cache key: 140b366edcf20cedc0ab9cf8b8ec9a49
+Appending input value fingerprint for 'javaCompiler.metadata' to build cache key: 233bb007c3f6a50177caf58030f992d5
+Appending input value fingerprint for 'javaCompiler.metadata.languageVersion' to build cache key: 5ce5f47c15403bbcdb1529cecec68e6a
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs' to build cache key: 91b517945cbd7e49ea9765ae0c383aca
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs.implementation' to build cache key: e01131ec5ccd19bb20846b659179efcf
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs.languageVersion' to build cache key: 5ce5f47c15403bbcdb1529cecec68e6a
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs.vendor' to build cache key: 875af975b7370835410f08c644b54954
+Appending input value fingerprint for 'javaVersion' to build cache key: fb94925a179648a438c7c35fb85c1765
+Appending input value fingerprint for 'modularity' to build cache key: 87d00ee24bed64da390be3b6fec6cbf0
+Appending input value fingerprint for 'modularity.inferModulePath' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options' to build cache key: 0a91ec0432e1ac254e687d347b02b81e
+Appending input value fingerprint for 'options.compilerArgs' to build cache key: 8222d82255460164427051d7537fa305
+Appending input value fingerprint for 'options.debug' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options.debugOptions' to build cache key: 22660be199ea582d73ffd9e66cc209a3
+Appending input value fingerprint for 'options.debugOptions.debugLevel' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.encoding' to build cache key: d746f44d09fb58d2971f341d24d74c35
+Appending input value fingerprint for 'options.extensionDirs' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.failOnError' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options.fork' to build cache key: c06857e9ea338f3f3a24bb78f8fbdf6f
+Appending input value fingerprint for 'options.forkOptions' to build cache key: c68e194627dae24fd1ecc81714cd71ed
+Appending input value fingerprint for 'options.forkOptions.executable' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.forkOptions.jvmArgs' to build cache key: 8222d82255460164427051d7537fa305
+Appending input value fingerprint for 'options.incrementalAfterFailure' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options.javaModuleMainClass' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.javaModuleVersion' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.release' to build cache key: 91e6b2f4b53f9e7b3eadb03039173cc5
+Appending input value fingerprint for 'sourceCompatibility' to build cache key: 3de7efa3e18ad73f3af5f6b44592f337
+Appending input value fingerprint for 'targetCompatibility' to build cache key: 3de7efa3e18ad73f3af5f6b44592f337
+Appending input file fingerprints for 'classpath' to build cache key: e770a8a0223f0ea4dba5bfea83403409 - COMPILE_CLASSPATH{/home/joeyang/.gradle/caches/9.8.1/generated-gradle-jars/gradle-api-9.8.1.jar=IGNORED / 4d393440c37876b10eacab26cd5f53cd, /home/joeyang/.gradle/wrapper/dists/gradle-9.8.1-bin/a2l6ltp3k1vth6lwipzm5p2jp/gradle-9.8.1/lib/groovy-4.0.33.jar=IGNORED / c1d63c429923f8c9b5155c82ee24406c, /home/joeyang/.gradle/wrapper/dists/gradle-9.8.1-bin/a2l6ltp3k1vth6lwipzm5p2jp/gradle-9.8.1/lib/groovy-ant-4.0.33.jar=IGNORED / 249a875ff1f7e34b099425641d99be0b, /home/joeyang/.gradle/wrapper/dists/gradle-9.8.1-bin/a2l6ltp3k1vth6lwipzm5p2jp/gradle-9.8.1/lib/groovy-astbuilder-4.0.33.jar=IGNORED / 1e7405cadfadc3ef92bc86aaab60b4f2, /home/joeyang/.gradle/wrapper/dists/gradle-9.8.1-bin/a2l6ltp3k1vth6lwipzm5p2jp/gradle-9.8.1/lib/groovy-datetime-4.0.33.jar=IGNORED / 6c851fff64def4310546eae7c1f603e5, /home/joeyang/.gradle/wrapper/dists/gradle-9.8.1-bin/a2l6ltp3k1vth6lwipzm5p2jp/gradle-9.8.1/lib/groovy-dateutil-4.0.33.jar=IGNORED / c63e235acb5febbe5d64c4748aa4f741, /home/joeyang/.gradle/wrapper/dists/gradle-9.8.1-bin/a2l6ltp3k1vth6lwipzm5p2jp/gradle-9.8.1/lib/groovy-groovydoc-4.0.33.jar=IGNORED / a4663f65dac33d3fe15bfb9860fe6a0f, /home/joeyang/.gradle/wrapper/dists/gradle-9.8.1-bin/a2l6ltp3k1vth6lwipzm5p2jp/gradle-9.8.1/lib/groovy-json-4.0.33.jar=IGNORED / 6ed8b9ffe20b362e11a72315fa73bb43, /home/joeyang/.gradle/wrapper/dists/gradle-9.8.1-bin/a2l6ltp3k1vth6lwipzm5p2jp/gradle-9.8.1/lib/groovy-nio-4.0.33.jar=IGNORED / 6cc3927ffb1ead81175090914efe7cf5, /home/joeyang/.gradle/wrapper/dists/gradle-9.8.1-bin/a2l6ltp3k1vth6lwipzm5p2jp/gradle-9.8.1/lib/groovy-templates-4.0.33.jar=IGNORED / 602f93ae788d5cbace9f05193e26cf05, /home/joeyang/.gradle/wrapper/dists/gradle-9.8.1-bin/a2l6ltp3k1vth6lwipzm5p2jp/gradle-9.8.1/lib/groovy-xml-4.0.33.jar=IGNORED / efec5752f87638879e5a646f8101965d, /home/joeyang/.gradle/wrapper/dists/gradle-9.8.1-bin/a2l6ltp3k1vth6lwipzm5p2jp/gradle-9.8.1/lib/javaparser-core-3.27.1.jar=IGNORED / 2bec27bcb804ab97c62332582f2f5fb2, /home/joeyang/.gradle/wrapper/dists/gradle-9.8.1-bin/a2l6ltp3k1vth6lwipzm5p2jp/gradle-9.8.1/lib/kotlin-reflect-2.4.10.jar=IGNORED / 062fe6fd570f37e3e637b1dfc2785a41, /home/joeyang/.gradle/wrapper/dists/gradle-9.8.1-bin/a2l6ltp3k1vth6lwipzm5p2jp/gradle-9.8.1/lib/kotlin-stdlib-2.4.10.jar=IGNORED / f8e6f142b8048fb3972f6a17f6da9a35, /home/joeyang/.gradle/wrapper/dists/gradle-9.8.1-bin/a2l6ltp3k1vth6lwipzm5p2jp/gradle-9.8.1/lib/gradle-installation-beacon-9.8.1.jar=IGNORED / b126f3cbfeec65a3986816537984ecdc}
+Appending input file fingerprints for 'options.annotationProcessorPath' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - CLASSPATH{EMPTY}
+Appending input file fingerprints for 'options.bootstrapClasspath' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - COMPILE_CLASSPATH{EMPTY}
+Appending input file fingerprints for 'options.sourcepath' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - RELATIVE_PATH{EMPTY}
+Appending input file fingerprints for 'stableSources' to build cache key: dbaa7f4b47e9066f53c4aa230de2585c - RELATIVE_PATH{/repo/build-logic/src/main/java/io/joeyang/tracer/buildlogic/FingerprintTask.java='io/joeyang/tracer/buildlogic/FingerprintTask.java' / 52379438ae6c7c41b4df7edae38f343a, /repo/build-logic/src/main/java/io/joeyang/tracer/buildlogic/JavaApplicationConventionPlugin.java='io/joeyang/tracer/buildlogic/JavaApplicationConventionPlugin.java' / 9634c57a9f9375ad0892256d4605e3a3, /repo/build-logic/src/main/java/io/joeyang/tracer/buildlogic/JavaBaseConventionPlugin.java='io/joeyang/tracer/buildlogic/JavaBaseConventionPlugin.java' / 55e2eafddd5ca802893404454dc549dc, /repo/build-logic/src/main/java/io/joeyang/tracer/buildlogic/JavaLibraryConventionPlugin.java='io/joeyang/tracer/buildlogic/JavaLibraryConventionPlugin.java' / 88193f74a04938beb6f8497783ed5c05}
+Appending output property name to build cache key: destinationDirectory
+Appending output property name to build cache key: options.generatedSourceOutputDirectory
+Appending output property name to build cache key: options.headerOutputDirectory
+Appending output property name to build cache key: previousCompilationData
+Build cache key for task ':build-logic:compileJava' is 3d7913f3e9e25a4e9d589f9386eafac7
+
+> Task :build-logic:pluginDescriptors
+Appending implementation to build cache key: org.gradle.plugin.devel.tasks.GeneratePluginDescriptors_Decorated@24e2faca60f298b259707146aa9a3e40
+Appending additional implementation to build cache key: org.gradle.plugin.devel.tasks.GeneratePluginDescriptors_Decorated@24e2faca60f298b259707146aa9a3e40
+Appending input value fingerprint for 'implementationClassById' to build cache key: 346e9cdaab8c40018089c36605bc3abe
+Appending output property name to build cache key: outputDirectory
+Non-cacheable because Not worth caching [NOT_CACHEABLE]
+
+> Task :build-logic:processResources
+Appending implementation to build cache key: org.gradle.language.jvm.tasks.ProcessResources_Decorated@24e2faca60f298b259707146aa9a3e40
+Appending additional implementation to build cache key: org.gradle.language.jvm.tasks.ProcessResources_Decorated@09b6a99c01e465b63c3af5605c13b0cb
+Appending input value fingerprint for 'rootSpec$1.caseSensitive' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'rootSpec$1.destPath' to build cache key: f1d3ff8443297732862df21dc4e57262
+Appending input value fingerprint for 'rootSpec$1.dirPermissions' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'rootSpec$1.duplicatesStrategy' to build cache key: 8a837186acf23b1d526aa9fc5e2f1617
+Appending input value fingerprint for 'rootSpec$1.filePermissions' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'rootSpec$1.filteringCharset' to build cache key: d746f44d09fb58d2971f341d24d74c35
+Appending input value fingerprint for 'rootSpec$1.includeEmptyDirs' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'rootSpec$2.caseSensitive' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'rootSpec$2.destPath' to build cache key: 14f6c4778f8240578f8625dd2c31070a
+Appending input value fingerprint for 'rootSpec$2.dirPermissions' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'rootSpec$2.duplicatesStrategy' to build cache key: 8a837186acf23b1d526aa9fc5e2f1617
+Appending input value fingerprint for 'rootSpec$2.filePermissions' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'rootSpec$2.filteringCharset' to build cache key: d746f44d09fb58d2971f341d24d74c35
+Appending input value fingerprint for 'rootSpec$2.includeEmptyDirs' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input file fingerprints for 'rootSpec$1' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - RELATIVE_PATH{EMPTY}
+Appending input file fingerprints for 'rootSpec$2' to build cache key: 1738b77d6d7e83afff66e3d1f5e98153 - RELATIVE_PATH{/repo/build-logic/build/pluginDescriptors/tracer.java-application.properties='tracer.java-application.properties' / 18cdcf35f4346c2775e50fdfb91f1758, /repo/build-logic/build/pluginDescriptors/tracer.java-base.properties='tracer.java-base.properties' / 7cc41602fe35850c0aa6da39acd5219b, /repo/build-logic/build/pluginDescriptors/tracer.java-library.properties='tracer.java-library.properties' / 08fa3b894f6c35cfd6f686c70c45d63e}
+Appending output property name to build cache key: destinationDir
+Appending output property name to build cache key: destinationDirectory
+Non-cacheable because Not worth caching [NOT_CACHEABLE]
+
+> Task :build-logic:classes
+
+> Task :build-logic:jar
+Appending implementation to build cache key: org.gradle.api.tasks.bundling.Jar_Decorated@24e2faca60f298b259707146aa9a3e40
+Appending additional implementation to build cache key: org.gradle.api.tasks.bundling.Jar_Decorated@09b6a99c01e465b63c3af5605c13b0cb
+Appending additional implementation to build cache key: org.gradle.plugin.devel.plugins.JavaGradlePluginPlugin$PluginValidationAction@24e2faca60f298b259707146aa9a3e40
+Appending input value fingerprint for 'entryCompression' to build cache key: 45df62b6ec2b6322be5846df74267294
+Appending input value fingerprint for 'manifestContentCharset' to build cache key: d746f44d09fb58d2971f341d24d74c35
+Appending input value fingerprint for 'metadataCharset' to build cache key: d746f44d09fb58d2971f341d24d74c35
+Appending input value fingerprint for 'preserveFileTimestamps' to build cache key: c06857e9ea338f3f3a24bb78f8fbdf6f
+Appending input value fingerprint for 'reproducibleFileOrder' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'reproducibleFileTimestamp' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'rootSpec$1.caseSensitive' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'rootSpec$1.destPath' to build cache key: f1d3ff8443297732862df21dc4e57262
+Appending input value fingerprint for 'rootSpec$1.dirPermissions' to build cache key: 9e5af9fd7e0f6aaec0aea879017cdbe0
+Appending input value fingerprint for 'rootSpec$1.duplicatesStrategy' to build cache key: 8a837186acf23b1d526aa9fc5e2f1617
+Appending input value fingerprint for 'rootSpec$1.filePermissions' to build cache key: 69c20434a6484035141117f609479a57
+Appending input value fingerprint for 'rootSpec$1.filteringCharset' to build cache key: d746f44d09fb58d2971f341d24d74c35
+Appending input value fingerprint for 'rootSpec$1.includeEmptyDirs' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'rootSpec$2$1.caseSensitive' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'rootSpec$2$1.destPath' to build cache key: e4576d48c92a768e58df598d86475d35
+Appending input value fingerprint for 'rootSpec$2$1.dirPermissions' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'rootSpec$2$1.duplicatesStrategy' to build cache key: 8a837186acf23b1d526aa9fc5e2f1617
+Appending input value fingerprint for 'rootSpec$2$1.filePermissions' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'rootSpec$2$1.filteringCharset' to build cache key: d746f44d09fb58d2971f341d24d74c35
+Appending input value fingerprint for 'rootSpec$2$1.includeEmptyDirs' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'rootSpec$2.caseSensitive' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'rootSpec$2.destPath' to build cache key: e4576d48c92a768e58df598d86475d35
+Appending input value fingerprint for 'rootSpec$2.dirPermissions' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'rootSpec$2.duplicatesStrategy' to build cache key: 8a837186acf23b1d526aa9fc5e2f1617
+Appending input value fingerprint for 'rootSpec$2.filePermissions' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'rootSpec$2.filteringCharset' to build cache key: d746f44d09fb58d2971f341d24d74c35
+Appending input value fingerprint for 'rootSpec$2.includeEmptyDirs' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'zip64' to build cache key: c06857e9ea338f3f3a24bb78f8fbdf6f
+Appending input file fingerprints for 'rootSpec$1' to build cache key: 40e8236e4c1ecc7199f763dfb7b3cc2f - RELATIVE_PATH{/repo/build-logic/build/classes/java/main/io='io' / DIR, /repo/build-logic/build/classes/java/main/io/joeyang='io/joeyang' / DIR, /repo/build-logic/build/classes/java/main/io/joeyang/tracer='io/joeyang/tracer' / DIR, /repo/build-logic/build/classes/java/main/io/joeyang/tracer/buildlogic='io/joeyang/tracer/buildlogic' / DIR, /repo/build-logic/build/classes/java/main/io/joeyang/tracer/buildlogic/FingerprintTask.class='io/joeyang/tracer/buildlogic/FingerprintTask.class' / 9a36b0746d510eb8d4d263b3b0e0cab9, /repo/build-logic/build/classes/java/main/io/joeyang/tracer/buildlogic/JavaApplicationConventionPlugin.class='io/joeyang/tracer/buildlogic/JavaApplicationConventionPlugin.class' / aff88f760816234a5bdcafab435940b7, /repo/build-logic/build/classes/java/main/io/joeyang/tracer/buildlogic/JavaBaseConventionPlugin.class='io/joeyang/tracer/buildlogic/JavaBaseConventionPlugin.class' / efdbd456e1c9b02bd0b45cad5dc6b4ed, /repo/build-logic/build/classes/java/main/io/joeyang/tracer/buildlogic/JavaLibraryConventionPlugin.class='io/joeyang/tracer/buildlogic/JavaLibraryConventionPlugin.class' / c92e7435f2edd62c17d1c29268f407d1, /repo/build-logic/build/resources/main/META-INF='META-INF' / DIR, /repo/build-logic/build/resources/main/META-INF/gradle-plugins='META-INF/gradle-plugins' / DIR, /repo/build-logic/build/resources/main/META-INF/gradle-plugins/tracer.java-application.properties='META-INF/gradle-plugins/tracer.java-application.properties' / 18cdcf35f4346c2775e50fdfb91f1758, /repo/build-logic/build/resources/main/META-INF/gradle-plugins/tracer.java-base.properties='META-INF/gradle-plugins/tracer.java-base.properties' / 7cc41602fe35850c0aa6da39acd5219b, /repo/build-logic/build/resources/main/META-INF/gradle-plugins/tracer.java-library.properties='META-INF/gradle-plugins/tracer.java-library.properties' / 08fa3b894f6c35cfd6f686c70c45d63e}
+Appending input file fingerprints for 'rootSpec$2' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - RELATIVE_PATH{EMPTY}
+Appending input file fingerprints for 'rootSpec$2$1' to build cache key: 8cd8eb82e92a45647f231372353e51bf - RELATIVE_PATH{/repo/build-logic/build/tmp/jar/MANIFEST.MF='MANIFEST.MF' / a49aab3a41159b47bbddf92fa9f43c18}
+Appending output property name to build cache key: archiveFile
+Non-cacheable because Not worth caching [NOT_CACHEABLE]
+
+> Task :utils:compileJava
+Appending implementation to build cache key: org.gradle.api.tasks.compile.JavaCompile_Decorated@24e2faca60f298b259707146aa9a3e40
+Appending additional implementation to build cache key: org.gradle.api.tasks.compile.JavaCompile_Decorated@24e2faca60f298b259707146aa9a3e40
+Appending input value fingerprint for 'javaCompiler' to build cache key: 140b366edcf20cedc0ab9cf8b8ec9a49
+Appending input value fingerprint for 'javaCompiler.metadata' to build cache key: 233bb007c3f6a50177caf58030f992d5
+Appending input value fingerprint for 'javaCompiler.metadata.languageVersion' to build cache key: 5ce5f47c15403bbcdb1529cecec68e6a
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs' to build cache key: 91b517945cbd7e49ea9765ae0c383aca
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs.implementation' to build cache key: e01131ec5ccd19bb20846b659179efcf
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs.languageVersion' to build cache key: 5ce5f47c15403bbcdb1529cecec68e6a
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs.vendor' to build cache key: 875af975b7370835410f08c644b54954
+Appending input value fingerprint for 'javaVersion' to build cache key: fb94925a179648a438c7c35fb85c1765
+Appending input value fingerprint for 'modularity' to build cache key: 87d00ee24bed64da390be3b6fec6cbf0
+Appending input value fingerprint for 'modularity.inferModulePath' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options' to build cache key: 0a91ec0432e1ac254e687d347b02b81e
+Appending input value fingerprint for 'options.compilerArgs' to build cache key: 8222d82255460164427051d7537fa305
+Appending input value fingerprint for 'options.debug' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options.debugOptions' to build cache key: 22660be199ea582d73ffd9e66cc209a3
+Appending input value fingerprint for 'options.debugOptions.debugLevel' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.encoding' to build cache key: d746f44d09fb58d2971f341d24d74c35
+Appending input value fingerprint for 'options.extensionDirs' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.failOnError' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options.fork' to build cache key: c06857e9ea338f3f3a24bb78f8fbdf6f
+Appending input value fingerprint for 'options.forkOptions' to build cache key: c68e194627dae24fd1ecc81714cd71ed
+Appending input value fingerprint for 'options.forkOptions.executable' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.forkOptions.jvmArgs' to build cache key: 8222d82255460164427051d7537fa305
+Appending input value fingerprint for 'options.incrementalAfterFailure' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options.javaModuleMainClass' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.javaModuleVersion' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.release' to build cache key: 91e6b2f4b53f9e7b3eadb03039173cc5
+Appending input value fingerprint for 'sourceCompatibility' to build cache key: 3de7efa3e18ad73f3af5f6b44592f337
+Appending input value fingerprint for 'targetCompatibility' to build cache key: 3de7efa3e18ad73f3af5f6b44592f337
+Appending input file fingerprints for 'classpath' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - COMPILE_CLASSPATH{EMPTY}
+Appending input file fingerprints for 'options.annotationProcessorPath' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - CLASSPATH{EMPTY}
+Appending input file fingerprints for 'options.bootstrapClasspath' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - COMPILE_CLASSPATH{EMPTY}
+Appending input file fingerprints for 'options.sourcepath' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - RELATIVE_PATH{EMPTY}
+Appending input file fingerprints for 'stableSources' to build cache key: a436d972d5c8419659ef0271ba42fd10 - RELATIVE_PATH{/repo/utils/src/main/java/io/joeyang/tracer/utils/Formatter.java='io/joeyang/tracer/utils/Formatter.java' / aad80da6e733137cedc7c174faa245c4}
+Appending output property name to build cache key: destinationDirectory
+Appending output property name to build cache key: options.generatedSourceOutputDirectory
+Appending output property name to build cache key: options.headerOutputDirectory
+Appending output property name to build cache key: previousCompilationData
+Build cache key for task ':utils:compileJava' is 669d373cced5afa56d45d768869b5c26
+
+> Task :core:compileJava
+Appending implementation to build cache key: org.gradle.api.tasks.compile.JavaCompile_Decorated@24e2faca60f298b259707146aa9a3e40
+Appending additional implementation to build cache key: org.gradle.api.tasks.compile.JavaCompile_Decorated@24e2faca60f298b259707146aa9a3e40
+Appending input value fingerprint for 'javaCompiler' to build cache key: 140b366edcf20cedc0ab9cf8b8ec9a49
+Appending input value fingerprint for 'javaCompiler.metadata' to build cache key: 233bb007c3f6a50177caf58030f992d5
+Appending input value fingerprint for 'javaCompiler.metadata.languageVersion' to build cache key: 5ce5f47c15403bbcdb1529cecec68e6a
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs' to build cache key: 91b517945cbd7e49ea9765ae0c383aca
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs.implementation' to build cache key: e01131ec5ccd19bb20846b659179efcf
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs.languageVersion' to build cache key: 5ce5f47c15403bbcdb1529cecec68e6a
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs.vendor' to build cache key: 875af975b7370835410f08c644b54954
+Appending input value fingerprint for 'javaVersion' to build cache key: fb94925a179648a438c7c35fb85c1765
+Appending input value fingerprint for 'modularity' to build cache key: 87d00ee24bed64da390be3b6fec6cbf0
+Appending input value fingerprint for 'modularity.inferModulePath' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options' to build cache key: 0a91ec0432e1ac254e687d347b02b81e
+Appending input value fingerprint for 'options.compilerArgs' to build cache key: 8222d82255460164427051d7537fa305
+Appending input value fingerprint for 'options.debug' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options.debugOptions' to build cache key: 22660be199ea582d73ffd9e66cc209a3
+Appending input value fingerprint for 'options.debugOptions.debugLevel' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.encoding' to build cache key: d746f44d09fb58d2971f341d24d74c35
+Appending input value fingerprint for 'options.extensionDirs' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.failOnError' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options.fork' to build cache key: c06857e9ea338f3f3a24bb78f8fbdf6f
+Appending input value fingerprint for 'options.forkOptions' to build cache key: c68e194627dae24fd1ecc81714cd71ed
+Appending input value fingerprint for 'options.forkOptions.executable' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.forkOptions.jvmArgs' to build cache key: 8222d82255460164427051d7537fa305
+Appending input value fingerprint for 'options.incrementalAfterFailure' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options.javaModuleMainClass' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.javaModuleVersion' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.release' to build cache key: 91e6b2f4b53f9e7b3eadb03039173cc5
+Appending input value fingerprint for 'sourceCompatibility' to build cache key: 3de7efa3e18ad73f3af5f6b44592f337
+Appending input value fingerprint for 'targetCompatibility' to build cache key: 3de7efa3e18ad73f3af5f6b44592f337
+Appending input file fingerprints for 'classpath' to build cache key: 3c55c876cc31afa3d374d7f0a809f542 - COMPILE_CLASSPATH{/repo/utils/build/classes/java/main/io/joeyang/tracer/utils/Formatter.class='io/joeyang/tracer/utils/Formatter.class' / b8c10a1e7f9f350a79d57ed5007429e6}
+Appending input file fingerprints for 'options.annotationProcessorPath' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - CLASSPATH{EMPTY}
+Appending input file fingerprints for 'options.bootstrapClasspath' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - COMPILE_CLASSPATH{EMPTY}
+Appending input file fingerprints for 'options.sourcepath' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - RELATIVE_PATH{EMPTY}
+Appending input file fingerprints for 'stableSources' to build cache key: b3043a514e91538a530369ecb55854b8 - RELATIVE_PATH{/repo/core/src/main/java/io/joeyang/tracer/core/Greeter.java='io/joeyang/tracer/core/Greeter.java' / d509f416fe6ea614c57299d57efa21c1}
+Appending output property name to build cache key: destinationDirectory
+Appending output property name to build cache key: options.generatedSourceOutputDirectory
+Appending output property name to build cache key: options.headerOutputDirectory
+Appending output property name to build cache key: previousCompilationData
+Build cache key for task ':core:compileJava' is fb0838d20a94528474fe79f745ea4e05
+
+> Task :lib:compileJava
+Appending implementation to build cache key: org.gradle.api.tasks.compile.JavaCompile_Decorated@24e2faca60f298b259707146aa9a3e40
+Appending additional implementation to build cache key: org.gradle.api.tasks.compile.JavaCompile_Decorated@24e2faca60f298b259707146aa9a3e40
+Appending input value fingerprint for 'javaCompiler' to build cache key: 140b366edcf20cedc0ab9cf8b8ec9a49
+Appending input value fingerprint for 'javaCompiler.metadata' to build cache key: 233bb007c3f6a50177caf58030f992d5
+Appending input value fingerprint for 'javaCompiler.metadata.languageVersion' to build cache key: 5ce5f47c15403bbcdb1529cecec68e6a
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs' to build cache key: 91b517945cbd7e49ea9765ae0c383aca
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs.implementation' to build cache key: e01131ec5ccd19bb20846b659179efcf
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs.languageVersion' to build cache key: 5ce5f47c15403bbcdb1529cecec68e6a
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs.vendor' to build cache key: 875af975b7370835410f08c644b54954
+Appending input value fingerprint for 'javaVersion' to build cache key: fb94925a179648a438c7c35fb85c1765
+Appending input value fingerprint for 'modularity' to build cache key: 87d00ee24bed64da390be3b6fec6cbf0
+Appending input value fingerprint for 'modularity.inferModulePath' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options' to build cache key: 0a91ec0432e1ac254e687d347b02b81e
+Appending input value fingerprint for 'options.compilerArgs' to build cache key: 8222d82255460164427051d7537fa305
+Appending input value fingerprint for 'options.debug' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options.debugOptions' to build cache key: 22660be199ea582d73ffd9e66cc209a3
+Appending input value fingerprint for 'options.debugOptions.debugLevel' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.encoding' to build cache key: d746f44d09fb58d2971f341d24d74c35
+Appending input value fingerprint for 'options.extensionDirs' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.failOnError' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options.fork' to build cache key: c06857e9ea338f3f3a24bb78f8fbdf6f
+Appending input value fingerprint for 'options.forkOptions' to build cache key: c68e194627dae24fd1ecc81714cd71ed
+Appending input value fingerprint for 'options.forkOptions.executable' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.forkOptions.jvmArgs' to build cache key: 8222d82255460164427051d7537fa305
+Appending input value fingerprint for 'options.incrementalAfterFailure' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options.javaModuleMainClass' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.javaModuleVersion' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.release' to build cache key: 91e6b2f4b53f9e7b3eadb03039173cc5
+Appending input value fingerprint for 'sourceCompatibility' to build cache key: 3de7efa3e18ad73f3af5f6b44592f337
+Appending input value fingerprint for 'targetCompatibility' to build cache key: 3de7efa3e18ad73f3af5f6b44592f337
+Appending input file fingerprints for 'classpath' to build cache key: 99a527e78ad2c581702dde040767cdae - COMPILE_CLASSPATH{/repo/core/build/classes/java/main/io/joeyang/tracer/core/Greeter.class='io/joeyang/tracer/core/Greeter.class' / 08941f0eadd2c3ab36146fa381ba138f, /home/joeyang/.gradle/caches/modules-2/files-2.1/org.apache.commons/commons-lang3/3.18.0/fb14946f0e39748a6571de0635acbe44e7885491/commons-lang3-3.18.0.jar=IGNORED / 5297744152e12772277212543b64951b}
+Appending input file fingerprints for 'options.annotationProcessorPath' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - CLASSPATH{EMPTY}
+Appending input file fingerprints for 'options.bootstrapClasspath' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - COMPILE_CLASSPATH{EMPTY}
+Appending input file fingerprints for 'options.sourcepath' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - RELATIVE_PATH{EMPTY}
+Appending input file fingerprints for 'stableSources' to build cache key: ce91e1eb4d06d0c3ef7f1576662b6a61 - RELATIVE_PATH{/repo/lib/src/main/java/io/joeyang/tracer/lib/Service.java='io/joeyang/tracer/lib/Service.java' / 7b2306350f268007e0738aaa75a6c77d}
+Appending output property name to build cache key: destinationDirectory
+Appending output property name to build cache key: options.generatedSourceOutputDirectory
+Appending output property name to build cache key: options.headerOutputDirectory
+Appending output property name to build cache key: previousCompilationData
+Build cache key for task ':lib:compileJava' is 515824b9216265b783d04734f51d5423
+
+> Task :app:appA:compileJava
+Appending implementation to build cache key: org.gradle.api.tasks.compile.JavaCompile_Decorated@24e2faca60f298b259707146aa9a3e40
+Appending additional implementation to build cache key: org.gradle.api.tasks.compile.JavaCompile_Decorated@24e2faca60f298b259707146aa9a3e40
+Appending input value fingerprint for 'javaCompiler' to build cache key: 140b366edcf20cedc0ab9cf8b8ec9a49
+Appending input value fingerprint for 'javaCompiler.metadata' to build cache key: 233bb007c3f6a50177caf58030f992d5
+Appending input value fingerprint for 'javaCompiler.metadata.languageVersion' to build cache key: 5ce5f47c15403bbcdb1529cecec68e6a
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs' to build cache key: 91b517945cbd7e49ea9765ae0c383aca
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs.implementation' to build cache key: e01131ec5ccd19bb20846b659179efcf
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs.languageVersion' to build cache key: 5ce5f47c15403bbcdb1529cecec68e6a
+Appending input value fingerprint for 'javaCompiler.metadata.taskInputs.vendor' to build cache key: 875af975b7370835410f08c644b54954
+Appending input value fingerprint for 'javaVersion' to build cache key: fb94925a179648a438c7c35fb85c1765
+Appending input value fingerprint for 'modularity' to build cache key: 87d00ee24bed64da390be3b6fec6cbf0
+Appending input value fingerprint for 'modularity.inferModulePath' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options' to build cache key: 0a91ec0432e1ac254e687d347b02b81e
+Appending input value fingerprint for 'options.compilerArgs' to build cache key: 8222d82255460164427051d7537fa305
+Appending input value fingerprint for 'options.debug' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options.debugOptions' to build cache key: 22660be199ea582d73ffd9e66cc209a3
+Appending input value fingerprint for 'options.debugOptions.debugLevel' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.encoding' to build cache key: d746f44d09fb58d2971f341d24d74c35
+Appending input value fingerprint for 'options.extensionDirs' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.failOnError' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options.fork' to build cache key: c06857e9ea338f3f3a24bb78f8fbdf6f
+Appending input value fingerprint for 'options.forkOptions' to build cache key: c68e194627dae24fd1ecc81714cd71ed
+Appending input value fingerprint for 'options.forkOptions.executable' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.forkOptions.jvmArgs' to build cache key: 8222d82255460164427051d7537fa305
+Appending input value fingerprint for 'options.incrementalAfterFailure' to build cache key: f6d7ed39fe24031e22d54f3fe65b901c
+Appending input value fingerprint for 'options.javaModuleMainClass' to build cache key: 1b8f10f068e2d18831fc237b08cabdae
+Appending input value fingerprint for 'options.javaModuleVersion' to build cache key: f6bd6b3389b872033d462029172c8612
+Appending input value fingerprint for 'options.release' to build cache key: 91e6b2f4b53f9e7b3eadb03039173cc5
+Appending input value fingerprint for 'sourceCompatibility' to build cache key: 3de7efa3e18ad73f3af5f6b44592f337
+Appending input value fingerprint for 'targetCompatibility' to build cache key: 3de7efa3e18ad73f3af5f6b44592f337
+Appending input file fingerprints for 'classpath' to build cache key: 216d9ebf7125a205f434676cc24d681b - COMPILE_CLASSPATH{/repo/lib/build/classes/java/main/io/joeyang/tracer/lib/Service.class='io/joeyang/tracer/lib/Service.class' / b83f1a72fa98b43a7819dc8a582acbea, /repo/core/build/classes/java/main/io/joeyang/tracer/core/Greeter.class='io/joeyang/tracer/core/Greeter.class' / 08941f0eadd2c3ab36146fa381ba138f}
+Appending input file fingerprints for 'options.annotationProcessorPath' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - CLASSPATH{EMPTY}
+Appending input file fingerprints for 'options.bootstrapClasspath' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - COMPILE_CLASSPATH{EMPTY}
+Appending input file fingerprints for 'options.sourcepath' to build cache key: 5fd1e7396e8de4cb5c23dc6aadd7787a - RELATIVE_PATH{EMPTY}
+Appending input file fingerprints for 'stableSources' to build cache key: a2f4030dc9ec9ca239f9f442cef84f3b - RELATIVE_PATH{/repo/app/appA/src/main/java/io/joeyang/tracer/app/a/AppA.java='io/joeyang/tracer/app/a/AppA.java' / 801ebb2b29510e408d537d62247d9f42}
+Appending output property name to build cache key: destinationDirectory
+Appending output property name to build cache key: options.generatedSourceOutputDirectory
+Appending output property name to build cache key: options.headerOutputDirectory
+Appending output property name to build cache key: previousCompilationData
+Build cache key for task ':app:appA:compileJava' is 17035b126dce737b54e2162d950d98e0
+
+BUILD SUCCESSFUL in 648ms
+8 actionable tasks: 8 executed
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.8.1/userguide/configuration_cache_enabling.html

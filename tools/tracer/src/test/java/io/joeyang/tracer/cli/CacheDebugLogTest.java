@@ -1,0 +1,104 @@
+package io.joeyang.tracer.cli;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.Optional;
+import org.junit.jupiter.api.Test;
+
+class CacheDebugLogTest {
+    static final String TASK = ":app:appA:compileJava";
+    static final String FIXTURE = CacheDebugFixtures.COMPILE_JAVA_LOG;
+
+    @Test void parsesOnlyTheRequestedTask() {
+        TaskKey key = CacheDebugLog.parse(FIXTURE, TASK).orElseThrow();
+
+        assertEquals(TASK, key.taskPath());
+        assertEquals("35c0f7cbe157cd2e30090cc5510cec8c", key.key());
+        assertEquals("org.gradle.api.tasks.compile.JavaCompile_Decorated@bbbb", key.implementation());
+        assertEquals(Map.of("options.release", "91e6b2f4b53f9e7b3eadb03039173cc5", "options.compilerArgs", "4444"), key.valueFingerprints());
+        assertEquals(Map.of(
+                "/w/core/build/classes/java/main/io/joeyang/tracer/core/Greeter.class", "5042bbb7be5171b8d45ca1e0a8193342",
+                "/w/lib/build/classes/java/main/io/joeyang/tracer/lib/Service.class", "6666"), key.fileFingerprints().get("classpath"));
+        assertEquals(Map.of(), key.fileFingerprints().get("options.annotationProcessorPath"));
+        assertEquals(Map.of("/w/app/appA/src/main/java/io/joeyang/tracer/app/a/AppA.java", "55e49a9f6bfdc6ea941195b682520e54"),
+                key.fileFingerprints().get("stableSources"));
+    }
+
+    @Test void otherTasksDoNotLeakIntoTheResult() {
+        TaskKey key = CacheDebugLog.parse(FIXTURE, TASK).orElseThrow();
+        assertFalse(key.fileFingerprints().get("stableSources").containsKey("/w/core/src/main/java/io/joeyang/tracer/core/Greeter.java"));
+    }
+
+    @Test void absentTaskIsEmpty() {
+        assertEquals(Optional.empty(), CacheDebugLog.parse(FIXTURE, ":app:appB:compileJava"));
+    }
+
+    @Test void nonCacheableTaskIsEmpty() {
+        assertEquals(Optional.empty(), CacheDebugLog.parse(FIXTURE, ":core:jar"));
+    }
+
+    @Test void truncatedLogIsEmpty() {
+        String truncated = FIXTURE.substring(0, FIXTURE.indexOf("Build cache key for task ':app:appA"));
+        assertEquals(Optional.empty(), CacheDebugLog.parse(truncated, TASK));
+    }
+
+    @Test void ignoredEntriesAndJarsAreParsed() {
+        String log = """
+                > Task :app:appA:fingerprint
+                Appending implementation to build cache key: io.joeyang.tracer.buildlogic.FingerprintTask_Decorated@0001
+                Appending input file fingerprints for 'runtimeClasspath' to build cache key: 2924 - CLASSPATH{/w/app/appA/build/classes/java/main/io/joeyang/tracer/app/a/AppA.class='io/joeyang/tracer/app/a/AppA.class' / dcbb, /w/core/build/libs/core.jar=IGNORED / ba11, /home/user/.gradle/caches/modules-2/files-2.1/com.google.code.gson/gson/2.10.1/abc/gson-2.10.1.jar=IGNORED / d632}
+                Appending output property name to build cache key: marker
+                Build cache key for task ':app:appA:fingerprint' is b5a1bb8d226bf944a43ec45392201d50
+                """;
+        TaskKey key = CacheDebugLog.parse(log, ":app:appA:fingerprint").orElseThrow();
+        Map<String, String> files = key.fileFingerprints().get("runtimeClasspath");
+        assertEquals(3, files.size());
+        assertEquals("ba11", files.get("/w/core/build/libs/core.jar"));
+        assertEquals("d632", files.get("/home/user/.gradle/caches/modules-2/files-2.1/com.google.code.gson/gson/2.10.1/abc/gson-2.10.1.jar"));
+        assertEquals(Map.of(), key.valueFingerprints());
+    }
+
+    @Test void realCompileJavaFixtureParses() throws IOException {
+        TaskKey key = CacheDebugLog.parse(resource("/cache-debug/appA-compileJava.log"), TASK).orElseThrow();
+        assertTrue(key.key().matches("[0-9a-f]{32}"), key.key());
+        assertTrue(key.valueFingerprints().containsKey("options.release"), key.valueFingerprints().keySet().toString());
+        assertFalse(key.fileFingerprints().get("classpath").isEmpty(), "appA's compile classpath has lib and core classes");
+        assertTrue(key.fileFingerprints().get("stableSources").keySet().stream().anyMatch(p -> p.endsWith("AppA.java")));
+        assertTrue(key.implementation().contains("JavaCompile"), key.implementation());
+    }
+
+    @Test void realFingerprintFixtureParses() throws IOException {
+        TaskKey key = CacheDebugLog.parse(resource("/cache-debug/appA-fingerprint.log"), ":app:appA:fingerprint").orElseThrow();
+        assertTrue(key.fileFingerprints().get("runtimeClasspath").keySet().stream().anyMatch(p -> p.endsWith("/core.jar")));
+        assertTrue(key.fileFingerprints().get("runtimeClasspath").keySet().stream().anyMatch(p -> p.contains("commons-lang3-3.18.0.jar")));
+        assertTrue(key.implementation().contains("FingerprintTask"), key.implementation());
+    }
+
+    @Test void keyOnlyBlockParsesWithEmptyInputs() {
+        // An UP-TO-DATE task prints the key and no input lines; fresh worktrees never hit this, but the parser must cope.
+        String log = "> Task :app:appA:compileJava UP-TO-DATE\nBuild cache key for task ':app:appA:compileJava' is 35c0f7cbe157cd2e30090cc5510cec8c\n";
+        TaskKey key = CacheDebugLog.parse(log, TASK).orElseThrow();
+        assertEquals("35c0f7cbe157cd2e30090cc5510cec8c", key.key());
+        assertTrue(key.fileFingerprints().isEmpty() && key.valueFingerprints().isEmpty());
+    }
+
+    @Test void nonCacheableReasonIsReportedForTheRightTaskOnly() {
+        assertEquals(Optional.of("Not worth caching [NOT_CACHEABLE]"), CacheDebugLog.nonCacheableReason(FIXTURE, ":core:jar"));
+        assertEquals(Optional.empty(), CacheDebugLog.nonCacheableReason(FIXTURE, TASK));
+    }
+
+    private static String resource(String name) throws IOException {
+        try (InputStream in = CacheDebugLogTest.class.getResourceAsStream(name)) {
+            if (in == null) {
+                throw new IOException("missing test resource " + name);
+            }
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+}
