@@ -4,9 +4,10 @@
 detached git worktrees, asking the Gradle and bazel-diff providers about each commit and printing a verdict
 table, or — for `--at` — checks out that one revision and prints its Gradle key and the fingerprints it is
 composed from. On a usage error it exits 1 with the usage text. The `./trace` wrapper builds the launcher with
-`installDist` and execs it from the repository root (see "Tests" below); because it `cd`s there first, a
-relative `--tsv-out` path given to `./trace` resolves against the repo root, not the caller's working
-directory — pass an absolute path to write elsewhere.
+`installDist` and execs it from the repository root; because it `cd`s there first, a relative `--tsv-out` path
+given to `./trace` resolves against the repo root, not the caller's working directory — pass an absolute path
+to write elsewhere. If `installDist` itself fails, the wrapper reports it directly and exits 2 (the same code
+`Cli` uses for a tool failure) instead of running `Cli` at all.
 
 ## Vocabulary (`io.joeyang.tracer.cli`)
 | type | meaning |

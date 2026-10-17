@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds tools/tracer (no-op when up to date) and runs it from the repository root.
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+unset CDPATH
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 cd "$ROOT"
-./gradlew -q :tools:tracer:installDist
+./gradlew -q :tools:tracer:installDist >&2 || { echo "trace: building tools/tracer failed" >&2; exit 2; }
 exec "$ROOT/tools/tracer/build/install/trace/bin/trace" "$@"

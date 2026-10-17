@@ -10778,11 +10778,16 @@ Run `./gradlew :tools:tracer:test`: still 244 (docs/comments-only commit). Run `
 #!/usr/bin/env bash
 # Builds tools/tracer (no-op when up to date) and runs it from the repository root.
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+unset CDPATH
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 cd "$ROOT"
-./gradlew -q :tools:tracer:installDist
+./gradlew -q :tools:tracer:installDist >&2 || { echo "trace: building tools/tracer failed" >&2; exit 2; }
 exec "$ROOT/tools/tracer/build/install/trace/bin/trace" "$@"
 ```
+`readlink -f` resolves the script's own path first, so invoking it through a symlink still finds
+`tools/tracer` next to the real script, not next to the symlink; `unset CDPATH` keeps a configured `CDPATH`
+from making the following `cd` print its destination and break the `$(...)` capture; and a failed
+`installDist` is reported directly and exits 2 (a tool failure) instead of running the usage path.
 Run: `chmod +x trace && ./trace appA --from HEAD~2 --to HEAD --no-bazel`
 Expected: a table with `base`, two more rows (likely `clean`, since recent commits touched tooling not inputs — unless Task 11's commit changed `tools/tracer` only, in which case appA is clean too), exit 0.
 
@@ -10927,12 +10932,14 @@ Expected: `BUILD SUCCESSFUL` after roughly one to three minutes (two commits × 
 
 - [ ] **Step 3: Docs and commit**
 
-In `docs/tracer.md`, replace the sentence "The `./trace` wrapper arrives in a later commit." with:
+In `docs/tracer.md`, replace the intro paragraph's last two sentences ("On a usage error it exits 1 with the
+usage text. The `./trace` wrapper arrives in a later commit.") with:
 ```markdown
 composed from. On a usage error it exits 1 with the usage text. The `./trace` wrapper builds the launcher with
-`installDist` and execs it from the repository root (see "Tests" below); because it `cd`s there first, a
-relative `--tsv-out` path given to `./trace` resolves against the repo root, not the caller's working
-directory — pass an absolute path to write elsewhere.
+`installDist` and execs it from the repository root; because it `cd`s there first, a relative `--tsv-out` path
+given to `./trace` resolves against the repo root, not the caller's working directory — pass an absolute path
+to write elsewhere. If `installDist` itself fails, the wrapper reports it directly and exits 2 (the same code
+`Cli` uses for a tool failure) instead of running `Cli` at all.
 ```
 
 Append to `docs/tracer.md`:
@@ -10970,6 +10977,18 @@ feat(tracer): add ./trace wrapper and an end-to-end test
 root. The e2e suite proves the whole chain on a real git repo without
 Bazel: a public method added to core changes appA's compile key and
 leaves appC's alone.
+EOF
+```
+
+Follow-up fix, same files:
+```bash
+git add trace docs/tracer.md docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+fix(tracer): make ./trace report build failures as exit 2 and resolve its own path
+
+A failed installDist used to fall through set -e into bash's own exit 1,
+indistinguishable from a usage error. A symlinked invocation or an
+inherited CDPATH could also break the script's own path resolution.
 EOF
 ```
 
