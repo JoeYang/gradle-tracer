@@ -76,7 +76,7 @@ class KeyComparatorTest {
         TaskKey a = key("k1", Map.of(), Map.of("options.compilerArgs", "v1"), "impl1");
         TaskKey b = key("k2", Map.of(), Map.of("options.compilerArgs", "v2"), "impl2");
         Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
-        assertEquals(List.of("options.compilerArgs", "build logic"), v.culprits());
+        assertEquals(List.of("build logic", "options.compilerArgs"), v.culprits());
     }
 
     @Test void culpritsAreCappedAtFour() {
@@ -100,5 +100,56 @@ class KeyComparatorTest {
                 Optional.of("Could not resolve com.example:missing:1.0"), BazelStatus.NOT_AVAILABLE);
         assertEquals(Status.BUILD_FAILED, v.status());
         assertTrue(v.error().orElseThrow().contains("missing:1.0"));
+    }
+
+    @Test void changedResourceIsNamedByModuleResources() {
+        TaskKey a = key("k1", Map.of("runtimeClasspath", Map.of("/w1/lib/build/resources/main/data.txt", "aa")), Map.of(), "i");
+        TaskKey b = key("k2", Map.of("runtimeClasspath", Map.of("/w2/lib/build/resources/main/data.txt", "a2")), Map.of(), "i");
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals(List.of("lib resources"), v.culprits());
+    }
+
+    @Test void rootProjectSourceHasNoModulePrefix() {
+        TaskKey a = key("k1", Map.of("stableSources", Map.of("/scratch/wt-aaaaaaa/src/main/java/Root.java", "aa")), Map.of(), "i");
+        TaskKey b = key("k2", Map.of("stableSources", Map.of("/scratch/wt-bbbbbbb/src/main/java/Root.java", "a2")), Map.of(), "i");
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals(List.of("src/main/java/Root.java"), v.culprits());
+    }
+
+    @Test void worktreeRootContainingSrcDoesNotPolluteDisplayName() {
+        TaskKey a = key("k1", Map.of("classpath",
+                Map.of("/home/u/src/tmp/gradle-tracer/wt-aaaaaaa/core/build/libs/core.jar", "aa")), Map.of(), "i");
+        TaskKey b = key("k2", Map.of("classpath",
+                Map.of("/home/u/src/tmp/gradle-tracer/wt-bbbbbbb/core/build/libs/core.jar", "a2")), Map.of(), "i");
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals(List.of("core.jar"), v.culprits());
+    }
+
+    @Test void nestedSrcSegmentUsesTheFirstOccurrenceAsTheModuleBoundary() {
+        TaskKey a = key("k1", Map.of("stableSources",
+                Map.of("/scratch/wt-aaaaaaa/core/src/main/resources/src/x.txt", "aa")), Map.of(), "i");
+        TaskKey b = key("k2", Map.of("stableSources",
+                Map.of("/scratch/wt-bbbbbbb/core/src/main/resources/src/x.txt", "a2")), Map.of(), "i");
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals(List.of("core/src/main/resources/src/x.txt"), v.culprits());
+    }
+
+    @Test void dirOrMissingFingerprintValuesAreComparedLikeAnyOtherHash() {
+        TaskKey a = key("k1", Map.of("classpath", Map.of(
+                "/w1/core/build/classes/java/main/io/joeyang/tracer/core/Greeter.class", "DIR")), Map.of(), "i");
+        TaskKey b = key("k2", Map.of("classpath", Map.of(
+                "/w2/core/build/classes/java/main/io/joeyang/tracer/core/Greeter.class", "MISSING")), Map.of(), "i");
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals(List.of("core classes"), v.culprits());
+    }
+
+    @Test void buildLogicCulpritIsAlwaysFirst() {
+        TaskKey a = key("k1", Map.of("classpath", Map.of("/w1/z/build/libs/z.jar", "aa")),
+                Map.of("options.compilerArgs", "v1"), "impl1");
+        TaskKey b = key("k2", Map.of("classpath", Map.of("/w2/z/build/libs/z.jar", "a2")),
+                Map.of("options.compilerArgs", "v2"), "impl2");
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals("build logic", v.culprits().get(0));
+        assertTrue(v.culprits().containsAll(List.of("build logic", "z.jar", "options.compilerArgs")));
     }
 }

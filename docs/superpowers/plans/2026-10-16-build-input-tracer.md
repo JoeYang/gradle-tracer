@@ -4661,8 +4661,13 @@ import java.util.stream.Stream;
  */
 public final class WorktreePool implements AutoCloseable {
     private static final Duration TIMEOUT = Duration.ofMinutes(2);
-    /** A worktree directory's own name: {@code wt-} plus a 7-hex-char short sha, nothing else. */
-    private static final Pattern WT_DIR_NAME = Pattern.compile("wt-[0-9a-f]{7}");
+    /**
+     * A worktree directory's own name: {@code wt-} plus a 7-hex-char short sha, nothing else.
+     * Package-private: {@link KeyComparator} reuses this to strip the worktree root off a culprit path before
+     * naming it, since the two commit's worktrees otherwise differ by this prefix. If this naming convention ever
+     * changes, {@link KeyComparator}'s stripping must change with it. (Amendment, Task 10 quality review.)
+     */
+    static final Pattern WT_DIR_NAME = Pattern.compile("wt-[0-9a-f]{7}");
 
     private final ProcessRunner git;
     private final Path repo;
@@ -4952,7 +4957,7 @@ class KeyComparatorTest {
         TaskKey a = key("k1", Map.of(), Map.of("options.compilerArgs", "v1"), "impl1");
         TaskKey b = key("k2", Map.of(), Map.of("options.compilerArgs", "v2"), "impl2");
         Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
-        assertEquals(List.of("options.compilerArgs", "build logic"), v.culprits());
+        assertEquals(List.of("build logic", "options.compilerArgs"), v.culprits());
     }
 
     @Test void culpritsAreCappedAtFour() {
@@ -4976,6 +4981,57 @@ class KeyComparatorTest {
                 Optional.of("Could not resolve com.example:missing:1.0"), BazelStatus.NOT_AVAILABLE);
         assertEquals(Status.BUILD_FAILED, v.status());
         assertTrue(v.error().orElseThrow().contains("missing:1.0"));
+    }
+
+    @Test void changedResourceIsNamedByModuleResources() {
+        TaskKey a = key("k1", Map.of("runtimeClasspath", Map.of("/w1/lib/build/resources/main/data.txt", "aa")), Map.of(), "i");
+        TaskKey b = key("k2", Map.of("runtimeClasspath", Map.of("/w2/lib/build/resources/main/data.txt", "a2")), Map.of(), "i");
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals(List.of("lib resources"), v.culprits());
+    }
+
+    @Test void rootProjectSourceHasNoModulePrefix() {
+        TaskKey a = key("k1", Map.of("stableSources", Map.of("/scratch/wt-aaaaaaa/src/main/java/Root.java", "aa")), Map.of(), "i");
+        TaskKey b = key("k2", Map.of("stableSources", Map.of("/scratch/wt-bbbbbbb/src/main/java/Root.java", "a2")), Map.of(), "i");
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals(List.of("src/main/java/Root.java"), v.culprits());
+    }
+
+    @Test void worktreeRootContainingSrcDoesNotPolluteDisplayName() {
+        TaskKey a = key("k1", Map.of("classpath",
+                Map.of("/home/u/src/tmp/gradle-tracer/wt-aaaaaaa/core/build/libs/core.jar", "aa")), Map.of(), "i");
+        TaskKey b = key("k2", Map.of("classpath",
+                Map.of("/home/u/src/tmp/gradle-tracer/wt-bbbbbbb/core/build/libs/core.jar", "a2")), Map.of(), "i");
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals(List.of("core.jar"), v.culprits());
+    }
+
+    @Test void nestedSrcSegmentUsesTheFirstOccurrenceAsTheModuleBoundary() {
+        TaskKey a = key("k1", Map.of("stableSources",
+                Map.of("/scratch/wt-aaaaaaa/core/src/main/resources/src/x.txt", "aa")), Map.of(), "i");
+        TaskKey b = key("k2", Map.of("stableSources",
+                Map.of("/scratch/wt-bbbbbbb/core/src/main/resources/src/x.txt", "a2")), Map.of(), "i");
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals(List.of("core/src/main/resources/src/x.txt"), v.culprits());
+    }
+
+    @Test void dirOrMissingFingerprintValuesAreComparedLikeAnyOtherHash() {
+        TaskKey a = key("k1", Map.of("classpath", Map.of(
+                "/w1/core/build/classes/java/main/io/joeyang/tracer/core/Greeter.class", "DIR")), Map.of(), "i");
+        TaskKey b = key("k2", Map.of("classpath", Map.of(
+                "/w2/core/build/classes/java/main/io/joeyang/tracer/core/Greeter.class", "MISSING")), Map.of(), "i");
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals(List.of("core classes"), v.culprits());
+    }
+
+    @Test void buildLogicCulpritIsAlwaysFirst() {
+        TaskKey a = key("k1", Map.of("classpath", Map.of("/w1/z/build/libs/z.jar", "aa")),
+                Map.of("options.compilerArgs", "v1"), "impl1");
+        TaskKey b = key("k2", Map.of("classpath", Map.of("/w2/z/build/libs/z.jar", "a2")),
+                Map.of("options.compilerArgs", "v2"), "impl2");
+        Verdict v = KeyComparator.verdict(C, Optional.of(a), Optional.of(b), Optional.empty(), BazelStatus.IMPACTED);
+        assertEquals("build logic", v.culprits().get(0));
+        assertTrue(v.culprits().containsAll(List.of("build logic", "z.jar", "options.compilerArgs")));
     }
 }
 ```
@@ -5052,6 +5108,8 @@ Expected: FAIL at compile, `cannot find symbol` for `KeyComparator`, `TableRende
 package io.joeyang.tracer.cli;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -5059,6 +5117,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.stream.Collectors;
 
 /** Pure logic: turns two adjacent keys into a verdict and a short list of culprits. */
 public final class KeyComparator {
@@ -5073,6 +5132,11 @@ public final class KeyComparator {
      */
     public static Verdict verdict(Commit commit, Optional<TaskKey> previous, Optional<TaskKey> current,
                                   Optional<String> error, BazelStatus bazel) {
+        Objects.requireNonNull(commit, "commit must not be null");
+        Objects.requireNonNull(previous, "previous must not be null");
+        Objects.requireNonNull(current, "current must not be null");
+        Objects.requireNonNull(error, "error must not be null");
+        Objects.requireNonNull(bazel, "bazel must not be null");
         if (current.isEmpty()) {
             return new Verdict(commit, Status.BUILD_FAILED, Optional.empty(), bazel, List.of(),
                     Optional.of(error.orElse("no cache key obtained")));
@@ -5087,7 +5151,13 @@ public final class KeyComparator {
     }
 
     static List<String> culprits(TaskKey before, TaskKey after) {
-        Set<String> names = new LinkedHashSet<>();
+        // "build logic" goes first unconditionally, ahead of file/value names, so it is never pushed past the
+        // MAX_CULPRITS cap and hidden behind "+N more": a build-logic change is usually the most actionable one.
+        List<String> names = new ArrayList<>();
+        if (!before.implementation().equals(after.implementation())) {
+            names.add("build logic");
+        }
+        Set<String> rest = new LinkedHashSet<>();
         for (String property : union(before.fileFingerprints().keySet(), after.fileFingerprints().keySet())) {
             Map<String, String> a = before.fileFingerprints().getOrDefault(property, Map.of());
             Map<String, String> b = after.fileFingerprints().getOrDefault(property, Map.of());
@@ -5095,27 +5165,24 @@ public final class KeyComparator {
             Map<String, String> bByName = byDisplayName(b);
             for (String name : union(aByName.keySet(), bByName.keySet())) {
                 if (!Objects.equals(aByName.get(name), bByName.get(name))) {
-                    names.add(name);
+                    rest.add(name);
                 }
             }
         }
         for (String property : union(before.valueFingerprints().keySet(), after.valueFingerprints().keySet())) {
             if (!Objects.equals(before.valueFingerprints().get(property), after.valueFingerprints().get(property))) {
-                names.add(property);
+                rest.add(property);
             }
         }
-        if (!before.implementation().equals(after.implementation())) {
-            names.add("build logic");
-        }
+        names.addAll(rest);
         if (names.isEmpty()) {
             return List.of("inputs changed (no fingerprint detail)");
         }
-        List<String> all = new ArrayList<>(names);
-        if (all.size() <= MAX_CULPRITS + 1) {
-            return all;
+        if (names.size() <= MAX_CULPRITS + 1) {
+            return names;
         }
-        List<String> capped = new ArrayList<>(all.subList(0, MAX_CULPRITS));
-        capped.add("+" + (all.size() - MAX_CULPRITS) + " more");
+        List<String> capped = new ArrayList<>(names.subList(0, MAX_CULPRITS));
+        capped.add("+" + (names.size() - MAX_CULPRITS) + " more");
         return capped;
     }
 
@@ -5125,21 +5192,28 @@ public final class KeyComparator {
      * join of all their hashes: it changes if any one of them changes.
      */
     private static Map<String, String> byDisplayName(Map<String, String> byPath) {
-        Map<String, List<String>> grouped = new java.util.LinkedHashMap<>();
+        Map<String, List<String>> grouped = new LinkedHashMap<>();
         byPath.forEach((path, hash) -> grouped.computeIfAbsent(displayName(path), k -> new ArrayList<>()).add(hash));
-        Map<String, String> out = new java.util.LinkedHashMap<>();
-        grouped.forEach((name, hashes) -> out.put(name, hashes.stream().sorted().collect(java.util.stream.Collectors.joining("+"))));
+        Map<String, String> out = new LinkedHashMap<>();
+        grouped.forEach((name, hashes) -> out.put(name, hashes.stream().sorted().collect(Collectors.joining("+"))));
         return out;
     }
 
     /**
      * {@code .../core/build/libs/core.jar → core.jar}; {@code .../app/appA/src/main/java/X.java → appA/src/main/java/X.java};
-     * {@code .../appA/build/classes/java/main/... → appA classes};
+     * {@code .../appA/build/classes/java/main/... → appA classes}; {@code .../appA/build/resources/main/... → appA resources};
      * {@code ~/.gradle/caches/modules-2/files-2.1/com.google.code.gson/gson/2.11.0/<sha>/gson-2.11.0.jar → com.google.code.gson:gson}
      * (so a version bump is one culprit, not a removed plus an added jar).
+     *
+     * <p>The worktree root (e.g. {@code .../wt-a1b2c3d/}) is stripped first, so a root path that itself happens to
+     * contain {@code /src/} (a user's checkout under {@code ~/src/...}) never leaks into the name, and two commits'
+     * worktrees — which differ only by that prefix — compare equal. What remains is matched against the module's
+     * own {@code /src/}, using its first occurrence so a resource that happens to be nested under another
+     * {@code src} directory (e.g. {@code core/src/main/resources/src/x.txt}) is still named relative to its real
+     * module ({@code core/src/...}), not the inner one.
      */
     static String displayName(String path) {
-        String p = path.replace('\\', '/');
+        String p = stripWorktreeRoot(path.replace('\\', '/'));
         int classes = p.lastIndexOf("/build/classes/");
         if (classes >= 0) {
             return lastSegmentBefore(p, classes) + " classes";
@@ -5155,15 +5229,32 @@ public final class KeyComparator {
                 return parts[0] + ":" + parts[1];
             }
         }
-        int src = p.lastIndexOf("/src/");
+        int src = p.indexOf("/src/");
         if (src >= 0) {
-            return lastSegmentBefore(p, src) + p.substring(src);
+            String module = lastSegmentBefore(p, src);
+            return module.isEmpty() ? p.substring(src + 1) : module + p.substring(src);
         }
         return p.substring(p.lastIndexOf('/') + 1);
     }
 
+    /**
+     * Strips everything up to and including the last {@code wt-<sha7>} path segment, i.e. {@link WorktreePool}'s
+     * worktree directory naming ({@link WorktreePool#WT_DIR_NAME}); a path with no such segment is returned as is.
+     * The result keeps its leading slash so the rest of {@link #displayName} can treat it uniformly.
+     */
+    private static String stripWorktreeRoot(String p) {
+        String[] segments = p.split("/");
+        for (int i = segments.length - 1; i >= 0; i--) {
+            if (WorktreePool.WT_DIR_NAME.matcher(segments[i]).matches()) {
+                return "/" + String.join("/", Arrays.asList(segments).subList(i + 1, segments.length));
+            }
+        }
+        return p;
+    }
+
     private static String lastSegmentBefore(String p, int index) {
-        return p.substring(p.lastIndexOf('/', index - 1) + 1, index);
+        int from = p.lastIndexOf('/', index - 1);
+        return from < 0 ? "" : p.substring(from + 1, index);
     }
 
     private static Set<String> union(Set<String> a, Set<String> b) {

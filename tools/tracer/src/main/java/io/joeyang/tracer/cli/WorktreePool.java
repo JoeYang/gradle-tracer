@@ -23,8 +23,13 @@ import java.util.stream.Stream;
  */
 public final class WorktreePool implements AutoCloseable {
     private static final Duration TIMEOUT = Duration.ofMinutes(2);
-    /** A worktree directory's own name: {@code wt-} plus a 7-hex-char short sha, nothing else. */
-    private static final Pattern WT_DIR_NAME = Pattern.compile("wt-[0-9a-f]{7}");
+    /**
+     * A worktree directory's own name: {@code wt-} plus a 7-hex-char short sha, nothing else.
+     * Package-private: {@link KeyComparator} reuses this to strip the worktree root off a culprit path before
+     * naming it, since the two commit's worktrees otherwise differ by this prefix. If this naming convention ever
+     * changes, {@link KeyComparator}'s stripping must change with it.
+     */
+    static final Pattern WT_DIR_NAME = Pattern.compile("wt-[0-9a-f]{7}");
 
     private final ProcessRunner git;
     private final Path repo;
