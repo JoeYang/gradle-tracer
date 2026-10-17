@@ -4159,6 +4159,18 @@ class RevisionRangeTest {
         assertTrue(e.getMessage().contains("bad object"), e.getMessage());
     }
 
+    @Test void rangeLogFailureIsAProviderError() {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git rev-parse --verify --quiet v1^{commit}", 0, A + "\n", "")
+                .on("git rev-parse --verify --quiet HEAD^{commit}", 0, C + "\n", "")
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + A, 0, A + "\u001f\u001fbaseline\n", "")
+                .on("git log --reverse --first-parent --format=%H%x1f%P%x1f%s " + A + ".." + C, 128, "",
+                        "fatal: bad revision range\n");
+
+        ProviderException e = assertThrows(ProviderException.class, () -> new RevisionRange(git, repo).resolve("v1", "HEAD"));
+        assertTrue(e.getMessage().contains("bad revision range"), e.getMessage());
+    }
+
     // String.lines() treats a bare \r as a line terminator too; a commit subject that happens to contain one must
     // not be split into a spurious extra "row" that then fails to parse as sha\x1fparents\x1fsubject.
     @Test void subjectContainingCarriageReturnIsNotSplitIntoAnExtraRow() throws Exception {
@@ -4644,7 +4656,8 @@ import java.util.stream.Stream;
 
 /**
  * Materialises commits as detached git worktrees under a scratch root and removes them again.
- * Removal happens on {@link #close()} and from a JVM shutdown hook, so Ctrl-C leaves nothing behind.
+ * Removal happens on {@link #close()} and from a JVM shutdown hook, so Ctrl-C leaves nothing behind, unless
+ * {@code keep} is set.
  */
 public final class WorktreePool implements AutoCloseable {
     private static final Duration TIMEOUT = Duration.ofMinutes(2);
@@ -4693,7 +4706,7 @@ public final class WorktreePool implements AutoCloseable {
         }
     }
 
-    /** A killed run leaves {@code wt-*} directories behind; git has already forgotten them (prune), so delete them. */
+    /** A killed run (or a kept one) leaves {@code wt-*} directories behind; delete them before prune forgets them. */
     private void sweepStaleDirectories() {
         if (!Files.isDirectory(root)) {
             return;
@@ -4808,7 +4821,7 @@ public final class WorktreePool implements AutoCloseable {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 103 tests at this point in the sequence (bumped from 74 by the Task 8 review rounds' 14 added tests, plus 1 for the code-review amendment's `malformedLogLineIsAProviderErrorNamingTheLine`, 2 for the quality-review fix's `sideBranchStartIsRejected`/`rootCommitWithEmptyParentFieldIsRejectedNotCrashed`, 2 for the quality-review fix's `checkoutUnregistersBeforeDeletingAPreexistingDirectory`/`reopeningThePoolCanReuseACommitKeptByThePreviousRun`, 2 for the quality-review fix's `keepWorktreesRegistersNoShutdownHook`/`notKeepingWorktreesRegistersAShutdownHook`, and 8 for the quality-review hardening fix's remaining git-error-mapping and worktree-bookkeeping tests).
+Expected: `BUILD SUCCESSFUL`; 104 tests at this point in the sequence (bumped from 74 by the Task 8 review rounds' 14 added tests, plus 1 for the code-review amendment's `malformedLogLineIsAProviderErrorNamingTheLine`, 2 for the quality-review fix's `sideBranchStartIsRejected`/`rootCommitWithEmptyParentFieldIsRejectedNotCrashed`, 2 for the quality-review fix's `checkoutUnregistersBeforeDeletingAPreexistingDirectory`/`reopeningThePoolCanReuseACommitKeptByThePreviousRun`, 2 for the quality-review fix's `keepWorktreesRegistersNoShutdownHook`/`notKeepingWorktreesRegistersAShutdownHook`, 8 for the quality-review hardening fix's remaining git-error-mapping and worktree-bookkeeping tests, and 1 for the nit-closing `rangeLogFailureIsAProviderError`).
 
 - [ ] **Step 5: Document and commit**
 
@@ -5255,7 +5268,7 @@ public final class TableRenderer {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 118 tests at this point in the sequence (bumped from 104 by the Task 8 review rounds' 14 added tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
+Expected: `BUILD SUCCESSFUL`; 119 tests at this point in the sequence (bumped from 105 by the Task 8 review rounds' 14 added tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
 
 - [ ] **Step 5: Document and commit**
 
@@ -5414,7 +5427,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 123 tests at this point in the sequence (bumped from 109 by the Task 8 review rounds' 14 added tests); the timeout test finishes in well under a second.
+Expected: `BUILD SUCCESSFUL`; 124 tests at this point in the sequence (bumped from 110 by the Task 8 review rounds' 14 added tests); the timeout test finishes in well under a second.
 
 - [ ] **Step 5: Commit**
 
@@ -5635,7 +5648,7 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 135 tests at this point in the sequence (bumped from 121 by the Task 8 review rounds' 14 added tests; the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 136 tests at this point in the sequence (bumped from 122 by the Task 8 review rounds' 14 added tests; the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -6142,7 +6155,7 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 146 tests at this point in the sequence (bumped from 132 by the Task 8 review rounds' 14 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 147 tests at this point in the sequence (bumped from 133 by the Task 8 review rounds' 14 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 

@@ -18,7 +18,8 @@ import java.util.stream.Stream;
 
 /**
  * Materialises commits as detached git worktrees under a scratch root and removes them again.
- * Removal happens on {@link #close()} and from a JVM shutdown hook, so Ctrl-C leaves nothing behind.
+ * Removal happens on {@link #close()} and from a JVM shutdown hook, so Ctrl-C leaves nothing behind, unless
+ * {@code keep} is set.
  */
 public final class WorktreePool implements AutoCloseable {
     private static final Duration TIMEOUT = Duration.ofMinutes(2);
@@ -67,7 +68,7 @@ public final class WorktreePool implements AutoCloseable {
         }
     }
 
-    /** A killed run leaves {@code wt-*} directories behind; git has already forgotten them (prune), so delete them. */
+    /** A killed run (or a kept one) leaves {@code wt-*} directories behind; delete them before prune forgets them. */
     private void sweepStaleDirectories() {
         if (!Files.isDirectory(root)) {
             return;

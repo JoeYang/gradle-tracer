@@ -55,6 +55,18 @@ class RevisionRangeTest {
         assertTrue(e.getMessage().contains("bad object"), e.getMessage());
     }
 
+    @Test void rangeLogFailureIsAProviderError() {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git rev-parse --verify --quiet v1^{commit}", 0, A + "\n", "")
+                .on("git rev-parse --verify --quiet HEAD^{commit}", 0, C + "\n", "")
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + A, 0, A + "\u001f\u001fbaseline\n", "")
+                .on("git log --reverse --first-parent --format=%H%x1f%P%x1f%s " + A + ".." + C, 128, "",
+                        "fatal: bad revision range\n");
+
+        ProviderException e = assertThrows(ProviderException.class, () -> new RevisionRange(git, repo).resolve("v1", "HEAD"));
+        assertTrue(e.getMessage().contains("bad revision range"), e.getMessage());
+    }
+
     // String.lines() treats a bare \r as a line terminator too; a commit subject that happens to contain one must
     // not be split into a spurious extra "row" that then fails to parse as sha\x1fparents\x1fsubject.
     @Test void subjectContainingCarriageReturnIsNotSplitIntoAnExtraRow() throws Exception {
