@@ -10,12 +10,20 @@ import java.util.Map;
 /** Scripted ProcessRunner: match commands by whole-token prefix, in registration order. */
 final class FakeProcessRunner implements ProcessRunner {
     private final Map<String, Object> scripted = new LinkedHashMap<>(); // prefix → Result | ProcessException
+    private final Map<String, Runnable> sideEffects = new LinkedHashMap<>();
     final List<List<String>> calls = new ArrayList<>();
     final List<Path> cwds = new ArrayList<>();
     final List<Duration> timeouts = new ArrayList<>();
 
     FakeProcessRunner on(String commandPrefix, int exit, String stdout, String stderr) {
         scripted.put(commandPrefix, new Result(exit, stdout, stderr));
+        return this;
+    }
+
+    /** Like {@link #on}, plus a side effect run once the command "executes" — e.g. writing the file a real tool would. */
+    FakeProcessRunner on(String commandPrefix, int exit, String stdout, String stderr, Runnable onRun) {
+        on(commandPrefix, exit, stdout, stderr);
+        sideEffects.put(commandPrefix, onRun);
         return this;
     }
 
@@ -34,6 +42,10 @@ final class FakeProcessRunner implements ProcessRunner {
             if (matchesPrefix(commandCopy, e.getKey())) {
                 if (e.getValue() instanceof ProcessException pe) {
                     throw pe;
+                }
+                Runnable onRun = sideEffects.get(e.getKey());
+                if (onRun != null) {
+                    onRun.run();
                 }
                 return (Result) e.getValue();
             }

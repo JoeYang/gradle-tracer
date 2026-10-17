@@ -1,15 +1,18 @@
 package io.joeyang.tracer.cli;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 
 /**
  * The Bazel oracle: {@code bazel-diff generate-hashes} per worktree and {@code get-impacted-targets} per adjacent pair.
@@ -20,23 +23,31 @@ import java.util.function.Function;
 public final class BazelDiffProvider implements ImpactProvider {
     static final String FINE_GRAINED_REPOS = "@maven";
     private static final String HOW_TO_GET = " (run tools/fetch-bazel-diff.sh or set BAZEL_DIFF=/path/to/binary)";
+    /** A Bazel label such as {@code //app/appA:appA}, {@code //lib}, or {@code @maven//:guava}. */
+    private static final Pattern BAZEL_LABEL = Pattern.compile("^(@[^/]*)?//[^:]*(:[^:]+)?$");
 
     private final ProcessRunner runner;
     private final Path repo;
     private final boolean offline;
     private final Duration timeout;
     private final Path binary;
+    private final PrintStream warnings;
 
     public BazelDiffProvider(ProcessRunner runner, Path repo, boolean offline, Duration timeout) {
         this(runner, repo, offline, timeout, defaultBinary(repo));
     }
 
     BazelDiffProvider(ProcessRunner runner, Path repo, boolean offline, Duration timeout, Path binary) {
+        this(runner, repo, offline, timeout, binary, System.err);
+    }
+
+    BazelDiffProvider(ProcessRunner runner, Path repo, boolean offline, Duration timeout, Path binary, PrintStream warnings) {
         this.runner = Objects.requireNonNull(runner, "runner must not be null");
         this.repo = Objects.requireNonNull(repo, "repo must not be null");
         this.offline = offline;
         this.timeout = Objects.requireNonNull(timeout, "timeout must not be null");
         this.binary = Objects.requireNonNull(binary, "binary must not be null");
+        this.warnings = Objects.requireNonNull(warnings, "warnings must not be null");
     }
 
     /** {@code $BAZEL_DIFF} if set, else the fetched copy under tools/bin, else whatever {@code bazel-diff} is on the PATH. */
@@ -62,8 +73,16 @@ public final class BazelDiffProvider implements ImpactProvider {
             command.add("--bazelCommandOptions=--repository_disable_download");
         }
         command.add(output.toString());
+        // A leftover file from a previous run must not be mistaken for this run's output if bazel-diff fails to write one.
+        try {
+            Files.deleteIfExists(output);
+        } catch (IOException e) {
+            throw new ProviderException("cannot remove the stale hashes file " + output + ": " + e.getMessage(), e);
+        }
+        boolean started = false;
         try {
             ProcessRunner.Result result = run(repo, command);
+            started = true;
             if (!result.ok()) {
                 throw new ProviderException("bazel-diff generate-hashes failed for " + worktree + ": " + bazelError(result));
             }
@@ -72,7 +91,10 @@ public final class BazelDiffProvider implements ImpactProvider {
             }
             return output;
         } finally {
-            cleanUpServer(worktree);
+            // Nothing to clean up if bazel-diff never started (e.g. the binary is missing): no Bazel server ran in the worktree.
+            if (started) {
+                cleanUpServer(worktree);
+            }
         }
     }
 
@@ -85,13 +107,26 @@ public final class BazelDiffProvider implements ImpactProvider {
         if (!result.ok()) {
             throw new ProviderException("bazel-diff get-impacted-targets failed for " + repo + ": " + bazelError(result));
         }
+        List<String> lines;
         try {
-            Set<String> targets = new LinkedHashSet<>();
-            Files.readAllLines(impacted).stream().map(String::strip).filter(l -> !l.isEmpty()).forEach(targets::add);
-            return targets;
+            lines = Files.readAllLines(impacted);
         } catch (IOException e) {
-            throw new ProviderException("cannot read " + impacted + ": " + e.getMessage(), e);
+            String reason = e.getMessage() == null || e.getMessage().equals(impacted.toString())
+                    ? e.getClass().getSimpleName() : e.getMessage();
+            throw new ProviderException("cannot read " + impacted + ": " + reason, e);
         }
+        Set<String> targets = new LinkedHashSet<>();
+        for (String rawLine : lines) {
+            String line = rawLine.strip();
+            if (line.isEmpty()) {
+                continue;
+            }
+            if (!BAZEL_LABEL.matcher(line).matches()) {
+                throw new ProviderException("bazel-diff wrote a line that is not a Bazel label ('" + line + "') in " + impacted);
+            }
+            targets.add(line);
+        }
+        return Collections.unmodifiableSet(targets);
     }
 
     private ProcessRunner.Result run(Path cwd, List<String> command) throws ProviderException {
@@ -116,9 +151,12 @@ public final class BazelDiffProvider implements ImpactProvider {
 
     private void cleanUpServer(Path worktree) {
         try {
-            runner.run(worktree, timeout, List.of("bazel", "clean", "--expunge"));
+            ProcessRunner.Result result = runner.run(worktree, timeout, List.of("bazel", "clean", "--expunge"));
+            if (!result.ok()) {
+                warnings.println("trace: bazel clean --expunge failed in " + worktree + ": " + result.firstErrorLine());
+            }
         } catch (ProcessException e) {
-            System.err.println("trace: could not clean the Bazel output base of " + worktree + " (" + e.getMessage() + ")");
+            warnings.println("trace: could not clean the Bazel output base of " + worktree + " (" + e.getMessage() + ")");
         }
     }
 }

@@ -3470,6 +3470,12 @@ since each needs a different fix from whoever is reading the report."
 - Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/BazelDiffProviderTest.java`
 - Modify: `docs/bazel-build.md`, `docs/tracer.md`
 
+A later review round (see the fixup commits below) added one package-private overload to the shared test helper
+`tools/tracer/src/test/java/io/joeyang/tracer/cli/FakeProcessRunner.java` — defined for Task 6, not reproduced here —
+so a scripted command can run a `Runnable` side effect (e.g. writing the output file a real tool would) when it
+"executes": `FakeProcessRunner on(String commandPrefix, int exit, String stdout, String stderr, Runnable onRun)`.
+Purely additive; the existing 4-arg `on(...)` is unchanged.
+
 Verified in the spike: bazel-diff is now a single static binary (Rust); `generate-hashes -w <ws> -b bazel --fineGrainedHashExternalRepos=@maven <out.json>` hashes each `@maven//...` target separately (51 of them in the spike; the bare spelling `maven` fails with `ERROR: invalid package name 'maven/'`); `get-impacted-targets -w <ws> --startingHashes a.json --finalHashes b.json -o out.txt` writes one label per line. Building it from the Bazel Central Registry module would compile Rust via rules_rust, so we download the pinned release binary instead. Each worktree gets its own Bazel output base; the provider runs `bazel clean --expunge` in the worktree afterwards so disk does not leak.
 
 - [ ] **Step 1: Fetch script and ignore rule**
@@ -3515,10 +3521,14 @@ Expected: `bazel-diff 60.0.0`. (Only linux-amd64 is pinned; other platforms set 
 package io.joeyang.tracer.cli;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -3545,11 +3555,24 @@ class BazelDiffProviderTest {
         return new BazelDiffProvider(runner, repo, offline, Duration.ofMinutes(1), binary);
     }
 
+    BazelDiffProvider provider(FakeProcessRunner runner, boolean offline, PrintStream warnings) {
+        return new BazelDiffProvider(runner, repo, offline, Duration.ofMinutes(1), binary, warnings);
+    }
+
     String generate() { return binary + " generate-hashes -w " + worktree + " -b bazel --fineGrainedHashExternalRepos=@maven"; }
 
+    private static void writeQuietly(Path path, String content) {
+        try {
+            Files.writeString(path, content);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
     @Test void hashesRunsGenerateHashesFromTheRepoAndCleansTheWorktreeServer() throws Exception {
-        FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 0, "", "").on("bazel clean --expunge", 0, "", "");
-        Files.writeString(out, "{}");
+        FakeProcessRunner runner = new FakeProcessRunner()
+                .on(generate(), 0, "", "", () -> writeQuietly(out, "{}"))
+                .on("bazel clean --expunge", 0, "", "");
 
         Path result = provider(runner, false).hashes(worktree, out);
 
@@ -3557,18 +3580,30 @@ class BazelDiffProviderTest {
         assertEquals(List.of(binary.toString(), "generate-hashes", "-w", worktree.toString(), "-b", "bazel",
                 "--fineGrainedHashExternalRepos=@maven", out.toString()), runner.calls.get(0));
         assertEquals(repo, runner.cwds.get(0));
+        assertEquals(Duration.ofMinutes(1), runner.timeouts.get(0));
         assertEquals(List.of("bazel", "clean", "--expunge"), runner.calls.get(1));
         assertEquals(worktree, runner.cwds.get(1));
+        assertEquals(Duration.ofMinutes(1), runner.timeouts.get(1));
     }
 
     @Test void offlineForbidsRepositoryDownloads() throws Exception {
-        FakeProcessRunner runner = new FakeProcessRunner().on(binary.toString(), 0, "", "").on("bazel clean", 0, "", "");
-        Files.writeString(out, "{}");
+        FakeProcessRunner runner = new FakeProcessRunner()
+                .on(binary.toString(), 0, "", "", () -> writeQuietly(out, "{}"))
+                .on("bazel clean", 0, "", "");
         provider(runner, true).hashes(worktree, out);
-        assertTrue(runner.calls.get(0).contains("--bazelCommandOptions=--repository_disable_download"), runner.calls.get(0).toString());
+        assertEquals(List.of(binary.toString(), "generate-hashes", "-w", worktree.toString(), "-b", "bazel",
+                "--fineGrainedHashExternalRepos=@maven", "--bazelCommandOptions=--repository_disable_download", out.toString()),
+                runner.calls.get(0));
     }
 
     @Test void missingOutputIsAProviderError() {
+        FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 0, "", "").on("bazel clean", 0, "", "");
+        ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, false).hashes(worktree, out));
+        assertTrue(e.getMessage().contains("no hashes file"), e.getMessage());
+    }
+
+    @Test void staleOutputFileDoesNotMaskABrokenRun() throws Exception {
+        Files.writeString(out, "{\"stale\":true}");
         FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 0, "", "").on("bazel clean", 0, "", "");
         ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, false).hashes(worktree, out));
         assertTrue(e.getMessage().contains("no hashes file"), e.getMessage());
@@ -3632,18 +3667,27 @@ class BazelDiffProviderTest {
 
     @Test void missingBinaryIsAProviderError() {
         FakeProcessRunner runner = new FakeProcessRunner()
-                .failWith(binary.toString(), ProcessException.cannotStart(List.of(binary.toString()), new IOException("No such file")))
-                .on("bazel clean", 0, "", "");
+                .failWith(binary.toString(), ProcessException.cannotStart(List.of(binary.toString()), new IOException("No such file")));
         ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, false).hashes(worktree, out));
         assertTrue(e.getMessage().contains("cannot start"), e.getMessage());
         assertTrue(e.getMessage().contains("fetch-bazel-diff"), "must tell the user how to get it: " + e.getMessage());
+        assertFalse(runner.ran("bazel clean"), "must not try to clean up a Bazel server that never started: " + runner.calls);
     }
 
     @Test void cleanupFailureIsIgnored() throws Exception {
-        FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 0, "", "")
+        FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 0, "", "", () -> writeQuietly(out, "{}"))
                 .failWith("bazel clean", ProcessException.timeout(List.of("bazel"), Duration.ofSeconds(1)));
-        Files.writeString(out, "{}");
         assertEquals(out, provider(runner, false).hashes(worktree, out));
+    }
+
+    @Test void cleanupNonZeroExitIsReportedThroughWarningsNotSwallowed() throws Exception {
+        FakeProcessRunner runner = new FakeProcessRunner().on(generate(), 0, "", "", () -> writeQuietly(out, "{}"))
+                .on("bazel clean --expunge", 1, "", "ERROR: disk full\n");
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+
+        assertEquals(out, provider(runner, false, new PrintStream(captured)).hashes(worktree, out));
+
+        assertTrue(captured.toString().contains("disk full"), captured.toString());
     }
 
     @Test void impactedTargetsReadsTheOutputFile() throws Exception {
@@ -3658,6 +3702,30 @@ class BazelDiffProviderTest {
         assertEquals(Set.of("//app/appA:appA", "//lib:lib"), targets);
         assertEquals(List.of(binary.toString(), "get-impacted-targets", "-w", repo.toString(), "-b", "bazel",
                 "--startingHashes", prev.toString(), "--finalHashes", cur.toString(), "-o", impacted.toString()), runner.calls.get(0));
+        assertThrows(UnsupportedOperationException.class, () -> targets.add("//new:target"), "must be unmodifiable");
+    }
+
+    @Test void impactedTargetsToleratesCrlfLineEndingsAndDedupes() throws Exception {
+        Path prev = Files.writeString(tmp.resolve("hashes-a.json"), "{}");
+        Path cur = Files.writeString(tmp.resolve("hashes-b.json"), "{}");
+        Path impacted = tmp.resolve("hashes-b.json.impacted.txt");
+        FakeProcessRunner runner = new FakeProcessRunner().on(binary + " get-impacted-targets", 0, "", "");
+        Files.writeString(impacted, "//app/appA:appA\r\n//lib:lib\r\n//lib:lib\r\n@maven//:guava\r\n");
+
+        Set<String> targets = provider(runner, false).impactedTargets(prev, cur);
+
+        assertEquals(Set.of("//app/appA:appA", "//lib:lib", "@maven//:guava"), targets);
+    }
+
+    @Test void impactedTargetsRejectsAStrayNonLabelLine() throws Exception {
+        Path prev = Files.writeString(tmp.resolve("hashes-a.json"), "{}");
+        Path cur = Files.writeString(tmp.resolve("hashes-b.json"), "{}");
+        Path impacted = tmp.resolve("hashes-b.json.impacted.txt");
+        FakeProcessRunner runner = new FakeProcessRunner().on(binary + " get-impacted-targets", 0, "", "");
+        Files.writeString(impacted, "//app/appA:appA\nWARNING: something unexpected\n");
+
+        ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, false).impactedTargets(prev, cur));
+        assertTrue(e.getMessage().contains("WARNING: something unexpected"), e.getMessage());
     }
 
     @Test void emptyImpactedFileIsEmptySet() throws Exception {
@@ -3666,6 +3734,19 @@ class BazelDiffProviderTest {
         Files.writeString(tmp.resolve("hashes-b.json.impacted.txt"), "");
         FakeProcessRunner runner = new FakeProcessRunner().on(binary + " get-impacted-targets", 0, "", "");
         assertEquals(Set.of(), provider(runner, false).impactedTargets(prev, cur));
+    }
+
+    @Test void impactedTargetsMissingFileIsAProviderErrorWithoutADuplicatedPath() throws Exception {
+        Path prev = Files.writeString(tmp.resolve("hashes-a.json"), "{}");
+        Path cur = Files.writeString(tmp.resolve("hashes-b.json"), "{}");
+        FakeProcessRunner runner = new FakeProcessRunner().on(binary + " get-impacted-targets", 0, "", "");
+        ProviderException e = assertThrows(ProviderException.class, () -> provider(runner, false).impactedTargets(prev, cur));
+        String message = e.getMessage();
+        String impactedPath = tmp.resolve("hashes-b.json.impacted.txt").toString();
+        int firstOccurrence = message.indexOf(impactedPath);
+        assertTrue(firstOccurrence >= 0, message);
+        assertTrue(message.indexOf(impactedPath, firstOccurrence + impactedPath.length()) < 0,
+                "path must not be duplicated in the message: " + message);
     }
 
     @Test void defaultBinaryPrefersTheFetchedCopy() throws IOException {
@@ -3702,15 +3783,18 @@ Expected: FAIL at compile, `cannot find symbol: class BazelDiffProvider`.
 package io.joeyang.tracer.cli;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 
 /**
  * The Bazel oracle: {@code bazel-diff generate-hashes} per worktree and {@code get-impacted-targets} per adjacent pair.
@@ -3721,23 +3805,31 @@ import java.util.function.Function;
 public final class BazelDiffProvider implements ImpactProvider {
     static final String FINE_GRAINED_REPOS = "@maven";
     private static final String HOW_TO_GET = " (run tools/fetch-bazel-diff.sh or set BAZEL_DIFF=/path/to/binary)";
+    /** A Bazel label such as {@code //app/appA:appA}, {@code //lib}, or {@code @maven//:guava}. */
+    private static final Pattern BAZEL_LABEL = Pattern.compile("^(@[^/]*)?//[^:]*(:[^:]+)?$");
 
     private final ProcessRunner runner;
     private final Path repo;
     private final boolean offline;
     private final Duration timeout;
     private final Path binary;
+    private final PrintStream warnings;
 
     public BazelDiffProvider(ProcessRunner runner, Path repo, boolean offline, Duration timeout) {
         this(runner, repo, offline, timeout, defaultBinary(repo));
     }
 
     BazelDiffProvider(ProcessRunner runner, Path repo, boolean offline, Duration timeout, Path binary) {
+        this(runner, repo, offline, timeout, binary, System.err);
+    }
+
+    BazelDiffProvider(ProcessRunner runner, Path repo, boolean offline, Duration timeout, Path binary, PrintStream warnings) {
         this.runner = Objects.requireNonNull(runner, "runner must not be null");
         this.repo = Objects.requireNonNull(repo, "repo must not be null");
         this.offline = offline;
         this.timeout = Objects.requireNonNull(timeout, "timeout must not be null");
         this.binary = Objects.requireNonNull(binary, "binary must not be null");
+        this.warnings = Objects.requireNonNull(warnings, "warnings must not be null");
     }
 
     /** {@code $BAZEL_DIFF} if set, else the fetched copy under tools/bin, else whatever {@code bazel-diff} is on the PATH. */
@@ -3763,8 +3855,16 @@ public final class BazelDiffProvider implements ImpactProvider {
             command.add("--bazelCommandOptions=--repository_disable_download");
         }
         command.add(output.toString());
+        // A leftover file from a previous run must not be mistaken for this run's output if bazel-diff fails to write one.
+        try {
+            Files.deleteIfExists(output);
+        } catch (IOException e) {
+            throw new ProviderException("cannot remove the stale hashes file " + output + ": " + e.getMessage(), e);
+        }
+        boolean started = false;
         try {
             ProcessRunner.Result result = run(repo, command);
+            started = true;
             if (!result.ok()) {
                 throw new ProviderException("bazel-diff generate-hashes failed for " + worktree + ": " + bazelError(result));
             }
@@ -3773,7 +3873,10 @@ public final class BazelDiffProvider implements ImpactProvider {
             }
             return output;
         } finally {
-            cleanUpServer(worktree);
+            // Nothing to clean up if bazel-diff never started (e.g. the binary is missing): no Bazel server ran in the worktree.
+            if (started) {
+                cleanUpServer(worktree);
+            }
         }
     }
 
@@ -3786,13 +3889,26 @@ public final class BazelDiffProvider implements ImpactProvider {
         if (!result.ok()) {
             throw new ProviderException("bazel-diff get-impacted-targets failed for " + repo + ": " + bazelError(result));
         }
+        List<String> lines;
         try {
-            Set<String> targets = new LinkedHashSet<>();
-            Files.readAllLines(impacted).stream().map(String::strip).filter(l -> !l.isEmpty()).forEach(targets::add);
-            return targets;
+            lines = Files.readAllLines(impacted);
         } catch (IOException e) {
-            throw new ProviderException("cannot read " + impacted + ": " + e.getMessage(), e);
+            String reason = e.getMessage() == null || e.getMessage().equals(impacted.toString())
+                    ? e.getClass().getSimpleName() : e.getMessage();
+            throw new ProviderException("cannot read " + impacted + ": " + reason, e);
         }
+        Set<String> targets = new LinkedHashSet<>();
+        for (String rawLine : lines) {
+            String line = rawLine.strip();
+            if (line.isEmpty()) {
+                continue;
+            }
+            if (!BAZEL_LABEL.matcher(line).matches()) {
+                throw new ProviderException("bazel-diff wrote a line that is not a Bazel label ('" + line + "') in " + impacted);
+            }
+            targets.add(line);
+        }
+        return Collections.unmodifiableSet(targets);
     }
 
     private ProcessRunner.Result run(Path cwd, List<String> command) throws ProviderException {
@@ -3817,9 +3933,12 @@ public final class BazelDiffProvider implements ImpactProvider {
 
     private void cleanUpServer(Path worktree) {
         try {
-            runner.run(worktree, timeout, List.of("bazel", "clean", "--expunge"));
+            ProcessRunner.Result result = runner.run(worktree, timeout, List.of("bazel", "clean", "--expunge"));
+            if (!result.ok()) {
+                warnings.println("trace: bazel clean --expunge failed in " + worktree + ": " + result.firstErrorLine());
+            }
         } catch (ProcessException e) {
-            System.err.println("trace: could not clean the Bazel output base of " + worktree + " (" + e.getMessage() + ")");
+            warnings.println("trace: could not clean the Bazel output base of " + worktree + " (" + e.getMessage() + ")");
         }
     }
 }
