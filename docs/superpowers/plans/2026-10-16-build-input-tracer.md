@@ -7890,6 +7890,54 @@ Run `./gradlew :tools:tracer:test`: still 221 (docs-only commit). Run `bazel tes
 
 ---
 
+#### Commit G2 — `docs(tracer): fix a Gradle-oracle sentence left stale by Task 13`
+
+Why: spec review caught one more stale sentence while reviewing Commit G: `docs/tracer.md`'s Gradle-oracle
+section said project dependencies "appear as class directories on the compile classpath and as jars on the
+runtime classpath, which *later commits* use to name a culprit". That predates Task 13 — culprit naming was
+already implemented in `KeyComparator.displayName` by the time this was written, so "later commits" stopped
+being accurate once Task 13 landed. Name the method instead of a vague forward reference.
+
+This belongs conceptually inside Commit G (same root cause, same reviewer pass), but lands as its own commit
+instead of an amendment to G: the branch is shared with other agents and the no-amend rule applies regardless of
+how small or related the fix is.
+
+```diff
+diff --git a/docs/tracer.md b/docs/tracer.md
+index 62d8597..e57cdbd 100644
+--- a/docs/tracer.md
++++ b/docs/tracer.md
+@@ -30,8 +30,8 @@ BUILD-FAILED row and a CHANGED row.
+ - `Appending input value fingerprint for '<property>' ...: <hash>` → scalar inputs such as `options.compilerArgs`
+ - `Appending input file fingerprints for '<property>' ...: <hash> - <NORMALIZATION>{<path>=<'normalized'|IGNORED> / <hash|DIR|MISSING>, ...}` → per-file hashes
+   (a directory or a deleted file prints `DIR`/`MISSING` in place of a hash; project dependencies otherwise appear as class
+-  directories on the compile classpath and as jars on the runtime classpath, which later commits use to name a culprit like
+-  `core classes` under `compileJava` versus `core.jar` under `fingerprint`)
++  directories on the compile classpath and as jars on the runtime classpath, which `KeyComparator.displayName` names as a
++  culprit like `core classes` under `compileJava` versus `core.jar` under `fingerprint`)
+ - `Build cache key for task '<path>' is <hash>` → the key, which closes the block
+ - `Non-cacheable because <reason>` (jar, installDist, …) also closes the block with no key; the provider reports the reason
+   instead of a silent `clean`
+```
+
+```bash
+git add docs/tracer.md
+git commit -F - <<'EOF'
+docs(tracer): fix a Gradle-oracle sentence left stale by Task 13
+
+"which later commits use to name a culprit" predated Task 13: culprit
+naming was already implemented in KeyComparator.displayName by the
+time this sentence was written, so "later commits" was never accurate
+after Task 13 landed. Name the actual method instead. Caught by spec
+review on commit G; kept separate rather than amending G, per the
+no-amend rule for this shared branch.
+EOF
+```
+
+Run `./gradlew :tools:tracer:test`: still 221 (docs-only commit).
+
+---
+
 ### Task 14: `./trace` wrapper and end-to-end test
 
 **Files:**
