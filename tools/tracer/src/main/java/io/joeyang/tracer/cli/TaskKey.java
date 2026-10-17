@@ -3,6 +3,7 @@ package io.joeyang.tracer.cli;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * A Gradle task's build-cache key and the fingerprints it was built from.
@@ -17,6 +18,9 @@ public record TaskKey(String taskPath, String key, Map<String, Map<String, Strin
                       Map<String, String> valueFingerprints, String implementation) {
 
     public TaskKey {
+        Objects.requireNonNull(taskPath, "taskPath must not be null");
+        Objects.requireNonNull(fileFingerprints, "fileFingerprints must not be null");
+        Objects.requireNonNull(valueFingerprints, "valueFingerprints must not be null");
         if (key == null || key.isBlank()) {
             throw new IllegalArgumentException("cache key must not be blank for " + taskPath);
         }

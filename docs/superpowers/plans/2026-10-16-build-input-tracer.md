@@ -2165,6 +2165,21 @@ class TaskKeyTest {
         var e = assertThrows(IllegalArgumentException.class, () -> new TaskKey(":t", "", Map.of(), Map.of(), "impl"));
         assertEquals("cache key must not be blank for :t", e.getMessage());
     }
+
+    @Test void rejectsNullTaskPath() {
+        var e = assertThrows(NullPointerException.class, () -> new TaskKey(null, "k", Map.of(), Map.of(), "impl"));
+        assertEquals("taskPath must not be null", e.getMessage());
+    }
+
+    @Test void rejectsNullFileFingerprints() {
+        var e = assertThrows(NullPointerException.class, () -> new TaskKey(":t", "k", null, Map.of(), "impl"));
+        assertEquals("fileFingerprints must not be null", e.getMessage());
+    }
+
+    @Test void rejectsNullValueFingerprints() {
+        var e = assertThrows(NullPointerException.class, () -> new TaskKey(":t", "k", Map.of(), null, "impl"));
+        assertEquals("valueFingerprints must not be null", e.getMessage());
+    }
 }
 ```
 
@@ -2356,6 +2371,7 @@ package io.joeyang.tracer.cli;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * A Gradle task's build-cache key and the fingerprints it was built from.
@@ -2370,6 +2386,9 @@ public record TaskKey(String taskPath, String key, Map<String, Map<String, Strin
                       Map<String, String> valueFingerprints, String implementation) {
 
     public TaskKey {
+        Objects.requireNonNull(taskPath, "taskPath must not be null");
+        Objects.requireNonNull(fileFingerprints, "fileFingerprints must not be null");
+        Objects.requireNonNull(valueFingerprints, "valueFingerprints must not be null");
         if (key == null || key.isBlank()) {
             throw new IllegalArgumentException("cache key must not be blank for " + taskPath);
         }
