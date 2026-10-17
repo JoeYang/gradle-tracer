@@ -47,3 +47,7 @@ A line inside the target task's own cache-debug block that CacheDebugLog cannot 
 `ProviderException` naming the task and the offending line, instead of escaping uncaught. Computing *which* culprit
 changed between two commits' `TaskKey`s, and the `./trace` revision-range walk that drives this provider, arrive in
 later commits.
+
+## Bazel oracle
+`BazelDiffProvider` — see `docs/bazel-build.md`. Failure modes: binary missing → the error names `tools/fetch-bazel-diff.sh`;
+non-zero exit → first error line; no output file → explicit error. The Cli turns any of these into an `n/a` column, never a verdict.
