@@ -10927,6 +10927,14 @@ Expected: `BUILD SUCCESSFUL` after roughly one to three minutes (two commits × 
 
 - [ ] **Step 3: Docs and commit**
 
+In `docs/tracer.md`, replace the sentence "The `./trace` wrapper arrives in a later commit." with:
+```markdown
+composed from. On a usage error it exits 1 with the usage text. The `./trace` wrapper builds the launcher with
+`installDist` and execs it from the repository root (see "Tests" below); because it `cd`s there first, a
+relative `--tsv-out` path given to `./trace` resolves against the repo root, not the caller's working
+directory — pass an absolute path to write elsewhere.
+```
+
 Append to `docs/tracer.md`:
 ```markdown
 ## Tests
@@ -10952,13 +10960,17 @@ See `docs/tracer.md` for the table format and exit codes.
 
 ```bash
 chmod +x trace
-git add tools/tracer trace docs/tracer.md README.md
-git commit -m "feat(tracer): add ./trace wrapper and an end-to-end test
+git add trace tools/tracer/build.gradle.kts tools/tracer/gradle.lockfile \
+  tools/tracer/src/e2eTest/java/io/joeyang/tracer/cli/EndToEndTest.java \
+  docs/tracer.md README.md docs/superpowers/plans/2026-10-16-build-input-tracer.md
+git commit -F - <<'EOF'
+feat(tracer): add ./trace wrapper and an end-to-end test
 
 ./trace builds the launcher with installDist and execs it from the repo
 root. The e2e suite proves the whole chain on a real git repo without
 Bazel: a public method added to core changes appA's compile key and
-leaves appC's alone."
+leaves appC's alone.
+EOF
 ```
 
 ---

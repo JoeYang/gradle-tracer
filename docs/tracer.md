@@ -3,7 +3,10 @@
 `tools/tracer` is a Java CLI. `Cli.main` parses options, then either walks the `--from`/`--to` range through
 detached git worktrees, asking the Gradle and bazel-diff providers about each commit and printing a verdict
 table, or — for `--at` — checks out that one revision and prints its Gradle key and the fingerprints it is
-composed from. On a usage error it exits 1 with the usage text. The `./trace` wrapper arrives in a later commit.
+composed from. On a usage error it exits 1 with the usage text. The `./trace` wrapper builds the launcher with
+`installDist` and execs it from the repository root (see "Tests" below); because it `cd`s there first, a
+relative `--tsv-out` path given to `./trace` resolves against the repo root, not the caller's working
+directory — pass an absolute path to write elsewhere.
 
 ## Vocabulary (`io.joeyang.tracer.cli`)
 | type | meaning |
@@ -215,3 +218,6 @@ was already detached and reparented before this run even started it, so it was n
 begin with; a Bazel server, which daemonizes as soon as it starts, detaches *during* this run, before `killTree`
 would ever need to act, so it is never a descendant of the client that launched it either. This is by design:
 those servers are meant to outlive the single invocation that happened to start or reuse them.
+
+## Tests
+`./gradlew :tools:tracer:test` (fast, fakes) · `./gradlew :tools:tracer:e2eTest` (real git + Gradle on a fixture repo, minutes).
