@@ -62,3 +62,11 @@ a stray non-label line in `get-impacted-targets`' output → explicit error nami
 - The sweep at construction only ever touches directories directly under the pool's root whose name is exactly `wt-` plus 7 lowercase hex characters; anything else there (a stray file, an unrelated directory) is left alone.
 - Two `WorktreePool`s must never point at the same root at the same time: the sweep-then-prune startup sequence and `wt-<sha7>` naming assume the root is exclusively theirs for the run's duration, and a second pool's sweep would delete worktrees the first one is actively using.
 - `--keep-worktrees` leaves everything — the checked-out directories and their `git worktree` registrations — in place when the run ends; no shutdown hook is even registered, so an interrupted run leaves them too. The *next* pool opened on that root deletes whatever is there in its startup sweep (git included, via sweep-then-prune) regardless of `--keep-worktrees`; a commit `checkout()` again within the same run tears down and recreates its worktree rather than reusing it in place.
+
+## Comparison
+`KeyComparator.verdict(commit, previousGoodKey, currentKey, error, bazel)`: no current key → `BUILD-FAILED`; no previous → `base`;
+equal keys → `clean`; otherwise `CHANGED` with culprits = file fingerprints that differ (compared by location-independent display
+name: `core.jar`, `appA/src/main/java/.../AppA.java`, `appA classes`, and `group:artifact` for jars from the Gradle module cache so a version bump is one culprit), value properties that differ, and `build logic` when the task
+implementation hash differs. Capped at four plus `+N more`.
+
+`TableRenderer.render` prints the fixed-width table and a summary line; `renderTsv` prints `sha\tsubject\tkey\tbazel\tverdict\tculprits` for scripts.
