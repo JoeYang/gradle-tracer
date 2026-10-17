@@ -113,6 +113,21 @@ class GradleKeyProviderTest {
         assertTrue(e.getMessage().contains("unrecognised cache debug output"), e.getMessage());
     }
 
+    @Test void unrecognisedCacheDebugOutputIsAProviderErrorNotAnUncaughtException() {
+        String log = """
+                > Task :app:appA:compileJava
+                Appending implementation to build cache key: org.gradle.api.tasks.compile.JavaCompile_Decorated@bbbb
+                Appending input file fingerprints for 'stableSources' to build cache key: aaaa - relativePath{/w/A.java='A.java' / 1111}
+                Build cache key for task ':app:appA:compileJava' is 35c0f7cbe157cd2e30090cc5510cec8c
+                """;
+        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 0, log, "");
+        ProviderException e = assertThrows(ProviderException.class,
+                () -> new GradleKeyProvider(runner, false, Duration.ofMinutes(1)).keyFor(worktree, TASK));
+        assertTrue(e.getMessage().contains("unrecognised cache debug output"), e.getMessage());
+        assertTrue(e.getMessage().contains("relativePath{/w/A.java='A.java' / 1111}"), e.getMessage());
+        assertTrue(e.getMessage().contains(TASK), e.getMessage());
+    }
+
     @Test void nonCacheableTaskIsExplainedNotMisreported() {
         FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 0, CacheDebugFixtures.COMPILE_JAVA_LOG, "");
         ProviderException e = assertThrows(ProviderException.class,

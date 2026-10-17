@@ -3050,6 +3050,21 @@ class GradleKeyProviderTest {
         assertTrue(e.getMessage().contains("unrecognised cache debug output"), e.getMessage());
     }
 
+    @Test void unrecognisedCacheDebugOutputIsAProviderErrorNotAnUncaughtException() {
+        String log = """
+                > Task :app:appA:compileJava
+                Appending implementation to build cache key: org.gradle.api.tasks.compile.JavaCompile_Decorated@bbbb
+                Appending input file fingerprints for 'stableSources' to build cache key: aaaa - relativePath{/w/A.java='A.java' / 1111}
+                Build cache key for task ':app:appA:compileJava' is 35c0f7cbe157cd2e30090cc5510cec8c
+                """;
+        FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 0, log, "");
+        ProviderException e = assertThrows(ProviderException.class,
+                () -> new GradleKeyProvider(runner, false, Duration.ofMinutes(1)).keyFor(worktree, TASK));
+        assertTrue(e.getMessage().contains("unrecognised cache debug output"), e.getMessage());
+        assertTrue(e.getMessage().contains("relativePath{/w/A.java='A.java' / 1111}"), e.getMessage());
+        assertTrue(e.getMessage().contains(TASK), e.getMessage());
+    }
+
     @Test void nonCacheableTaskIsExplainedNotMisreported() {
         FakeProcessRunner runner = new FakeProcessRunner().on(gradlew, 0, CacheDebugFixtures.COMPILE_JAVA_LOG, "");
         ProviderException e = assertThrows(ProviderException.class,
@@ -3237,11 +3252,15 @@ public final class GradleKeyProvider implements KeyProvider {
             throw new ProviderException("gradle failed for " + taskPath + ": " + whatWentWrong(result).orElseGet(result::firstErrorLine));
         }
         String output = result.stdout() + "\n" + result.stderr();
-        return CacheDebugLog.parse(output, taskPath).orElseThrow(() -> new ProviderException(
-                CacheDebugLog.nonCacheableReason(output, taskPath)
-                        .map(reason -> taskPath + " is not cacheable (" + reason + "), so it has no cache key; use compileJava or fingerprint")
-                        .orElse("gradle printed no cache key for " + taskPath
-                                + " (unrecognised cache debug output, or the task did not print a key)")));
+        try {
+            return CacheDebugLog.parse(output, taskPath).orElseThrow(() -> new ProviderException(
+                    CacheDebugLog.nonCacheableReason(output, taskPath)
+                            .map(reason -> taskPath + " is not cacheable (" + reason + "), so it has no cache key; use compileJava or fingerprint")
+                            .orElse("gradle printed no cache key for " + taskPath
+                                    + " (unrecognised cache debug output, or the task did not print a key)")));
+        } catch (IllegalArgumentException e) {
+            throw new ProviderException("gradle debug output for " + taskPath + " could not be parsed: " + e.getMessage(), e);
+        }
     }
 
     /** The first non-blank line after Gradle's {@code * What went wrong:} header, when it printed one. */
@@ -3265,7 +3284,7 @@ public final class GradleKeyProvider implements KeyProvider {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 50 tests at this point in the sequence (26 from Task 6 plus 24 here — 17 from the original parser/provider tests plus 7 added by review fixes: 5 for `/ DIR`, `/ MISSING`, a quoted path, an unknown normalization token, and `rootSpec$1`'s real entry count, and 2 for the "What went wrong" extraction and null constructor arguments). Then `bazel test //tools/tracer/...` must also pass — the fixtures are on the Bazel test classpath through the `resources` attribute.
+Expected: `BUILD SUCCESSFUL`; 51 tests at this point in the sequence (26 from Task 6 plus 25 here — 17 from the original parser/provider tests plus 8 added by review fixes: 5 for `/ DIR`, `/ MISSING`, a quoted path, an unknown normalization token, and `rootSpec$1`'s real entry count; 2 for the "What went wrong" extraction and null constructor arguments; and 1 for mapping an unrecognised cache-debug line to `ProviderException` instead of letting it escape uncaught). Then `bazel test //tools/tracer/...` must also pass — the fixtures are on the Bazel test classpath through the `resources` attribute.
 
 - [ ] **Step 6: Document and commit**
 
@@ -3614,7 +3633,7 @@ public final class BazelDiffProvider implements ImpactProvider {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 59 tests at this point in the sequence (the Task 7 review fixes added 7). Also `bazel test //tools/tracer/...` passes.
+Expected: `BUILD SUCCESSFUL`; 60 tests at this point in the sequence (the Task 7 review fixes added 8, across two rounds). Also `bazel test //tools/tracer/...` passes.
 
 - [ ] **Step 6: Try it for real against the repo**
 
@@ -4022,7 +4041,7 @@ public final class WorktreePool implements AutoCloseable {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 70 tests at this point in the sequence.
+Expected: `BUILD SUCCESSFUL`; 71 tests at this point in the sequence.
 
 - [ ] **Step 5: Document and commit**
 
@@ -4450,7 +4469,7 @@ public final class TableRenderer {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 85 tests at this point in the sequence. Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
+Expected: `BUILD SUCCESSFUL`; 86 tests at this point in the sequence. Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
 
 - [ ] **Step 5: Document and commit**
 
@@ -4609,7 +4628,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 90 tests at this point in the sequence; the timeout test finishes in well under a second.
+Expected: `BUILD SUCCESSFUL`; 91 tests at this point in the sequence; the timeout test finishes in well under a second.
 
 - [ ] **Step 5: Commit**
 
@@ -4830,7 +4849,7 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 102 tests at this point in the sequence (the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 103 tests at this point in the sequence (the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -5333,7 +5352,7 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 113 tests at this point in the sequence. Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 114 tests at this point in the sequence. Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 

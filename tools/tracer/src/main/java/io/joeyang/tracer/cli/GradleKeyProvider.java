@@ -43,11 +43,15 @@ public final class GradleKeyProvider implements KeyProvider {
             throw new ProviderException("gradle failed for " + taskPath + ": " + whatWentWrong(result).orElseGet(result::firstErrorLine));
         }
         String output = result.stdout() + "\n" + result.stderr();
-        return CacheDebugLog.parse(output, taskPath).orElseThrow(() -> new ProviderException(
-                CacheDebugLog.nonCacheableReason(output, taskPath)
-                        .map(reason -> taskPath + " is not cacheable (" + reason + "), so it has no cache key; use compileJava or fingerprint")
-                        .orElse("gradle printed no cache key for " + taskPath
-                                + " (unrecognised cache debug output, or the task did not print a key)")));
+        try {
+            return CacheDebugLog.parse(output, taskPath).orElseThrow(() -> new ProviderException(
+                    CacheDebugLog.nonCacheableReason(output, taskPath)
+                            .map(reason -> taskPath + " is not cacheable (" + reason + "), so it has no cache key; use compileJava or fingerprint")
+                            .orElse("gradle printed no cache key for " + taskPath
+                                    + " (unrecognised cache debug output, or the task did not print a key)")));
+        } catch (IllegalArgumentException e) {
+            throw new ProviderException("gradle debug output for " + taskPath + " could not be parsed: " + e.getMessage(), e);
+        }
     }
 
     /** The first non-blank line after Gradle's {@code * What went wrong:} header, when it printed one. */
