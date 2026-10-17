@@ -4155,6 +4155,21 @@ class RevisionRangeTest {
 
         assertThrows(ProviderException.class, () -> new RevisionRange(git, repo).resolve("A", "B"));
     }
+
+    // Amended by code review: `Commit`'s compact constructor throws an unchecked IllegalArgumentException for a
+    // malformed sha, and Task 13's CLI walk only catches UsageException/ProviderException — so a SHA-256 repo or a
+    // stray `git log` output line must surface as a named ProviderException, not an uncaught stack trace.
+    @Test void malformedLogLineIsAProviderErrorNamingTheLine() {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git rev-parse --verify --quiet v1^{commit}", 0, A + "\n", "")
+                .on("git rev-parse --verify --quiet HEAD^{commit}", 0, C + "\n", "")
+                .on("git log -1 --format=%H%x1f%s " + A, 0, A + "\u001fbaseline\n", "")
+                .on("git log --reverse --first-parent --format=%H%x1f%s " + A + ".." + C, 0,
+                        "not-a-valid-sha\u001fwhatever\n", "");
+
+        ProviderException e = assertThrows(ProviderException.class, () -> new RevisionRange(git, repo).resolve("v1", "HEAD"));
+        assertTrue(e.getMessage().contains("not-a-valid-sha"), e.getMessage());
+    }
 }
 ```
 
@@ -4293,7 +4308,9 @@ public final class RevisionRange {
         if (!log.ok()) {
             throw new ProviderException("git log failed: " + log.firstErrorLine());
         }
-        log.stdout().lines().filter(l -> !l.isBlank()).map(RevisionRange::parse).forEach(commits::add);
+        for (String line : log.stdout().lines().filter(l -> !l.isBlank()).toList()) {
+            commits.add(parse(line));
+        }
         if (commits.size() == 1) {
             throw new UsageException("no commits between '" + from + "' and '" + to + "'");
         }
@@ -4316,9 +4333,17 @@ public final class RevisionRange {
         }
     }
 
-    private static Commit parse(String line) {
+    // Amended by code review: Commit's compact constructor throws an unchecked IllegalArgumentException for a sha
+    // that isn't 40 lowercase hex chars. The CLI's walk (Task 13) catches only UsageException and ProviderException,
+    // so a SHA-256 repo or a stray `git log` output line would otherwise escape as a stack trace with exit code 1
+    // (the usage-error code) instead of the ProviderException exit code. Translate it here, naming the bad line.
+    private static Commit parse(String line) throws ProviderException {
         String[] parts = line.split("\u001f", 2);
-        return new Commit(parts[0], parts.length > 1 ? parts[1] : "");
+        try {
+            return new Commit(parts[0], parts.length > 1 ? parts[1] : "");
+        } catch (IllegalArgumentException e) {
+            throw new ProviderException("unexpected git log line: '" + line + "': " + e.getMessage(), e);
+        }
     }
 }
 ```
@@ -4455,25 +4480,44 @@ public final class WorktreePool implements AutoCloseable {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 88 tests at this point in the sequence (bumped from 74 by the Task 8 review rounds' 14 added tests).
+Expected: `BUILD SUCCESSFUL`; 89 tests at this point in the sequence (bumped from 74 by the Task 8 review rounds' 14 added tests, plus 1 for the code-review amendment's `malformedLogLineIsAProviderErrorNamingTheLine`).
 
 - [ ] **Step 5: Document and commit**
 
 Append to `docs/tracer.md`:
 ```markdown
 ## Git layer
-- `RevisionRange.resolve(from, to)` → `[from, …from..to oldest first]`, following the first-parent line so adjacent rows are parent and child even across merges. Unknown revision or empty range → `UsageException`; git not runnable → `ProviderException`.
+- `RevisionRange.resolve(from, to)` → `[from, …from..to oldest first]`, following the first-parent line so adjacent rows are parent and child even across merges. Unknown revision or empty range → `UsageException`; git not runnable → `ProviderException`. A `git log` line that does not parse into a well-formed `Commit` (e.g. a repo on SHA-256 object format, or a stray output line) is also a `ProviderException` naming the offending line, rather than an uncaught `IllegalArgumentException` from `Commit`'s constructor.
 - `WorktreePool` → `git worktree prune`, sweep of stale `wt-*` directories under the root (leftovers of a killed run), then `git worktree add --detach <root>/wt-<sha7> <sha>` per commit. `close()` and a shutdown hook run `git worktree remove --force`; `--keep-worktrees` disables removal.
 ```
 
+<!-- Note (docs-only follow-up commit): this task's single ~330-hand-written-line commit was split in two at its
+natural seam — RevisionRange is unrelated to WorktreePool — to stay under the 200-line target. -->
+
 ```bash
-git add tools/tracer docs/tracer.md
-git commit -m "feat(tracer): resolve revision ranges and manage throwaway worktrees
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/RevisionRange.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/RevisionRangeTest.java
+git commit -m "feat(tracer): walk the first-parent commit range
 
 Commits are listed oldest-first with the base commit in front so adjacent
-pairs can be compared. Every commit is checked out as a detached worktree
-under the scratch root and removed on close or JVM shutdown, so the user's
-working tree is never touched and Ctrl-C leaves nothing behind."
+pairs can be compared. Following first-parent means adjacent rows stay
+parent and child even across merges. A git log line that doesn't parse
+into a well-formed Commit (SHA-256 repo, stray output line) is translated
+into a ProviderException naming the line, instead of escaping as an
+uncaught IllegalArgumentException that the CLI's walk would misreport as
+a usage error."
+
+git add tools/tracer/src/main/java/io/joeyang/tracer/cli/WorktreePool.java \
+        tools/tracer/src/test/java/io/joeyang/tracer/cli/WorktreePoolTest.java \
+        docs/tracer.md
+git commit -m "feat(tracer): manage one detached worktree per commit
+
+Every commit in the walk needs its own checkout so Gradle/Bazel can run
+against it without disturbing the caller's working tree or each other.
+WorktreePool checks out a detached worktree per commit under a scratch
+root, sweeps wt-* leftovers from a killed prior run (git has already
+forgotten them after worktree prune), and removes everything on close
+or JVM shutdown so Ctrl-C leaves nothing behind."
 ```
 
 ---
@@ -4883,7 +4927,7 @@ public final class TableRenderer {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 103 tests at this point in the sequence (bumped from 89 by the Task 8 review rounds' 14 added tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
+Expected: `BUILD SUCCESSFUL`; 104 tests at this point in the sequence (bumped from 90 by the Task 8 review rounds' 14 added tests). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
 
 - [ ] **Step 5: Document and commit**
 
@@ -5042,7 +5086,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 108 tests at this point in the sequence (bumped from 94 by the Task 8 review rounds' 14 added tests); the timeout test finishes in well under a second.
+Expected: `BUILD SUCCESSFUL`; 109 tests at this point in the sequence (bumped from 95 by the Task 8 review rounds' 14 added tests); the timeout test finishes in well under a second.
 
 - [ ] **Step 5: Commit**
 
@@ -5263,7 +5307,7 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 120 tests at this point in the sequence (bumped from 106 by the Task 8 review rounds' 14 added tests; the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 121 tests at this point in the sequence (bumped from 107 by the Task 8 review rounds' 14 added tests; the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -5766,7 +5810,7 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 131 tests at this point in the sequence (bumped from 117 by the Task 8 review rounds' 14 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 132 tests at this point in the sequence (bumped from 118 by the Task 8 review rounds' 14 added tests). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 
