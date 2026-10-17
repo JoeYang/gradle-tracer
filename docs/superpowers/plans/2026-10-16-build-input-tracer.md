@@ -5600,10 +5600,11 @@ class DefaultProcessRunnerTest {
     }
 
     @Test void largeOutputDoesNotDeadlock() throws Exception {
-        var r = runner.run(tmp, Duration.ofSeconds(30), List.of("sh", "-c", "head -c 3000000 /dev/zero | tr '\\0' x; echo e 1>&2"));
+        var r = runner.run(tmp, Duration.ofSeconds(30), List.of("sh", "-c",
+                "head -c 3000000 /dev/zero | tr '\\0' x; head -c 2000000 /dev/zero | tr '\\0' y 1>&2"));
         assertEquals(0, r.exitCode());
         assertEquals(3_000_000, r.stdout().length());
-        assertEquals("e\n", r.stderr());
+        assertEquals(2_000_000, r.stderr().length());
     }
 
     @Test void nullCwdIsRejected() {
@@ -5657,8 +5658,77 @@ class DefaultProcessRunnerTest {
         assertEquals("", r.stdout());
         assertTrue(elapsedMs < 2_000, "took " + elapsedMs + "ms; cat must see immediate EOF on stdin, not hang");
     }
+
+    @Test void drainsRunOnNamedTracerThreadsRatherThanTheCommonPool() throws Exception {
+        Thread caller = new Thread(() -> {
+            try {
+                runner.run(tmp, Duration.ofSeconds(5), List.of("sh", "-c", "sleep 1"));
+            } catch (ProcessException ignored) {
+                // only the thread names while in flight matter for this test
+            }
+        });
+        caller.start();
+        boolean sawNamedDrainThread = false;
+        long pollUntil = System.nanoTime() + Duration.ofSeconds(3).toNanos();
+        while (System.nanoTime() < pollUntil && !sawNamedDrainThread) {
+            sawNamedDrainThread = Thread.getAllStackTraces().keySet().stream()
+                    .anyMatch(t -> t.getName().startsWith("tracer-stdout") || t.getName().startsWith("tracer-stderr"));
+            if (!sawNamedDrainThread) {
+                Thread.sleep(20);
+            }
+        }
+        caller.join();
+        assertTrue(sawNamedDrainThread,
+                "expected a thread named tracer-stdout/tracer-stderr while a run() was draining output");
+    }
+
+    @Test void timeoutKillsTheEntireProcessTreeNotJustTheShell() throws Exception {
+        String marker = "41.628374"; // unique per process so this test cannot match another test's child
+        ProcessException e = assertThrows(ProcessException.class,
+                () -> runner.run(tmp, Duration.ofSeconds(1), List.of("sh", "-c", "sleep " + marker + " & wait")));
+        assertTrue(e.getMessage().contains("did not finish"), e.getMessage());
+        assertTrue(waitForNoProcessMatching(marker),
+                "expected the backgrounded 'sleep " + marker + "' to be killed along with the shell");
+    }
+
+    @Test void preInterruptedThreadThrowsInterruptedAndKillsTheChild() throws Exception {
+        String marker = "52.194716"; // unique per process so this test cannot match another test's child
+        Thread.currentThread().interrupt();
+        try {
+            ProcessException e = assertThrows(ProcessException.class,
+                    () -> runner.run(tmp, Duration.ofSeconds(30), List.of("sleep", marker)));
+            assertTrue(e.getMessage().contains("interrupted"), e.getMessage());
+        } finally {
+            assertTrue(Thread.interrupted(), "expected the interrupt flag to still be set after run() propagated it");
+        }
+        assertTrue(waitForNoProcessMatching(marker),
+                "expected 'sleep " + marker + "' to be killed after the interrupt");
+    }
+
+    /** Polls the live process table for a process whose command line contains {@code marker}, up to 10s. */
+    private static boolean waitForNoProcessMatching(String marker) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        boolean dead;
+        do {
+            dead = ProcessHandle.allProcesses()
+                    .noneMatch(p -> p.info().commandLine().map(cmd -> cmd.contains(marker)).orElse(false));
+            if (!dead) {
+                Thread.sleep(50);
+            }
+        } while (!dead && System.nanoTime() < deadline);
+        return dead;
+    }
 }
 ```
+
+(The tree-kill and interrupt tests use a unique numeric "marker" embedded in the sleep duration argument and scan
+`ProcessHandle.allProcesses()` for it, rather than reading a pid from a file: a pidfile-based approach that writes
+after forking a background job races against how fast `killTree` runs, especially for the pre-interrupted case
+where the kill can happen before the shell has had a chance to write anything. The marker approach only depends on
+the process already being live in the OS process table, which is guaranteed the instant `ProcessBuilder.start()`
+returns, independent of any race inside the child's shell script. This test was observed to need meaningfully more
+than 5s to confirm death when the host machine is heavily loaded by many concurrent sandboxed test actions; the
+poll window was set to 10s for that reason — see the Task 11 quality-review report for the measured flake.)
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -5813,12 +5883,13 @@ rationale.)
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected (after the first two Task 11 quality-review fix commits land): `BUILD SUCCESSFUL`; 152 tests at this point
-in the sequence (139 after the original Task 11 implementation; +8 from the first quality-review fix commit — input
+Expected (after all three Task 11 quality-review fix commits land): `BUILD SUCCESSFUL`; 154 tests at this point in
+the sequence (139 after the original Task 11 implementation; +8 from the first quality-review fix commit — input
 validation, overflow-safe duration handling, and the deadline-bounded drain; +5 from the second — 4 in the new
 `ProcessExceptionTest` for the `ioFailed` factory and the duration-formatting fix, plus 1 for the named-drain-thread
-test); the timeout test finishes in well under a second. A third quality-review fix commit follows with a
-process-tree-kill test and a pre-interrupted-thread test; see that commit's region for the updated count.
+test; +2 from the third — the process-tree-kill test and the pre-interrupted-thread test; the enlarged stderr
+assertion on the existing large-output test added no new test method); the timeout test finishes in well under a
+second.
 
 - [ ] **Step 5: Commit**
 
@@ -6039,7 +6110,7 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 164 tests at this point in the sequence (bumped from 136 by the Task 10 quality-review rounds' 15 added tests, plus 13 more carried forward from the Task 11 quality-review fix commits so far; the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 166 tests at this point in the sequence (bumped from 136 by the Task 10 quality-review rounds' 15 added tests, plus 15 more carried forward from the Task 11 quality-review fix commits; the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -6546,7 +6617,7 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 175 tests at this point in the sequence (bumped from 147 by the Task 10 quality-review rounds' 15 added tests, plus 13 more carried forward from the Task 11 quality-review fix commits so far). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 177 tests at this point in the sequence (bumped from 147 by the Task 10 quality-review rounds' 15 added tests, plus 15 more carried forward from the Task 11 quality-review fix commits). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 

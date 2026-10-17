@@ -42,10 +42,11 @@ class DefaultProcessRunnerTest {
     }
 
     @Test void largeOutputDoesNotDeadlock() throws Exception {
-        var r = runner.run(tmp, Duration.ofSeconds(30), List.of("sh", "-c", "head -c 3000000 /dev/zero | tr '\\0' x; echo e 1>&2"));
+        var r = runner.run(tmp, Duration.ofSeconds(30), List.of("sh", "-c",
+                "head -c 3000000 /dev/zero | tr '\\0' x; head -c 2000000 /dev/zero | tr '\\0' y 1>&2"));
         assertEquals(0, r.exitCode());
         assertEquals(3_000_000, r.stdout().length());
-        assertEquals("e\n", r.stderr());
+        assertEquals(2_000_000, r.stderr().length());
     }
 
     @Test void nullCwdIsRejected() {
@@ -121,5 +122,42 @@ class DefaultProcessRunnerTest {
         caller.join();
         assertTrue(sawNamedDrainThread,
                 "expected a thread named tracer-stdout/tracer-stderr while a run() was draining output");
+    }
+
+    @Test void timeoutKillsTheEntireProcessTreeNotJustTheShell() throws Exception {
+        String marker = "41.628374"; // unique per process so this test cannot match another test's child
+        ProcessException e = assertThrows(ProcessException.class,
+                () -> runner.run(tmp, Duration.ofSeconds(1), List.of("sh", "-c", "sleep " + marker + " & wait")));
+        assertTrue(e.getMessage().contains("did not finish"), e.getMessage());
+        assertTrue(waitForNoProcessMatching(marker),
+                "expected the backgrounded 'sleep " + marker + "' to be killed along with the shell");
+    }
+
+    @Test void preInterruptedThreadThrowsInterruptedAndKillsTheChild() throws Exception {
+        String marker = "52.194716"; // unique per process so this test cannot match another test's child
+        Thread.currentThread().interrupt();
+        try {
+            ProcessException e = assertThrows(ProcessException.class,
+                    () -> runner.run(tmp, Duration.ofSeconds(30), List.of("sleep", marker)));
+            assertTrue(e.getMessage().contains("interrupted"), e.getMessage());
+        } finally {
+            assertTrue(Thread.interrupted(), "expected the interrupt flag to still be set after run() propagated it");
+        }
+        assertTrue(waitForNoProcessMatching(marker),
+                "expected 'sleep " + marker + "' to be killed after the interrupt");
+    }
+
+    /** Polls the live process table for a process whose command line contains {@code marker}, up to 10s. */
+    private static boolean waitForNoProcessMatching(String marker) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        boolean dead;
+        do {
+            dead = ProcessHandle.allProcesses()
+                    .noneMatch(p -> p.info().commandLine().map(cmd -> cmd.contains(marker)).orElse(false));
+            if (!dead) {
+                Thread.sleep(50);
+            }
+        } while (!dead && System.nanoTime() < deadline);
+        return dead;
     }
 }
