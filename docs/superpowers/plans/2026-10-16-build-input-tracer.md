@@ -2000,11 +2000,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Scripted ProcessRunner: match commands by prefix of their space-joined form, in registration order. */
+/** Scripted ProcessRunner: match commands by whole-token prefix, in registration order. */
 final class FakeProcessRunner implements ProcessRunner {
     private final Map<String, Object> scripted = new LinkedHashMap<>(); // prefix → Result | ProcessException
     final List<List<String>> calls = new ArrayList<>();
     final List<Path> cwds = new ArrayList<>();
+    final List<Duration> timeouts = new ArrayList<>();
 
     FakeProcessRunner on(String commandPrefix, int exit, String stdout, String stderr) {
         scripted.put(commandPrefix, new Result(exit, stdout, stderr));
@@ -2018,22 +2019,74 @@ final class FakeProcessRunner implements ProcessRunner {
 
     @Override
     public Result run(Path cwd, Duration timeout, List<String> command) throws ProcessException {
-        calls.add(command);
+        List<String> commandCopy = List.copyOf(command);
+        calls.add(commandCopy);
         cwds.add(cwd);
-        String joined = String.join(" ", command);
+        timeouts.add(timeout);
         for (Map.Entry<String, Object> e : scripted.entrySet()) {
-            if (joined.startsWith(e.getKey())) {
+            if (matchesPrefix(commandCopy, e.getKey())) {
                 if (e.getValue() instanceof ProcessException pe) {
                     throw pe;
                 }
                 return (Result) e.getValue();
             }
         }
-        throw new AssertionError("unexpected command: " + joined);
+        throw new AssertionError("unexpected command: " + String.join(" ", commandCopy));
     }
 
     boolean ran(String commandPrefix) {
-        return calls.stream().anyMatch(c -> String.join(" ", c).startsWith(commandPrefix));
+        return calls.stream().anyMatch(c -> matchesPrefix(c, commandPrefix));
+    }
+
+    /** True when {@code command} starts with every token of {@code commandPrefix}, split on whitespace. */
+    private static boolean matchesPrefix(List<String> command, String commandPrefix) {
+        List<String> prefix = List.of(commandPrefix.trim().split("\\s+"));
+        return command.size() >= prefix.size() && command.subList(0, prefix.size()).equals(prefix);
+    }
+}
+```
+
+`tools/tracer/src/test/java/io/joeyang/tracer/cli/FakeProcessRunnerTest.java`:
+```java
+package io.joeyang.tracer.cli;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import org.junit.jupiter.api.Test;
+
+class FakeProcessRunnerTest {
+    @Test void recordedCallIsAnImmutableCopyOfTheCommand() throws Exception {
+        FakeProcessRunner runner = new FakeProcessRunner().on("echo hi", 0, "", "");
+        List<String> command = new ArrayList<>(List.of("echo", "hi"));
+
+        runner.run(Path.of("."), Duration.ofSeconds(1), command);
+        command.add("mutated");
+
+        assertEquals(List.of("echo", "hi"), runner.calls.get(0));
+        assertThrows(UnsupportedOperationException.class, () -> runner.calls.get(0).add("x"));
+    }
+
+    @Test void recordsTheTimeoutOfEachCall() throws Exception {
+        FakeProcessRunner runner = new FakeProcessRunner().on("echo hi", 0, "", "");
+
+        runner.run(Path.of("."), Duration.ofMinutes(3), List.of("echo", "hi"));
+
+        assertEquals(List.of(Duration.ofMinutes(3)), runner.timeouts);
+    }
+
+    @Test void wholeTokenMatchPreventsACharacterLevelPrefixFromShadowing() throws Exception {
+        FakeProcessRunner runner = new FakeProcessRunner()
+                .on("git log", 0, "wrong match", "")
+                .on("git logout", 0, "correct match", "");
+
+        ProcessRunner.Result result = runner.run(Path.of("."), Duration.ofSeconds(1), List.of("git", "logout"));
+
+        assertEquals("correct match", result.stdout());
     }
 }
 ```
