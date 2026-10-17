@@ -1,9 +1,9 @@
 # tracer
 
-`tools/tracer` is a Java CLI. `Cli.main` parses options, then walks the `--from`/`--to` range through detached
-git worktrees, asking the Gradle and bazel-diff providers about each commit and printing a verdict table. On a
-usage error it exits 1 with the usage text. `--at` currently exits 2 with a placeholder message; it and the
-`./trace` wrapper arrive in later commits.
+`tools/tracer` is a Java CLI. `Cli.main` parses options, then either walks the `--from`/`--to` range through
+detached git worktrees, asking the Gradle and bazel-diff providers about each commit and printing a verdict
+table, or — for `--at` — checks out that one revision and prints its Gradle key and the fingerprints it is
+composed from. On a usage error it exits 1 with the usage text. The `./trace` wrapper arrives in a later commit.
 
 ## Vocabulary (`io.joeyang.tracer.cli`)
 | type | meaning |
@@ -19,8 +19,9 @@ usage error it exits 1 with the usage text. `--at` currently exits 2 with a plac
 | `UsageException` → exit 1; `ProviderException` → exit 2 | error classes |
 
 ## Exit codes
-0 no change in range · 1 usage error · 2 a tool failed (some row is BUILD-FAILED, or `--at`'s placeholder) · 3
-at least one CHANGED. 2 wins over 3 when a range has both a BUILD-FAILED row and a CHANGED row.
+0 no change in range (or `--at` succeeded) · 1 usage error · 2 a tool failed (some row is BUILD-FAILED, or
+`--at`'s checkout/key lookup failed) · 3 at least one CHANGED. 2 wins over 3 when a range has both a
+BUILD-FAILED row and a CHANGED row.
 
 ## Gradle oracle
 `GradleKeyProvider` runs `<worktree>/gradlew --console=plain --no-parallel --build-cache -Dorg.gradle.caching.debug=true <task>`
@@ -57,7 +58,7 @@ any of these failures to `BazelStatus.NOT_AVAILABLE` for the rest of the range (
 and prints a warning to stderr once, the first time bazel-diff fails.
 
 ## Git layer
-- `RevisionRange.resolve(from, to)` → `[from, …from..to oldest first]`, following the first-parent line so adjacent rows are parent and child even across merges. `from` must be an ancestor of `to` on that first-parent line (each row's own first parent, from `%P`, must equal the previous row's sha); a side-branch commit pulled in by a merge is a `UsageException` naming both shas, not a silent mismatch. Unknown revision (`git rev-parse --verify --quiet` exit 1) or an empty range → `UsageException`; any other git failure (not runnable, exit 128, a malformed `git log` line) → `ProviderException`, naming the offending line where there is one.
+- `RevisionRange.resolve(from, to)` → `[from, …from..to oldest first]`, following the first-parent line so adjacent rows are parent and child even across merges. `from` must be an ancestor of `to` on that first-parent line (each row's own first parent, from `%P`, must equal the previous row's sha); a side-branch commit pulled in by a merge is a `UsageException` naming both shas, not a silent mismatch. Unknown revision (`git rev-parse --verify --quiet` exit 1) or an empty range → `UsageException`; any other git failure (not runnable, exit 128, a malformed `git log` line) → `ProviderException`, naming the offending line where there is one. `RevisionRange.resolveOne(rev)` resolves and describes a single revision the same way, for `--at`.
 - `WorktreePool` → sweeps stale worktree directories *before* pruning (see below), then `git worktree add --detach <root>/wt-<sha7> <sha>` per commit. `close()` and a shutdown hook run `git worktree remove --force`; a failed removal is a warning, not a thrown exception, so one bad worktree doesn't stop the rest from being cleaned up.
 
 ### Worktree root rules
@@ -92,10 +93,11 @@ is a usage error naming the rejected value. Every value-taking option (`--from`,
 `--tsv-out`) rejects a value that is blank or starts with `-`, so a missing value can't silently swallow the
 next option: `--from --to y` fails naming `--from`, rather than failing later on `y` as an unknown option; a
 value missing at the end of the arguments fails the same way, naming the option. The one exception is
-`--timeout-minutes`: its values are validated as integers instead (see below). `--at` is meant to print the key
-and its composition with no comparison, so it already rejects `--tsv`, `--tsv-out` and `--no-bazel` alongside it,
-naming both flags in the error; `--at` itself prints a placeholder message and exits 2 until a later commit wires
-it up.
+`--timeout-minutes`: its values are validated as integers instead (see below). `--at` checks out one revision
+into a worktree via `RevisionRange.resolveOne` and prints that task's key, its implementation hash, every value
+fingerprint, and every file fingerprint (grouped by property, named the same way `KeyComparator.displayName`
+names a culprit) — no comparison, so it rejects `--tsv`, `--tsv-out` and `--no-bazel` alongside it, naming both
+flags in the error.
 
 `Cli.defaultScratchRoot` computes one fixed scratch root, `$TMPDIR/gradle-tracer`, that worktrees and bazel-diff
 hash files live under (never per pid — a fixed root is how the next run finds and sweeps a killed run's

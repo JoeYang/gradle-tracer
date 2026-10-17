@@ -141,10 +141,11 @@ class CliTest {
         assertTrue(err().contains("nope"), err());
     }
 
-    @Test void atArrivesInALaterCommit() throws Exception {
+    @Test void atPrintsTheKeyComposition() throws Exception {
         int code = run(keys, impacts, "appA", "--at", "tip", "--task", "fingerprint");
-        assertEquals(Cli.EXIT_TOOL_FAILURE, code);
-        assertTrue(err().contains("--at arrives in a later commit"), err());
+        assertEquals(Cli.EXIT_OK, code, err());
+        assertTrue(out().contains(":app:appA:fingerprint"), out());
+        assertTrue(out().contains("k2") && out().contains("core.jar") && out().contains("h2"), out());
     }
 
     @Test void tsvOutWithMissingParentIsAUsageError() throws Exception {

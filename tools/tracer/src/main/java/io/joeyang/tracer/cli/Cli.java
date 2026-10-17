@@ -14,7 +14,7 @@ import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
-/** Entry point: parses options and walks the range through worktrees, printing the verdicts. {@code --at} is a placeholder until a later commit. */
+/** Entry point: parses options, walks the range through worktrees, and prints the verdicts (or, for {@code --at}, one commit's key). */
 public final class Cli {
     public static final int EXIT_OK = 0;
     public static final int EXIT_USAGE = 1;
@@ -207,8 +207,7 @@ public final class Cli {
                 throw new UsageException("unknown app '" + o.app() + "': expected a directory app/" + o.app());
             }
             if (o.at() != null) {
-                err.println("trace: --at arrives in a later commit");
-                return EXIT_TOOL_FAILURE;
+                return at(o, out);
             }
             checkTsvOutWritable(o);
             return range(o, out, err);
@@ -330,5 +329,21 @@ public final class Cli {
             // best effort
         }
         return count;
+    }
+
+    private int at(Options o, PrintStream out) throws UsageException, ProviderException {
+        Commit commit = new RevisionRange(runner, repo).resolveOne(o.at());
+        try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
+            TaskKey key = keys.keyFor(pool.checkout(commit), o.taskPath());
+            out.println(key.taskPath() + " at " + commit.shortSha() + " " + commit.subject());
+            out.println("key: " + key.key());
+            out.println("implementation: " + key.implementation());
+            key.valueFingerprints().forEach((property, hash) -> out.println("value " + property + ": " + hash));
+            key.fileFingerprints().forEach((property, files) -> {
+                out.println("files " + property + ":");
+                files.forEach((path, hash) -> out.println("  " + KeyComparator.displayName(path) + "  " + hash));
+            });
+        }
+        return EXIT_OK;
     }
 }
