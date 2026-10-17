@@ -2339,12 +2339,14 @@ public interface ProcessRunner {
 }
 ```
 
-`tools/tracer/src/main/java/io/joeyang/tracer/cli/ProcessException.java`:
+`tools/tracer/src/main/java/io/joeyang/tracer/cli/ProcessException.java` (as amended by the Task 11 quality-review fixes — see that task's region for why):
 ```java
 package io.joeyang.tracer.cli;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 
 /** The process could not run to completion (as opposed to running and failing). */
 public final class ProcessException extends Exception {
@@ -2360,21 +2362,41 @@ public final class ProcessException extends Exception {
     }
 
     public static ProcessException timeout(List<String> command, Duration timeout) {
-        return new ProcessException("'" + String.join(" ", command) + "' did not finish within " + timeout.toSeconds() + "s", null, false);
+        return new ProcessException("'" + String.join(" ", command) + "' did not finish within " + format(timeout), null, false);
     }
 
     public static ProcessException interrupted(List<String> command) {
         return new ProcessException("interrupted while waiting for '" + command.get(0) + "'", null, false);
     }
 
+    /** The process ran, but reading its stdout or stderr failed (as opposed to a start failure or a timeout). */
+    public static ProcessException ioFailed(List<String> command, IOException cause) {
+        return new ProcessException("reading output of '" + command.get(0) + "' failed: " + cause.getMessage(), cause, false);
+    }
+
     /** True when the process never launched (e.g. the binary is missing) — false when it ran but timed out or was interrupted. */
     public boolean startFailed() {
         return startFailed;
     }
+
+    /** Sub-second durations in ms (e.g. "300ms"); otherwise seconds, with one decimal place only when needed. */
+    private static String format(Duration d) {
+        long millis = d.toMillis();
+        if (millis < 1000) {
+            return millis + "ms";
+        }
+        if (millis % 1000 == 0) {
+            return (millis / 1000) + "s";
+        }
+        return String.format(Locale.ROOT, "%.1fs", millis / 1000.0);
+    }
 }
 ```
 (`startFailed()` was added by a Task 8 re-review round so `BazelDiffProvider` could tell a launch failure from a
-timeout/interruption — see that task's region for why.)
+timeout/interruption — see that task's region for why. The `ioFailed` factory and the `format` helper were added by
+a Task 11 quality-review fix: a failed stdout/stderr read was previously swallowed into an empty string, which made
+a broken drain look like a silent success, and the previous `timeout.toSeconds() + "s"` formatting printed
+"within 0s" for sub-second timeouts.)
 
 `tools/tracer/src/main/java/io/joeyang/tracer/cli/ProviderException.java`:
 ```java
@@ -5663,9 +5685,13 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Runs commands with {@link ProcessBuilder}; streams are drained concurrently so large output cannot deadlock. */
 public final class DefaultProcessRunner implements ProcessRunner {
+
+    private static final AtomicInteger STDOUT_COUNT = new AtomicInteger();
+    private static final AtomicInteger STDERR_COUNT = new AtomicInteger();
 
     @Override
     public Result run(Path cwd, Duration timeout, List<String> command) throws ProcessException {
@@ -5689,8 +5715,8 @@ public final class DefaultProcessRunner implements ProcessRunner {
         } catch (IOException e) {
             throw ProcessException.cannotStart(command, e);
         }
-        CompletableFuture<String> stdout = drain(process.getInputStream());
-        CompletableFuture<String> stderr = drain(process.getErrorStream());
+        CompletableFuture<String> stdout = drain(process.getInputStream(), "tracer-stdout-" + STDOUT_COUNT.incrementAndGet());
+        CompletableFuture<String> stderr = drain(process.getErrorStream(), "tracer-stderr-" + STDERR_COUNT.incrementAndGet());
         boolean finished;
         try {
             finished = process.waitFor(safeMillis(timeout), TimeUnit.MILLISECONDS);
@@ -5715,9 +5741,8 @@ public final class DefaultProcessRunner implements ProcessRunner {
             killTree(process);
             throw ProcessException.timeout(command, timeout);
         } catch (ExecutionException e) {
-            // drain() never completes exceptionally today; kept to satisfy Future#get's checked signature.
             killTree(process);
-            throw new IllegalStateException("unexpected drain failure", e);
+            throw ProcessException.ioFailed(command, (IOException) e.getCause());
         } catch (InterruptedException e) {
             killTree(process);
             Thread.currentThread().interrupt();
@@ -5759,24 +5784,41 @@ public final class DefaultProcessRunner implements ProcessRunner {
         process.destroyForcibly();
     }
 
-    private static CompletableFuture<String> drain(InputStream in) {
-        return CompletableFuture.supplyAsync(() -> {
+    private static CompletableFuture<String> drain(InputStream in, String threadName) {
+        CompletableFuture<String> future = new CompletableFuture<>();
+        Thread thread = new Thread(() -> {
             try (in) {
-                return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+                future.complete(new String(in.readAllBytes(), StandardCharsets.UTF_8));
             } catch (IOException e) {
-                return "";
+                future.completeExceptionally(e);
             }
-        });
+        }, threadName);
+        thread.setDaemon(true);
+        thread.start();
+        return future;
     }
 }
 ```
 
-(The original implementation shown in the Step 1 draft above used `process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)` and `stdout.join()`/`stderr.join()` unconditionally; the Task 11 quality-review rounds hardened it with input validation, overflow-safe millisecond conversion, a single deadline shared across the wait and the drain so a backgrounded grandchild holding a pipe open cannot extend the call past the caller's timeout, and `/dev/null` stdin so a command that reads stdin cannot hang. See the Task 11 quality-review commits for the full rationale.)
+(The original implementation shown in the Step 1 draft above used `process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)`,
+`CompletableFuture.supplyAsync` on the common pool, and `stdout.join()`/`stderr.join()` unconditionally. The Task 11
+quality-review rounds hardened it in three commits: (1) input validation, overflow-safe millisecond conversion, and a
+single deadline shared across the wait and the drain so a backgrounded grandchild holding a pipe open cannot extend
+the call past the caller's timeout, plus `/dev/null` stdin so a command that reads stdin cannot hang; (2) draining on
+named daemon threads (`tracer-stdout-N`/`tracer-stderr-N`) instead of the shared common pool, surfacing a failed read
+as `ProcessException.ioFailed` instead of silently returning `""`, and fixing the timeout message's duration
+formatting; (3) a dedicated process-tree-kill test and a pre-interrupted-thread test. See those commits for the full
+rationale.)
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected (after the Task 11 quality-review fixes land): `BUILD SUCCESSFUL`; 147 tests at this point in the sequence (139 after the original Task 11 implementation, plus 8 more from the first quality-review fix commit: input validation, overflow-safe duration handling, and the deadline-bounded drain); the timeout test finishes in well under a second.
+Expected (after the first two Task 11 quality-review fix commits land): `BUILD SUCCESSFUL`; 152 tests at this point
+in the sequence (139 after the original Task 11 implementation; +8 from the first quality-review fix commit — input
+validation, overflow-safe duration handling, and the deadline-bounded drain; +5 from the second — 4 in the new
+`ProcessExceptionTest` for the `ioFailed` factory and the duration-formatting fix, plus 1 for the named-drain-thread
+test); the timeout test finishes in well under a second. A third quality-review fix commit follows with a
+process-tree-kill test and a pre-interrupted-thread test; see that commit's region for the updated count.
 
 - [ ] **Step 5: Commit**
 
@@ -5997,7 +6039,7 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 159 tests at this point in the sequence (bumped from 136 by the Task 10 quality-review rounds' 15 added tests, plus 8 more carried forward from the first Task 11 quality-review fix commit; the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 164 tests at this point in the sequence (bumped from 136 by the Task 10 quality-review rounds' 15 added tests, plus 13 more carried forward from the Task 11 quality-review fix commits so far; the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -6504,7 +6546,7 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 170 tests at this point in the sequence (bumped from 147 by the Task 10 quality-review rounds' 15 added tests, plus 8 more carried forward from the first Task 11 quality-review fix commit). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 175 tests at this point in the sequence (bumped from 147 by the Task 10 quality-review rounds' 15 added tests, plus 13 more carried forward from the Task 11 quality-review fix commits so far). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 

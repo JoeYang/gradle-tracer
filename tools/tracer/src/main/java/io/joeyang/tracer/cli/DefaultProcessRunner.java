@@ -14,9 +14,13 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Runs commands with {@link ProcessBuilder}; streams are drained concurrently so large output cannot deadlock. */
 public final class DefaultProcessRunner implements ProcessRunner {
+
+    private static final AtomicInteger STDOUT_COUNT = new AtomicInteger();
+    private static final AtomicInteger STDERR_COUNT = new AtomicInteger();
 
     @Override
     public Result run(Path cwd, Duration timeout, List<String> command) throws ProcessException {
@@ -40,8 +44,8 @@ public final class DefaultProcessRunner implements ProcessRunner {
         } catch (IOException e) {
             throw ProcessException.cannotStart(command, e);
         }
-        CompletableFuture<String> stdout = drain(process.getInputStream());
-        CompletableFuture<String> stderr = drain(process.getErrorStream());
+        CompletableFuture<String> stdout = drain(process.getInputStream(), "tracer-stdout-" + STDOUT_COUNT.incrementAndGet());
+        CompletableFuture<String> stderr = drain(process.getErrorStream(), "tracer-stderr-" + STDERR_COUNT.incrementAndGet());
         boolean finished;
         try {
             finished = process.waitFor(safeMillis(timeout), TimeUnit.MILLISECONDS);
@@ -66,9 +70,8 @@ public final class DefaultProcessRunner implements ProcessRunner {
             killTree(process);
             throw ProcessException.timeout(command, timeout);
         } catch (ExecutionException e) {
-            // drain() never completes exceptionally today; kept to satisfy Future#get's checked signature.
             killTree(process);
-            throw new IllegalStateException("unexpected drain failure", e);
+            throw ProcessException.ioFailed(command, (IOException) e.getCause());
         } catch (InterruptedException e) {
             killTree(process);
             Thread.currentThread().interrupt();
@@ -110,13 +113,17 @@ public final class DefaultProcessRunner implements ProcessRunner {
         process.destroyForcibly();
     }
 
-    private static CompletableFuture<String> drain(InputStream in) {
-        return CompletableFuture.supplyAsync(() -> {
+    private static CompletableFuture<String> drain(InputStream in, String threadName) {
+        CompletableFuture<String> future = new CompletableFuture<>();
+        Thread thread = new Thread(() -> {
             try (in) {
-                return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+                future.complete(new String(in.readAllBytes(), StandardCharsets.UTF_8));
             } catch (IOException e) {
-                return "";
+                future.completeExceptionally(e);
             }
-        });
+        }, threadName);
+        thread.setDaemon(true);
+        thread.start();
+        return future;
     }
 }

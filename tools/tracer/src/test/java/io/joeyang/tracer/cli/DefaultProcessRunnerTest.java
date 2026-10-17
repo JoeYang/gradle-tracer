@@ -99,4 +99,27 @@ class DefaultProcessRunnerTest {
         assertEquals("", r.stdout());
         assertTrue(elapsedMs < 2_000, "took " + elapsedMs + "ms; cat must see immediate EOF on stdin, not hang");
     }
+
+    @Test void drainsRunOnNamedTracerThreadsRatherThanTheCommonPool() throws Exception {
+        Thread caller = new Thread(() -> {
+            try {
+                runner.run(tmp, Duration.ofSeconds(5), List.of("sh", "-c", "sleep 1"));
+            } catch (ProcessException ignored) {
+                // only the thread names while in flight matter for this test
+            }
+        });
+        caller.start();
+        boolean sawNamedDrainThread = false;
+        long pollUntil = System.nanoTime() + Duration.ofSeconds(3).toNanos();
+        while (System.nanoTime() < pollUntil && !sawNamedDrainThread) {
+            sawNamedDrainThread = Thread.getAllStackTraces().keySet().stream()
+                    .anyMatch(t -> t.getName().startsWith("tracer-stdout") || t.getName().startsWith("tracer-stderr"));
+            if (!sawNamedDrainThread) {
+                Thread.sleep(20);
+            }
+        }
+        caller.join();
+        assertTrue(sawNamedDrainThread,
+                "expected a thread named tracer-stdout/tracer-stderr while a run() was draining output");
+    }
 }
