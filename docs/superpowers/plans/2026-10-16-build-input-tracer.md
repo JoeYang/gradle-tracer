@@ -4156,9 +4156,6 @@ class RevisionRangeTest {
         assertThrows(ProviderException.class, () -> new RevisionRange(git, repo).resolve("A", "B"));
     }
 
-    // Amended by code review: `Commit`'s compact constructor throws an unchecked IllegalArgumentException for a
-    // malformed sha, and Task 13's CLI walk only catches UsageException/ProviderException — so a SHA-256 repo or a
-    // stray `git log` output line must surface as a named ProviderException, not an uncaught stack trace.
     @Test void malformedLogLineIsAProviderErrorNamingTheLine() {
         FakeProcessRunner git = new FakeProcessRunner()
                 .on("git rev-parse --verify --quiet v1^{commit}", 0, A + "\n", "")
@@ -4333,7 +4330,7 @@ public final class RevisionRange {
         }
     }
 
-    // Amended by code review: Commit's compact constructor throws an unchecked IllegalArgumentException for a sha
+    // Amendment (code review): Commit's compact constructor throws an unchecked IllegalArgumentException for a sha
     // that isn't 40 lowercase hex chars. The CLI's walk (Task 13) catches only UsageException and ProviderException,
     // so a SHA-256 repo or a stray `git log` output line would otherwise escape as a stack trace with exit code 1
     // (the usage-error code) instead of the ProviderException exit code. Translate it here, naming the bad line.
