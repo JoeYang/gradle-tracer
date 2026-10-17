@@ -30,8 +30,8 @@ BUILD-FAILED row and a CHANGED row.
 - `Appending input value fingerprint for '<property>' ...: <hash>` → scalar inputs such as `options.compilerArgs`
 - `Appending input file fingerprints for '<property>' ...: <hash> - <NORMALIZATION>{<path>=<'normalized'|IGNORED> / <hash|DIR|MISSING>, ...}` → per-file hashes
   (a directory or a deleted file prints `DIR`/`MISSING` in place of a hash; project dependencies otherwise appear as class
-  directories on the compile classpath and as jars on the runtime classpath, which later commits use to name a culprit like
-  `core classes` under `compileJava` versus `core.jar` under `fingerprint`)
+  directories on the compile classpath and as jars on the runtime classpath, which `KeyComparator.displayName` names as a
+  culprit like `core classes` under `compileJava` versus `core.jar` under `fingerprint`)
 - `Build cache key for task '<path>' is <hash>` → the key, which closes the block
 - `Non-cacheable because <reason>` (jar, installDist, …) also closes the block with no key; the provider reports the reason
   instead of a silent `clean`
