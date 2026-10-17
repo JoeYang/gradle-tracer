@@ -71,7 +71,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
             throw ProcessException.timeout(command, timeout);
         } catch (ExecutionException e) {
             killTree(process);
-            throw ProcessException.ioFailed(command, (IOException) e.getCause());
+            throw asProcessException(command, e.getCause());
         } catch (InterruptedException e) {
             killTree(process);
             Thread.currentThread().interrupt();
@@ -113,13 +113,34 @@ public final class DefaultProcessRunner implements ProcessRunner {
         process.destroyForcibly();
     }
 
+    /**
+     * Turns a drain failure into a {@link ProcessException}. An {@link IOException} became {@code ioFailed}; a
+     * {@link RuntimeException} or {@link Error} is rethrown as-is rather than being reported as an I/O failure, since
+     * it is not one (e.g. it could be an {@link OutOfMemoryError} while buffering a huge stream).
+     */
+    private static ProcessException asProcessException(List<String> command, Throwable drainFailure) {
+        if (drainFailure instanceof IOException io) {
+            return ProcessException.ioFailed(command, io);
+        }
+        if (drainFailure instanceof RuntimeException re) {
+            throw re;
+        }
+        if (drainFailure instanceof Error error) {
+            throw error;
+        }
+        throw new IllegalStateException("unexpected drain failure", drainFailure);
+    }
+
     private static CompletableFuture<String> drain(InputStream in, String threadName) {
         CompletableFuture<String> future = new CompletableFuture<>();
         Thread thread = new Thread(() -> {
             try (in) {
                 future.complete(new String(in.readAllBytes(), StandardCharsets.UTF_8));
-            } catch (IOException e) {
-                future.completeExceptionally(e);
+            } catch (Throwable t) {
+                // Catch Throwable, not just IOException: an uncaught Error (e.g. OutOfMemoryError buffering a huge
+                // stream) would otherwise leave this future incomplete forever, so run() would block out its whole
+                // timeout budget waiting on it and then misreport a plain timeout instead of the real failure.
+                future.completeExceptionally(t);
             }
         }, threadName);
         thread.setDaemon(true);

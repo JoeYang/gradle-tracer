@@ -5564,6 +5564,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -5683,7 +5684,7 @@ class DefaultProcessRunnerTest {
     }
 
     @Test void timeoutKillsTheEntireProcessTreeNotJustTheShell() throws Exception {
-        String marker = "41.628374"; // unique per process so this test cannot match another test's child
+        String marker = uniqueMarker("41"); // unique per run so this test cannot match an unrelated process
         ProcessException e = assertThrows(ProcessException.class,
                 () -> runner.run(tmp, Duration.ofSeconds(1), List.of("sh", "-c", "sleep " + marker + " & wait")));
         assertTrue(e.getMessage().contains("did not finish"), e.getMessage());
@@ -5692,7 +5693,7 @@ class DefaultProcessRunnerTest {
     }
 
     @Test void preInterruptedThreadThrowsInterruptedAndKillsTheChild() throws Exception {
-        String marker = "52.194716"; // unique per process so this test cannot match another test's child
+        String marker = uniqueMarker("52"); // unique per run so this test cannot match an unrelated process
         Thread.currentThread().interrupt();
         try {
             ProcessException e = assertThrows(ProcessException.class,
@@ -5705,13 +5706,21 @@ class DefaultProcessRunnerTest {
                 "expected 'sleep " + marker + "' to be killed after the interrupt");
     }
 
-    /** Polls the live process table for a process whose command line contains {@code marker}, up to 10s. */
+    /**
+     * A sleep duration (one decimal point, so it stays valid for {@code sleep}) that is unique to this JVM and this
+     * call, so it cannot collide with an unrelated process already on the (possibly shared, e.g. Bazel sandbox) host.
+     */
+    private static String uniqueMarker(String wholeSeconds) {
+        return wholeSeconds + "." + ProcessHandle.current().pid() + System.nanoTime();
+    }
+
+    /** Polls the live process table for a process with an exact argument of {@code marker}, up to 10s. */
     private static boolean waitForNoProcessMatching(String marker) throws InterruptedException {
         long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
         boolean dead;
         do {
             dead = ProcessHandle.allProcesses()
-                    .noneMatch(p -> p.info().commandLine().map(cmd -> cmd.contains(marker)).orElse(false));
+                    .noneMatch(p -> p.info().arguments().map(Arrays::asList).map(args -> args.contains(marker)).orElse(false));
             if (!dead) {
                 Thread.sleep(50);
             }
@@ -5728,7 +5737,13 @@ where the kill can happen before the shell has had a chance to write anything. T
 the process already being live in the OS process table, which is guaranteed the instant `ProcessBuilder.start()`
 returns, independent of any race inside the child's shell script. This test was observed to need meaningfully more
 than 5s to confirm death when the host machine is heavily loaded by many concurrent sandboxed test actions; the
-poll window was set to 10s for that reason — see the Task 11 quality-review report for the measured flake.)
+poll window was set to 10s for that reason. A second Task 11 quality-review round traced those >5s sightings to a
+fixed literal marker colliding with an unrelated `sleep` already on the host — the Bazel sandbox shares the host's
+process table, so another process's command line could contain the same literal substring. The fix, in a later
+quality-review commit, builds the marker per run from the JVM's own pid and `System.nanoTime()` and matches an exact
+entry of `info().arguments()` instead of a `contains` on the whole command line; the kill itself was always visible
+within tens of milliseconds once collisions were ruled out, so the 10s window stayed only as headroom, not because
+the kill is actually slow.)
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -5812,7 +5827,7 @@ public final class DefaultProcessRunner implements ProcessRunner {
             throw ProcessException.timeout(command, timeout);
         } catch (ExecutionException e) {
             killTree(process);
-            throw ProcessException.ioFailed(command, (IOException) e.getCause());
+            throw asProcessException(command, e.getCause());
         } catch (InterruptedException e) {
             killTree(process);
             Thread.currentThread().interrupt();
@@ -5854,13 +5869,34 @@ public final class DefaultProcessRunner implements ProcessRunner {
         process.destroyForcibly();
     }
 
+    /**
+     * Turns a drain failure into a {@link ProcessException}. An {@link IOException} became {@code ioFailed}; a
+     * {@link RuntimeException} or {@link Error} is rethrown as-is rather than being reported as an I/O failure, since
+     * it is not one (e.g. it could be an {@link OutOfMemoryError} while buffering a huge stream).
+     */
+    private static ProcessException asProcessException(List<String> command, Throwable drainFailure) {
+        if (drainFailure instanceof IOException io) {
+            return ProcessException.ioFailed(command, io);
+        }
+        if (drainFailure instanceof RuntimeException re) {
+            throw re;
+        }
+        if (drainFailure instanceof Error error) {
+            throw error;
+        }
+        throw new IllegalStateException("unexpected drain failure", drainFailure);
+    }
+
     private static CompletableFuture<String> drain(InputStream in, String threadName) {
         CompletableFuture<String> future = new CompletableFuture<>();
         Thread thread = new Thread(() -> {
             try (in) {
                 future.complete(new String(in.readAllBytes(), StandardCharsets.UTF_8));
-            } catch (IOException e) {
-                future.completeExceptionally(e);
+            } catch (Throwable t) {
+                // Catch Throwable, not just IOException: an uncaught Error (e.g. OutOfMemoryError buffering a huge
+                // stream) would otherwise leave this future incomplete forever, so run() would block out its whole
+                // timeout budget waiting on it and then misreport a plain timeout instead of the real failure.
+                future.completeExceptionally(t);
             }
         }, threadName);
         thread.setDaemon(true);
@@ -5872,13 +5908,18 @@ public final class DefaultProcessRunner implements ProcessRunner {
 
 (The original implementation shown in the Step 1 draft above used `process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)`,
 `CompletableFuture.supplyAsync` on the common pool, and `stdout.join()`/`stderr.join()` unconditionally. The Task 11
-quality-review rounds hardened it in three commits: (1) input validation, overflow-safe millisecond conversion, and a
+quality-review rounds hardened it in four commits: (1) input validation, overflow-safe millisecond conversion, and a
 single deadline shared across the wait and the drain so a backgrounded grandchild holding a pipe open cannot extend
 the call past the caller's timeout, plus `/dev/null` stdin so a command that reads stdin cannot hang; (2) draining on
 named daemon threads (`tracer-stdout-N`/`tracer-stderr-N`) instead of the shared common pool, surfacing a failed read
 as `ProcessException.ioFailed` instead of silently returning `""`, and fixing the timeout message's duration
-formatting; (3) a dedicated process-tree-kill test and a pre-interrupted-thread test. See those commits for the full
-rationale.)
+formatting; (3) a dedicated process-tree-kill test and a pre-interrupted-thread test; (4) two nits closed in one
+commit — the tree-kill/interrupt tests' marker is now built per run from the JVM's pid and `System.nanoTime()`
+instead of a fixed literal, to rule out colliding with an unrelated process already on the host (the Bazel sandbox
+shares the host's process table), and `drain`'s catch widened from `IOException` to `Throwable` via the
+`asProcessException` helper, since catching only `IOException` left an uncaught `Error` (e.g. an `OutOfMemoryError`)
+completing nothing — `run()` would then wait out its whole timeout budget and misreport a plain timeout instead of
+the real failure. See those commits for the full rationale.)
 
 - [ ] **Step 4: Run the tests to verify they pass**
 

@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -125,7 +126,7 @@ class DefaultProcessRunnerTest {
     }
 
     @Test void timeoutKillsTheEntireProcessTreeNotJustTheShell() throws Exception {
-        String marker = "41.628374"; // unique per process so this test cannot match another test's child
+        String marker = uniqueMarker("41"); // unique per run so this test cannot match an unrelated process
         ProcessException e = assertThrows(ProcessException.class,
                 () -> runner.run(tmp, Duration.ofSeconds(1), List.of("sh", "-c", "sleep " + marker + " & wait")));
         assertTrue(e.getMessage().contains("did not finish"), e.getMessage());
@@ -134,7 +135,7 @@ class DefaultProcessRunnerTest {
     }
 
     @Test void preInterruptedThreadThrowsInterruptedAndKillsTheChild() throws Exception {
-        String marker = "52.194716"; // unique per process so this test cannot match another test's child
+        String marker = uniqueMarker("52"); // unique per run so this test cannot match an unrelated process
         Thread.currentThread().interrupt();
         try {
             ProcessException e = assertThrows(ProcessException.class,
@@ -147,13 +148,21 @@ class DefaultProcessRunnerTest {
                 "expected 'sleep " + marker + "' to be killed after the interrupt");
     }
 
-    /** Polls the live process table for a process whose command line contains {@code marker}, up to 10s. */
+    /**
+     * A sleep duration (one decimal point, so it stays valid for {@code sleep}) that is unique to this JVM and this
+     * call, so it cannot collide with an unrelated process already on the (possibly shared, e.g. Bazel sandbox) host.
+     */
+    private static String uniqueMarker(String wholeSeconds) {
+        return wholeSeconds + "." + ProcessHandle.current().pid() + System.nanoTime();
+    }
+
+    /** Polls the live process table for a process with an exact argument of {@code marker}, up to 10s. */
     private static boolean waitForNoProcessMatching(String marker) throws InterruptedException {
         long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
         boolean dead;
         do {
             dead = ProcessHandle.allProcesses()
-                    .noneMatch(p -> p.info().commandLine().map(cmd -> cmd.contains(marker)).orElse(false));
+                    .noneMatch(p -> p.info().arguments().map(Arrays::asList).map(args -> args.contains(marker)).orElse(false));
             if (!dead) {
                 Thread.sleep(50);
             }
