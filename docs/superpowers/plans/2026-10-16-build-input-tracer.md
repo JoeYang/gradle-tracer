@@ -2051,9 +2051,67 @@ class CommitTest {
     static final String SHA = "0123456789abcdef0123456789abcdef01234567";
 
     @Test void shortShaIsSevenChars() { assertEquals("0123456", new Commit(SHA, "x").shortSha()); }
-    @Test void rejectsNonHexSha() { assertThrows(IllegalArgumentException.class, () -> new Commit("nope", "x")); }
-    @Test void rejectsShortSha() { assertThrows(IllegalArgumentException.class, () -> new Commit("0123456", "x")); }
+
+    @Test void rejectsNonHexSha() {
+        var e = assertThrows(IllegalArgumentException.class, () -> new Commit("nope", "x"));
+        assertEquals("expected a 40-char hex sha, got 'nope'", e.getMessage());
+    }
+
+    @Test void rejectsShortSha() {
+        var e = assertThrows(IllegalArgumentException.class, () -> new Commit("0123456", "x"));
+        assertEquals("expected a 40-char hex sha, got '0123456'", e.getMessage());
+    }
+
+    @Test void rejectsNullSha() {
+        var e = assertThrows(IllegalArgumentException.class, () -> new Commit(null, "x"));
+        assertEquals("expected a 40-char hex sha, got 'null'", e.getMessage());
+    }
+
+    @Test void rejectsUppercaseSha() {
+        String upper = SHA.toUpperCase(java.util.Locale.ROOT);
+        var e = assertThrows(IllegalArgumentException.class, () -> new Commit(upper, "x"));
+        assertEquals("expected a 40-char hex sha, got '" + upper + "'", e.getMessage());
+    }
+
     @Test void nullSubjectBecomesEmpty() { assertEquals("", new Commit(SHA, null).subject()); }
+}
+```
+
+`tools/tracer/src/test/java/io/joeyang/tracer/cli/VerdictTest.java`:
+```java
+package io.joeyang.tracer.cli;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import org.junit.jupiter.api.Test;
+
+class VerdictTest {
+    static final Commit COMMIT = new Commit("0123456789abcdef0123456789abcdef01234567", "x");
+
+    @Test void bazelDisagreesOnlyForTheTwoDisagreeingPairs() {
+        for (Status status : Status.values()) {
+            for (BazelStatus bazel : BazelStatus.values()) {
+                Verdict v = new Verdict(COMMIT, status, Optional.empty(), bazel, List.of(), Optional.empty());
+                boolean expected = (status == Status.CHANGED && bazel == BazelStatus.CLEAN)
+                        || (status == Status.CLEAN && bazel == BazelStatus.IMPACTED);
+                assertEquals(expected, v.bazelDisagrees(), status + " vs " + bazel);
+            }
+        }
+    }
+
+    @Test void culpritsListIsACopy() {
+        List<String> source = new ArrayList<>(List.of("core.jar"));
+        Verdict v = new Verdict(COMMIT, Status.CHANGED, Optional.empty(), BazelStatus.NONE, source, Optional.empty());
+
+        source.add("lib.jar");
+
+        assertEquals(List.of("core.jar"), v.culprits());
+        assertThrows(UnsupportedOperationException.class, () -> v.culprits().add("x"));
+    }
 }
 ```
 
@@ -2079,6 +2137,16 @@ class TaskKeyTest {
         assertEquals("abc", k.shortKey());
     }
 
+    @Test void shortKeyBoundaryAtSevenCharsIsUnabbreviated() {
+        TaskKey k = new TaskKey(":t", "1234567", Map.of(), Map.of(), "impl");
+        assertEquals("1234567", k.shortKey());
+    }
+
+    @Test void shortKeyBoundaryAtEightCharsIsAbbreviated() {
+        TaskKey k = new TaskKey(":t", "12345678", Map.of(), Map.of(), "impl");
+        assertEquals("1234…78", k.shortKey());
+    }
+
     @Test void mapsAreDefensivelyCopied() {
         Map<String, Map<String, String>> files = new HashMap<>();
         files.put("classpath", new HashMap<>(Map.of("/x/core.jar", "aa")));
@@ -2089,7 +2157,13 @@ class TaskKeyTest {
     }
 
     @Test void rejectsBlankKey() {
-        assertThrows(IllegalArgumentException.class, () -> new TaskKey(":t", " ", Map.of(), Map.of(), "impl"));
+        var e = assertThrows(IllegalArgumentException.class, () -> new TaskKey(":t", " ", Map.of(), Map.of(), "impl"));
+        assertEquals("cache key must not be blank for :t", e.getMessage());
+    }
+
+    @Test void rejectsEmptyKey() {
+        var e = assertThrows(IllegalArgumentException.class, () -> new TaskKey(":t", "", Map.of(), Map.of(), "impl"));
+        assertEquals("cache key must not be blank for :t", e.getMessage());
     }
 }
 ```
@@ -2139,7 +2213,7 @@ import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
 
 class CliUsageTest {
-    @Test void noArgumentsPrintsUsageAndExits1() {
+    @Test void usagePrintsTheProblemAndUsageTextAndReturnsExitUsage() {
         ByteArrayOutputStream err = new ByteArrayOutputStream();
         int code = Cli.usage(new PrintStream(err, true, StandardCharsets.UTF_8), "no arguments");
         String text = err.toString(StandardCharsets.UTF_8);

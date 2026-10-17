@@ -9,7 +9,7 @@ import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
 
 class CliUsageTest {
-    @Test void noArgumentsPrintsUsageAndExits1() {
+    @Test void usagePrintsTheProblemAndUsageTextAndReturnsExitUsage() {
         ByteArrayOutputStream err = new ByteArrayOutputStream();
         int code = Cli.usage(new PrintStream(err, true, StandardCharsets.UTF_8), "no arguments");
         String text = err.toString(StandardCharsets.UTF_8);
