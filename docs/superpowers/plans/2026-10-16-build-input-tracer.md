@@ -6014,10 +6014,44 @@ class CliOptionsTest {
     @Test void rejectsNonNumericTimeout() { assertThrows(UsageException.class, () -> parse("appA", "--at", "z", "--timeout-minutes", "soon")); }
     @Test void rejectsFlagWithoutValue() { assertThrows(UsageException.class, () -> parse("appA", "--at")); }
 
+    // Amendment (code review): DefaultProcessRunner now throws an unchecked exception for a non-positive
+    // timeout, so the CLI must reject it as a usage error before it ever reaches the runner.
+    @Test void rejectsZeroTimeout() {
+        UsageException e = assertThrows(UsageException.class, () -> parse("appA", "--at", "z", "--timeout-minutes", "0"));
+        assertTrue(e.getMessage().contains("--timeout-minutes must be a positive integer, got 0"), e.getMessage());
+    }
+
+    @Test void rejectsNegativeTimeout() {
+        UsageException e = assertThrows(UsageException.class, () -> parse("appA", "--at", "z", "--timeout-minutes", "-5"));
+        assertTrue(e.getMessage().contains("--timeout-minutes must be a positive integer, got -5"), e.getMessage());
+    }
+
+    @Test void rejectsTimeoutThatOverflowsDuration() {
+        assertThrows(UsageException.class, () -> parse("appA", "--at", "z", "--timeout-minutes", String.valueOf(Long.MAX_VALUE)));
+    }
+
     @Test void usageMentionsEveryFlag() {
         for (String flag : new String[] {"--from", "--to", "--at", "--task", "--no-bazel", "--offline", "--keep-worktrees", "--tsv", "--tsv-out", "--timeout-minutes"}) {
             assertTrue(Cli.USAGE.contains(flag), flag);
         }
+    }
+
+    // Amendment (code review): on Linux the JVM ignores $TMPDIR (java.io.tmpdir is always /tmp), so the
+    // default scratch root must consult the environment variable explicitly to keep the documented
+    // $TMPDIR/gradle-tracer behaviour true.
+    @Test void defaultScratchRootPrefersTmpdirEnvWhenSet() {
+        Path root = Cli.defaultScratchRoot(name -> "TMPDIR".equals(name) ? "/custom/tmp" : null, () -> "/fallback");
+        assertEquals(Path.of("/custom/tmp", "gradle-tracer"), root);
+    }
+
+    @Test void defaultScratchRootFallsBackToJavaIoTmpdirWhenTmpdirUnset() {
+        Path root = Cli.defaultScratchRoot(name -> null, () -> "/fallback");
+        assertEquals(Path.of("/fallback", "gradle-tracer"), root);
+    }
+
+    @Test void defaultScratchRootFallsBackToJavaIoTmpdirWhenTmpdirBlank() {
+        Path root = Cli.defaultScratchRoot(name -> "", () -> "/fallback");
+        assertEquals(Path.of("/fallback", "gradle-tracer"), root);
     }
 }
 ```
@@ -6036,6 +6070,8 @@ package io.joeyang.tracer.cli;
 import java.io.PrintStream;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 /** Entry point. Options parsing lives here; the range walk arrives in the next task. */
 public final class Cli {
@@ -6043,6 +6079,11 @@ public final class Cli {
     public static final int EXIT_USAGE = 1;
     public static final int EXIT_TOOL_FAILURE = 2;
     public static final int EXIT_CHANGED = 3;
+
+    // Amendment (code review): on Linux the JVM ignores $TMPDIR (java.io.tmpdir is always /tmp), so the
+    // default scratch root must consult the environment variable explicitly to keep the documented
+    // $TMPDIR/gradle-tracer behaviour true. Wired into main() in the next task.
+    static final Path DEFAULT_SCRATCH = defaultScratchRoot(System::getenv, () -> System.getProperty("java.io.tmpdir"));
 
     static final String USAGE = """
             usage: trace <app> --from <rev> --to <rev> [--task <name>] [--no-bazel] [--offline] [--keep-worktrees]
@@ -6111,10 +6152,23 @@ public final class Cli {
         }
 
         private static Duration parseMinutes(String value) throws UsageException {
+            long minutes;
             try {
-                return Duration.ofMinutes(Long.parseLong(value));
+                minutes = Long.parseLong(value);
             } catch (NumberFormatException e) {
                 throw new UsageException("--timeout-minutes needs a whole number, got '" + value + "'");
+            }
+            // Amendment (code review): DefaultProcessRunner now rejects a zero or negative timeout with an
+            // unchecked exception, so the CLI must never pass one through; reject it here as a usage error.
+            if (minutes <= 0) {
+                throw new UsageException("--timeout-minutes must be a positive integer, got " + minutes);
+            }
+            try {
+                return Duration.ofMinutes(minutes);
+            } catch (ArithmeticException e) {
+                // Amendment (code review): Duration.ofMinutes overflows for absurdly large inputs; map that
+                // to a usage error instead of letting ArithmeticException escape main().
+                throw new UsageException("--timeout-minutes is too large, got '" + value + "'");
             }
         }
 
@@ -6128,6 +6182,14 @@ public final class Cli {
     }
 
     private Cli() {}
+
+    // Amendment (code review): package-private and parameterized by lookup functions so the TMPDIR-vs-fallback
+    // behaviour is directly testable without touching real environment variables or system properties.
+    static Path defaultScratchRoot(Function<String, String> getenv, Supplier<String> javaIoTmpdir) {
+        String tmpdir = getenv.apply("TMPDIR");
+        String base = (tmpdir != null && !tmpdir.isBlank()) ? tmpdir : javaIoTmpdir.get();
+        return Path.of(base, "gradle-tracer");
+    }
 
     static int usage(PrintStream err, String problem) {
         err.println("trace: " + problem);
@@ -6151,7 +6213,10 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 166 tests at this point in the sequence (bumped from 136 by the Task 10 quality-review rounds' 15 added tests, plus 15 more carried forward from the Task 11 quality-review fix commits; the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 172 tests at this point in the sequence (154 going into this task, plus the 12
+`CliOptionsTest` cases the plan specifies, plus 6 more from the two code-review amendments below: 3 for
+`--timeout-minutes` rejecting zero/negative/overflow, 3 for `defaultScratchRoot`'s `TMPDIR`-set/unset/blank
+branches; the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
@@ -6161,7 +6226,12 @@ Append to `docs/tracer.md`:
 `trace <app> --from A --to B [--task T] [--no-bazel] [--offline] [--keep-worktrees] [--tsv | --tsv-out F] [--timeout-minutes N]`
 and `trace <app> --at REV [--task T]`. Worktrees live under one fixed scratch root, `$TMPDIR/gradle-tracer` (never
 per pid: see Task 13's scratch hygiene note — a fixed root is how the next run finds and sweeps a killed run's
-leftovers). The Bazel column is
+leftovers). On Linux the JVM does not read `$TMPDIR` into `java.io.tmpdir` (it is always `/tmp`), so
+`Cli.defaultScratchRoot` reads the `TMPDIR` environment variable directly and only falls back to
+`java.io.tmpdir` when it is unset or blank, keeping the documented path real. `--timeout-minutes` is validated
+before it ever reaches `DefaultProcessRunner`, which now rejects a non-positive timeout with an unchecked
+exception: zero, negative and overflowing values (`Duration.ofMinutes` throwing `ArithmeticException`) are all
+usage errors instead. The Bazel column is
 computed from `bazel-diff get-impacted-targets` between adjacent commits; if bazel-diff fails once, the rest of the
 column is `n/a` and a warning goes to stderr. A commit whose Gradle run fails is `BUILD-FAILED`; the next commit is
 compared against the last good key.
@@ -6174,7 +6244,15 @@ git commit -m "feat(tracer): parse command-line options
 Options are an immutable record parsed before anything runs, so every
 mistake on the command line is a usage error with exit code 1 before a
 worktree is created. Kept apart from the range walk to stay under the
-commit size limit."
+commit size limit.
+
+Two amendments from code review: --timeout-minutes now rejects zero,
+negative and overflowing values as usage errors, since
+DefaultProcessRunner throws unchecked exceptions for a non-positive
+timeout and must never receive one; and the default scratch root
+reads $TMPDIR from the environment directly, since the JVM ignores it
+in java.io.tmpdir on Linux, falling back to java.io.tmpdir when unset
+or blank."
 ```
 
 ---
@@ -6406,6 +6484,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 /** Entry point: parses options, walks the range through worktrees, prints the verdicts. */
@@ -6414,8 +6494,10 @@ public final class Cli {
     public static final int EXIT_USAGE = 1;
     public static final int EXIT_TOOL_FAILURE = 2;
     public static final int EXIT_CHANGED = 3;
+    // Amendment (code review, carried from Task 12): on Linux the JVM ignores $TMPDIR (java.io.tmpdir is
+    // always /tmp), so the default scratch root reads the environment variable directly.
     /** One fixed scratch root, so the next run finds and removes whatever a killed run left behind. */
-    static final Path DEFAULT_SCRATCH = Path.of(System.getProperty("java.io.tmpdir"), "gradle-tracer");
+    static final Path DEFAULT_SCRATCH = defaultScratchRoot(System::getenv, () -> System.getProperty("java.io.tmpdir"));
 
     static final String USAGE = """
             usage: trace <app> --from <rev> --to <rev> [--task <name>] [--no-bazel] [--offline] [--keep-worktrees]
@@ -6484,10 +6566,21 @@ public final class Cli {
         }
 
         private static Duration parseMinutes(String value) throws UsageException {
+            long minutes;
             try {
-                return Duration.ofMinutes(Long.parseLong(value));
+                minutes = Long.parseLong(value);
             } catch (NumberFormatException e) {
                 throw new UsageException("--timeout-minutes needs a whole number, got '" + value + "'");
+            }
+            // Amendment (code review, carried from Task 12): DefaultProcessRunner rejects a zero or
+            // negative timeout with an unchecked exception, so the CLI must never pass one through.
+            if (minutes <= 0) {
+                throw new UsageException("--timeout-minutes must be a positive integer, got " + minutes);
+            }
+            try {
+                return Duration.ofMinutes(minutes);
+            } catch (ArithmeticException e) {
+                throw new UsageException("--timeout-minutes is too large, got '" + value + "'");
             }
         }
 
@@ -6512,6 +6605,14 @@ public final class Cli {
         this.scratch = scratch;
         this.keys = keys;
         this.impacts = impacts;
+    }
+
+    // Amendment (code review, carried from Task 12): package-private and parameterized so the
+    // TMPDIR-vs-fallback behaviour is directly testable.
+    static Path defaultScratchRoot(Function<String, String> getenv, Supplier<String> javaIoTmpdir) {
+        String tmpdir = getenv.apply("TMPDIR");
+        String base = (tmpdir != null && !tmpdir.isBlank()) ? tmpdir : javaIoTmpdir.get();
+        return Path.of(base, "gradle-tracer");
     }
 
     public static void main(String[] args) {
@@ -6658,7 +6759,8 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 177 tests at this point in the sequence (bumped from 147 by the Task 10 quality-review rounds' 15 added tests, plus 15 more carried forward from the Task 11 quality-review fix commits). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 183 tests at this point in the sequence (172 going into this task per Task 12's
+amended count, plus the 2 `RevisionRangeTest` cases and 9 `CliTest` cases this task adds). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 

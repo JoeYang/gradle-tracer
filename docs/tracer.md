@@ -81,3 +81,17 @@ for scripts — for a `BUILD-FAILED` row, that last column is the error message,
 field, each tab, CR or LF character becomes a single space (so a CRLF becomes two spaces) so none of them can shift a
 column. Table columns are padded and truncated by
 Unicode code point, not UTF-16 char, so a surrogate pair is never split.
+
+## Cli
+`trace <app> --from A --to B [--task T] [--no-bazel] [--offline] [--keep-worktrees] [--tsv | --tsv-out F] [--timeout-minutes N]`
+and `trace <app> --at REV [--task T]`. Worktrees live under one fixed scratch root, `$TMPDIR/gradle-tracer` (never
+per pid: see Task 13's scratch hygiene note — a fixed root is how the next run finds and sweeps a killed run's
+leftovers). On Linux the JVM does not read `$TMPDIR` into `java.io.tmpdir` (it is always `/tmp`), so
+`Cli.defaultScratchRoot` reads the `TMPDIR` environment variable directly and only falls back to
+`java.io.tmpdir` when it is unset or blank, keeping the documented path real. `--timeout-minutes` is validated
+before it ever reaches `DefaultProcessRunner`, which now rejects a non-positive timeout with an unchecked
+exception: zero, negative and overflowing values (`Duration.ofMinutes` throwing `ArithmeticException`) are all
+usage errors instead. The Bazel column is
+computed from `bazel-diff get-impacted-targets` between adjacent commits; if bazel-diff fails once, the rest of the
+column is `n/a` and a warning goes to stderr. A commit whose Gradle run fails is `BUILD-FAILED`; the next commit is
+compared against the last good key.
