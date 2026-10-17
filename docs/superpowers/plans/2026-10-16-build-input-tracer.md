@@ -5689,9 +5689,11 @@ Append inside `RevisionRangeTest`:
         assertEquals(new Commit(B, "core: add shout"), new RevisionRange(git, repo).resolveOne("HEAD"));
     }
 
+    // Real git, under --quiet, exits 1 with no stderr for an unresolvable revision (see RevisionRangeTest's
+    // unknownRevisionIsAUsageError and revParseFailureOtherThanExitOneIsAProviderError from Task 9).
     @Test void resolveOneRejectsUnknownRevision() {
         FakeProcessRunner git = new FakeProcessRunner()
-                .on("git rev-parse --verify --quiet zzz^{commit}", 128, "", "fatal: bad revision\n");
+                .on("git rev-parse --verify --quiet zzz^{commit}", 1, "", "");
 
         assertThrows(UsageException.class, () -> new RevisionRange(git, repo).resolveOne("zzz"));
     }
