@@ -1,8 +1,8 @@
 # tracer
 
-`tools/tracer` is a Java CLI. Today `Cli.main` ignores its arguments and exits with the usage
-text and a "not implemented yet" message; a `./trace` wrapper that builds it with `installDist` and runs the launcher,
-and the revision-range walk that produces real verdicts, arrive in later commits.
+`tools/tracer` is a Java CLI. Today `Cli.main` parses and validates options. On a usage error it exits 1 with the
+usage text. Valid options currently exit 2, printing a not-implemented message, because no verdict is produced
+yet. The range walk, the `./trace` wrapper and exit codes 0 and 3 arrive in later commits.
 
 ## Vocabulary (`io.joeyang.tracer.cli`)
 | type | meaning |
@@ -15,10 +15,12 @@ and the revision-range walk that produces real verdicts, arrive in later commits
 | `BazelStatus` | `IMPACTED`, `CLEAN`, `NOT_AVAILABLE`, `NONE` — the informational column |
 | `Verdict` | one table row |
 | `KeyProvider`, `ImpactProvider` | the two oracles behind interfaces so tests can fake them |
-| `UsageException` → exit 1, `ProviderException` → exit 2 | error classes |
+| `UsageException` → exit 1 (wired); `ProviderException` → exit 2, wired by a later commit | error classes |
 
 ## Exit codes
-0 no change in range · 1 usage error · 2 a tool failed (some row is BUILD-FAILED) · 3 at least one CHANGED
+0 no change in range · 1 usage error (wired) · 2 a tool failed (some row is BUILD-FAILED) · 3 at least one
+CHANGED — 0, the "a tool failed" sense of 2, and 3 are wired by a later commit; `Cli.main` exits 2 today as an
+interim placeholder whenever the options are valid.
 
 ## Gradle oracle
 `GradleKeyProvider` runs `<worktree>/gradlew --console=plain --no-parallel --build-cache -Dorg.gradle.caching.debug=true <task>`
@@ -83,15 +85,29 @@ column. Table columns are padded and truncated by
 Unicode code point, not UTF-16 char, so a surrogate pair is never split.
 
 ## Cli
-`trace <app> --from A --to B [--task T] [--no-bazel] [--offline] [--keep-worktrees] [--tsv | --tsv-out F] [--timeout-minutes N]`
-and `trace <app> --at REV [--task T]`. Worktrees live under one fixed scratch root, `$TMPDIR/gradle-tracer` (never
-per pid: see Task 13's scratch hygiene note — a fixed root is how the next run finds and sweeps a killed run's
-leftovers). On Linux the JVM does not read `$TMPDIR` into `java.io.tmpdir` (it is always `/tmp`), so
-`Cli.defaultScratchRoot` reads the `TMPDIR` environment variable directly and only falls back to
-`java.io.tmpdir` when it is unset or blank, keeping the documented path real. `--timeout-minutes` is validated
-before it ever reaches `DefaultProcessRunner`, which now rejects a non-positive timeout with an unchecked
-exception: zero, negative and overflowing values (`Duration.ofMinutes` throwing `ArithmeticException`) are all
-usage errors instead. The Bazel column is
-computed from `bazel-diff get-impacted-targets` between adjacent commits; if bazel-diff fails once, the rest of the
-column is `n/a` and a warning goes to stderr. A commit whose Gradle run fails is `BUILD-FAILED`; the next commit is
-compared against the last good key.
+`trace <app> --from A --to B [--task T] [--no-bazel] [--offline] [--keep-worktrees] [--tsv] [--tsv-out F] [--timeout-minutes N]`
+and `trace <app> --at REV [--task T] [--offline] [--keep-worktrees] [--timeout-minutes N]`.
+
+`<app>` must match `[A-Za-z0-9][A-Za-z0-9_-]*`; a blank, path-like (`.`, `..`, `../..`) or option-like (`-h`) name
+is a usage error naming the rejected value. Every value-taking option (`--from`, `--to`, `--at`, `--task`,
+`--tsv-out`, `--timeout-minutes`) rejects a value that is blank or starts with `-`, so a missing value can't
+silently swallow the next option: `--from --to y` fails naming `--from`, rather than failing later on `y` as an
+unknown option; a value missing at the end of the arguments fails the same way, naming the option. The one
+exception is `--timeout-minutes`: its values are validated as integers instead (see below). `--at` prints the
+key and its composition with no comparison, so it rejects `--tsv`, `--tsv-out` and `--no-bazel` alongside it,
+naming both flags in the error.
+
+`Cli.defaultScratchRoot` computes one fixed scratch root, `$TMPDIR/gradle-tracer`, that worktrees and bazel-diff
+hash files will live under once the range walk is wired (never per pid — a fixed root is how the next run finds
+and sweeps a killed run's leftovers). On Linux the JVM does not read `$TMPDIR` into `java.io.tmpdir` (it is
+always `/tmp`), so it reads the `TMPDIR` environment variable directly and only falls back to `java.io.tmpdir`
+when it is unset or blank, keeping the documented path real; either way, the result is resolved to an absolute,
+normalized path, since `./trace` changes directory before `main` runs and a relative `TMPDIR` would otherwise
+resolve against the wrong directory.
+
+`--timeout-minutes` values are validated as integers instead of the generic blank-or-dash check above. The
+value is checked against ASCII digits with an optional leading `-` before parsing: anything else, including a
+non-ASCII digit, is "needs a whole number"; a value that is all ASCII digits but too large to fit a `long`, or
+that overflows `Duration.ofMinutes`, is "too large"; and a value that parses but is zero or negative is "must
+be a positive integer". `DefaultProcessRunner` rejects a non-positive timeout with an unchecked exception, so
+the CLI validates it here as a usage error instead of ever passing one through.

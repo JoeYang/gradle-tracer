@@ -5974,6 +5974,10 @@ class CliOptionsTest {
         return Cli.Options.parse(args);
     }
 
+    static UsageException fails(String... args) {
+        return assertThrows(UsageException.class, () -> parse(args));
+    }
+
     @Test void defaultsForARange() throws Exception {
         Cli.Options o = parse("appA", "--from", "x", "--to", "y");
         assertEquals(":app:appA:compileJava", o.taskPath());
@@ -5996,38 +6000,124 @@ class CliOptionsTest {
     }
 
     @Test void atModeNeedsNoRange() throws Exception {
-        Cli.Options o = parse("appC", "--at", "HEAD", "--tsv");
+        Cli.Options o = parse("appC", "--at", "HEAD");
         assertEquals("HEAD", o.at());
         assertNull(o.from());
-        assertTrue(o.tsv());
     }
 
     @Test void repeatedBooleanFlagsAreHarmless() throws Exception {
-        assertFalse(parse("appA", "--at", "z", "--no-bazel", "--no-bazel").bazel());
+        assertFalse(parse("appA", "--from", "x", "--to", "y", "--no-bazel", "--no-bazel").bazel());
     }
 
-    @Test void rejectsMissingApp() { assertThrows(UsageException.class, () -> parse()); }
-    @Test void rejectsFlagInAppPosition() { assertThrows(UsageException.class, () -> parse("--from", "x", "--to", "y")); }
-    @Test void rejectsMissingTo() { assertThrows(UsageException.class, () -> parse("appA", "--from", "x")); }
-    @Test void rejectsAtTogetherWithRange() { assertThrows(UsageException.class, () -> parse("appA", "--from", "x", "--to", "y", "--at", "z")); }
-    @Test void rejectsUnknownFlag() { assertThrows(UsageException.class, () -> parse("appA", "--at", "z", "--bogus")); }
-    @Test void rejectsNonNumericTimeout() { assertThrows(UsageException.class, () -> parse("appA", "--at", "z", "--timeout-minutes", "soon")); }
-    @Test void rejectsFlagWithoutValue() { assertThrows(UsageException.class, () -> parse("appA", "--at")); }
+    @Test void rejectsMissingApp() {
+        UsageException e = fails();
+        assertTrue(e.getMessage().contains("missing <app>"), e.getMessage());
+    }
 
-    // Amendment (code review): DefaultProcessRunner now throws an unchecked exception for a non-positive
-    // timeout, so the CLI must reject it as a usage error before it ever reaches the runner.
+    @Test void rejectsFlagInAppPosition() {
+        UsageException e = fails("--from", "x", "--to", "y");
+        assertTrue(e.getMessage().contains("--from"), e.getMessage());
+    }
+
+    @Test void rejectsMissingTo() {
+        UsageException e = fails("appA", "--from", "x");
+        assertTrue(e.getMessage().contains("--to"), e.getMessage());
+    }
+
+    @Test void rejectsAtTogetherWithRange() {
+        UsageException e = fails("appA", "--from", "x", "--to", "y", "--at", "z");
+        assertTrue(e.getMessage().contains("--at"), e.getMessage());
+    }
+
+    @Test void rejectsUnknownFlag() {
+        UsageException e = fails("appA", "--at", "z", "--bogus");
+        assertTrue(e.getMessage().contains("--bogus"), e.getMessage());
+    }
+
+    @Test void rejectsNonNumericTimeout() {
+        UsageException e = fails("appA", "--at", "z", "--timeout-minutes", "soon");
+        assertTrue(e.getMessage().contains("--timeout-minutes needs a whole number, got 'soon'"), e.getMessage());
+    }
+
+    @Test void rejectsFlagWithoutValue() {
+        UsageException e = fails("appA", "--at");
+        assertTrue(e.getMessage().contains("--at needs a value"), e.getMessage());
+    }
+
+    // A value-taking option missing its value at the end of the arguments is a usage error naming that
+    // option, same as --at above.
+    @Test void rejectsFromWithoutValue() {
+        UsageException e = fails("appA", "--from");
+        assertTrue(e.getMessage().contains("--from needs a value"), e.getMessage());
+    }
+
+    @Test void rejectsToWithoutValue() {
+        UsageException e = fails("appA", "--to");
+        assertTrue(e.getMessage().contains("--to needs a value"), e.getMessage());
+    }
+
+    @Test void rejectsTaskWithoutValue() {
+        UsageException e = fails("appA", "--task");
+        assertTrue(e.getMessage().contains("--task needs a value"), e.getMessage());
+    }
+
+    @Test void rejectsTsvOutWithoutValue() {
+        UsageException e = fails("appA", "--tsv-out");
+        assertTrue(e.getMessage().contains("--tsv-out needs a value"), e.getMessage());
+    }
+
+    @Test void rejectsTimeoutMinutesWithoutValue() {
+        UsageException e = fails("appA", "--timeout-minutes");
+        assertTrue(e.getMessage().contains("--timeout-minutes needs a value"), e.getMessage());
+    }
+
+    // DefaultProcessRunner throws an unchecked exception for a non-positive timeout, so the CLI must
+    // reject it as a usage error before it ever reaches the runner.
     @Test void rejectsZeroTimeout() {
-        UsageException e = assertThrows(UsageException.class, () -> parse("appA", "--at", "z", "--timeout-minutes", "0"));
+        UsageException e = fails("appA", "--at", "z", "--timeout-minutes", "0");
         assertTrue(e.getMessage().contains("--timeout-minutes must be a positive integer, got 0"), e.getMessage());
     }
 
     @Test void rejectsNegativeTimeout() {
-        UsageException e = assertThrows(UsageException.class, () -> parse("appA", "--at", "z", "--timeout-minutes", "-5"));
+        UsageException e = fails("appA", "--at", "z", "--timeout-minutes", "-5");
         assertTrue(e.getMessage().contains("--timeout-minutes must be a positive integer, got -5"), e.getMessage());
     }
 
     @Test void rejectsTimeoutThatOverflowsDuration() {
-        assertThrows(UsageException.class, () -> parse("appA", "--at", "z", "--timeout-minutes", String.valueOf(Long.MAX_VALUE)));
+        UsageException e = fails("appA", "--at", "z", "--timeout-minutes", String.valueOf(Long.MAX_VALUE));
+        assertTrue(e.getMessage().contains("--timeout-minutes is too large, got '" + Long.MAX_VALUE + "'"), e.getMessage());
+    }
+
+    @Test void rejectsTimeoutWithTooManyDigitsToFitALong() {
+        String huge = "9".repeat(20);
+        UsageException e = fails("appA", "--at", "z", "--timeout-minutes", huge);
+        assertTrue(e.getMessage().contains("--timeout-minutes is too large, got '" + huge + "'"), e.getMessage());
+    }
+
+    @Test void rejectsTimeoutWithNonAsciiDigit() {
+        UsageException e = fails("appA", "--at", "z", "--timeout-minutes", "٥");
+        assertTrue(e.getMessage().contains("--timeout-minutes needs a whole number, got '٥'"), e.getMessage());
+    }
+
+    // --timeout-minutes is exempt from the generic "looks like a flag" check (unlike --from, --to, --at,
+    // --task and --tsv-out above), so its value always reaches parseMinutes, which reports a value that
+    // merely fails to parse as "needs a whole number", naming the option, rather than "needs a value".
+    @Test void rejectsTimeoutValueThatLooksLikeAFlag() {
+        UsageException e = fails("appA", "--at", "z", "--timeout-minutes", "--offline");
+        assertTrue(e.getMessage().contains("--timeout-minutes needs a whole number, got '--offline'"), e.getMessage());
+    }
+
+    @Test void rejectsBlankTimeoutValue() {
+        UsageException e = fails("appA", "--at", "z", "--timeout-minutes", "");
+        assertTrue(e.getMessage().contains("--timeout-minutes needs a whole number, got ''"), e.getMessage());
+    }
+
+    // A negative value with too many digits to fit a long overflows Long.parseLong before the sign is
+    // ever inspected, so it is reported as "too large" rather than "must be a positive integer".
+    @Test void rejectsNegativeTimeoutWithTooManyDigitsToFitALong() {
+        String huge = "-" + "9".repeat(20);
+        UsageException e = fails("appA", "--at", "z", "--timeout-minutes", huge);
+        assertTrue(e.getMessage().contains("--timeout-minutes is too large, got '" + huge + "'"), e.getMessage());
     }
 
     @Test void usageMentionsEveryFlag() {
@@ -6036,9 +6126,8 @@ class CliOptionsTest {
         }
     }
 
-    // Amendment (code review): on Linux the JVM ignores $TMPDIR (java.io.tmpdir is always /tmp), so the
-    // default scratch root must consult the environment variable explicitly to keep the documented
-    // $TMPDIR/gradle-tracer behaviour true.
+    // The JVM ignores $TMPDIR on Linux (java.io.tmpdir is always /tmp), so the default scratch root
+    // reads it directly to keep the documented $TMPDIR/gradle-tracer behaviour true.
     @Test void defaultScratchRootPrefersTmpdirEnvWhenSet() {
         Path root = Cli.defaultScratchRoot(name -> "TMPDIR".equals(name) ? "/custom/tmp" : null, () -> "/fallback");
         assertEquals(Path.of("/custom/tmp", "gradle-tracer"), root);
@@ -6052,6 +6141,111 @@ class CliOptionsTest {
     @Test void defaultScratchRootFallsBackToJavaIoTmpdirWhenTmpdirBlank() {
         Path root = Cli.defaultScratchRoot(name -> "", () -> "/fallback");
         assertEquals(Path.of("/fallback", "gradle-tracer"), root);
+    }
+
+    // ./trace changes directory before main() runs, so a relative TMPDIR must resolve against the CWD
+    // at call time rather than staying relative.
+    @Test void defaultScratchRootIsAbsoluteEvenForARelativeTmpdir() {
+        Path root = Cli.defaultScratchRoot(name -> "TMPDIR".equals(name) ? "rel/dir" : null, () -> "/fallback");
+        assertTrue(root.isAbsolute(), root.toString());
+        assertEquals(Path.of("rel/dir", "gradle-tracer").toAbsolutePath().normalize(), root);
+    }
+
+    // Every value-taking option rejects a value that is blank or looks like another flag, instead of
+    // silently swallowing the next option (e.g. "--from --to y" would otherwise parse "--to" as the
+    // value of --from and then fail on "y" as an unknown option).
+    @Test void rejectsFromValueThatLooksLikeAFlag() {
+        UsageException e = fails("appA", "--from", "--to", "y");
+        assertTrue(e.getMessage().contains("--from needs a value, got '--to'"), e.getMessage());
+    }
+
+    @Test void rejectsBlankFromValue() {
+        UsageException e = fails("appA", "--from", "", "--to", "y");
+        assertTrue(e.getMessage().contains("--from needs a value, got ''"), e.getMessage());
+    }
+
+    @Test void rejectsToValueThatLooksLikeAFlag() {
+        UsageException e = fails("appA", "--from", "x", "--to", "--task");
+        assertTrue(e.getMessage().contains("--to needs a value, got '--task'"), e.getMessage());
+    }
+
+    @Test void rejectsBlankToValue() {
+        UsageException e = fails("appA", "--from", "x", "--to", "");
+        assertTrue(e.getMessage().contains("--to needs a value, got ''"), e.getMessage());
+    }
+
+    @Test void rejectsAtValueThatLooksLikeAFlag() {
+        UsageException e = fails("appA", "--at", "--offline");
+        assertTrue(e.getMessage().contains("--at needs a value, got '--offline'"), e.getMessage());
+    }
+
+    @Test void rejectsBlankAtValue() {
+        UsageException e = fails("appA", "--at", "");
+        assertTrue(e.getMessage().contains("--at needs a value, got ''"), e.getMessage());
+    }
+
+    @Test void rejectsTaskValueThatLooksLikeAFlag() {
+        UsageException e = fails("appA", "--at", "z", "--task", "--offline");
+        assertTrue(e.getMessage().contains("--task needs a value, got '--offline'"), e.getMessage());
+    }
+
+    @Test void rejectsBlankTaskValue() {
+        UsageException e = fails("appA", "--at", "z", "--task", "");
+        assertTrue(e.getMessage().contains("--task needs a value, got ''"), e.getMessage());
+    }
+
+    @Test void rejectsTsvOutValueThatLooksLikeAFlag() {
+        UsageException e = fails("appA", "--from", "x", "--to", "y", "--tsv-out", "--timeout-minutes");
+        assertTrue(e.getMessage().contains("--tsv-out needs a value, got '--timeout-minutes'"), e.getMessage());
+    }
+
+    @Test void rejectsBlankTsvOutValue() {
+        UsageException e = fails("appA", "--from", "x", "--to", "y", "--tsv-out", "");
+        assertTrue(e.getMessage().contains("--tsv-out needs a value, got ''"), e.getMessage());
+    }
+
+    // <app> must match [A-Za-z0-9][A-Za-z0-9_-]*; path-like or option-like names are rejected outright
+    // instead of reaching the filesystem as a directory lookup.
+    @Test void rejectsBlankAppName() {
+        UsageException e = fails("");
+        assertTrue(e.getMessage().contains("app name"), e.getMessage());
+    }
+
+    @Test void rejectsDashHAsAppName() {
+        UsageException e = fails("-h");
+        assertTrue(e.getMessage().contains("-h"), e.getMessage());
+    }
+
+    @Test void rejectsDotAsAppName() {
+        UsageException e = fails(".");
+        assertTrue(e.getMessage().contains("."), e.getMessage());
+    }
+
+    @Test void rejectsDotDotAsAppName() {
+        UsageException e = fails("..");
+        assertTrue(e.getMessage().contains(".."), e.getMessage());
+    }
+
+    @Test void rejectsPathTraversalAppName() {
+        UsageException e = fails("../..");
+        assertTrue(e.getMessage().contains("../.."), e.getMessage());
+    }
+
+    // --at (spec: "print the key and its composition, no comparison") makes --tsv, --tsv-out and
+    // --no-bazel meaningless; each is rejected rather than silently ignored.
+    @Test void atRejectsTsv() {
+        UsageException e = fails("appA", "--at", "z", "--tsv");
+        assertTrue(e.getMessage().contains("--at") && e.getMessage().contains("--tsv"), e.getMessage());
+    }
+
+    @Test void atRejectsTsvOut() {
+        UsageException e = fails("appA", "--at", "z", "--tsv-out", "rows.tsv");
+        assertTrue(e.getMessage().contains("--at") && e.getMessage().contains("--tsv-out"), e.getMessage());
+    }
+
+    @Test void atRejectsNoBazel() {
+        UsageException e = fails("appA", "--at", "z", "--no-bazel");
+        assertTrue(e.getMessage().contains("--at") && e.getMessage().contains("--no-bazel"), e.getMessage());
     }
 }
 ```
@@ -6072,6 +6266,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 
 /** Entry point. Options parsing lives here; the range walk arrives in the next task. */
 public final class Cli {
@@ -6080,15 +6275,18 @@ public final class Cli {
     public static final int EXIT_TOOL_FAILURE = 2;
     public static final int EXIT_CHANGED = 3;
 
-    // Amendment (code review): on Linux the JVM ignores $TMPDIR (java.io.tmpdir is always /tmp), so the
-    // default scratch root must consult the environment variable explicitly to keep the documented
-    // $TMPDIR/gradle-tracer behaviour true. Wired into main() in the next task.
+    // The JVM ignores $TMPDIR on Linux (java.io.tmpdir is always /tmp), so read it directly to keep the
+    // documented $TMPDIR/gradle-tracer behaviour true. Wired into main() in the next task.
     static final Path DEFAULT_SCRATCH = defaultScratchRoot(System::getenv, () -> System.getProperty("java.io.tmpdir"));
+
+    // <app> is used as a directory name under app/; restrict it so a path-like or option-like value
+    // never reaches the filesystem lookup.
+    private static final Pattern APP_NAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_-]*");
 
     static final String USAGE = """
             usage: trace <app> --from <rev> --to <rev> [--task <name>] [--no-bazel] [--offline] [--keep-worktrees]
-                                                        [--tsv | --tsv-out <file>] [--timeout-minutes <n>]
-                   trace <app> --at <rev> [--task <name>]
+                                                        [--tsv] [--tsv-out <file>] [--timeout-minutes <n>]
+                   trace <app> --at <rev> [--task <name>] [--offline] [--keep-worktrees] [--timeout-minutes <n>]
 
               <app>            appA | appB | appC   (maps to :app:<app>:<task> and //app/<app>:<app>)
               --task           Gradle task whose cache key is compared; default compileJava, alternative fingerprint
@@ -6111,8 +6309,9 @@ public final class Cli {
                 throw new UsageException("missing <app>");
             }
             String app = args[0];
-            if (app.startsWith("--")) {
-                throw new UsageException("first argument must be the app name, got '" + app + "'");
+            if (!APP_NAME.matcher(app).matches()) {
+                throw new UsageException("'" + app + "' is not a valid app name: expected letters, digits, "
+                        + "'-' or '_', starting with a letter or digit");
             }
             String from = null, to = null, at = null, task = "compileJava";
             boolean bazel = true, offline = false, keep = false, tsv = false;
@@ -6130,6 +6329,14 @@ public final class Cli {
                             throw new UsageException(flag + " needs a value");
                         }
                         String value = args[++i];
+                        // A blank value, or one that looks like another flag, is almost always a missing
+                        // value swallowing the next option, e.g. "--from --to y" would otherwise parse
+                        // "--to" as --from's value and then fail on "y" as unknown. Excluded for
+                        // --timeout-minutes: its own numeric validation below gives a strictly more
+                        // specific error for a negative or zero value than this generic message would.
+                        if (!flag.equals("--timeout-minutes") && (value.isBlank() || value.startsWith("-"))) {
+                            throw new UsageException(flag + " needs a value, got '" + value + "'");
+                        }
                         switch (flag) {
                             case "--from" -> from = value;
                             case "--to" -> to = value;
@@ -6148,26 +6355,47 @@ public final class Cli {
             if (at == null && (from == null || to == null)) {
                 throw new UsageException("--from and --to are both required (or use --at)");
             }
+            // --at prints the key and its composition with no comparison (spec §5), so the
+            // comparison-only flags are meaningless alongside it.
+            if (at != null && tsv) {
+                throw new UsageException("--at cannot be combined with --tsv");
+            }
+            if (at != null && tsvOut != null) {
+                throw new UsageException("--at cannot be combined with --tsv-out");
+            }
+            if (at != null && !bazel) {
+                throw new UsageException("--at cannot be combined with --no-bazel");
+            }
             return new Options(app, from, to, at, task, bazel, offline, keep, tsv, tsvOut, timeout);
         }
 
+        // ASCII digits only (with an optional leading '-'), checked before parsing, so a non-ASCII digit
+        // (e.g. the Arabic-indic '5') is reported as "needs a whole number", and a value that IS
+        // all-ASCII-digits but too long to fit in a long is distinguished as "too large" instead.
+        private static final Pattern TIMEOUT_VALUE = Pattern.compile("-?[0-9]+");
+
         private static Duration parseMinutes(String value) throws UsageException {
+            if (!TIMEOUT_VALUE.matcher(value).matches()) {
+                throw new UsageException("--timeout-minutes needs a whole number, got '" + value + "'");
+            }
             long minutes;
             try {
                 minutes = Long.parseLong(value);
             } catch (NumberFormatException e) {
-                throw new UsageException("--timeout-minutes needs a whole number, got '" + value + "'");
+                // A value with too many digits to fit in a long overflows here, including a negative one
+                // (e.g. a minus sign followed by twenty 9s): "too large" fits either sign equally well.
+                throw new UsageException("--timeout-minutes is too large, got '" + value + "'");
             }
-            // Amendment (code review): DefaultProcessRunner now rejects a zero or negative timeout with an
-            // unchecked exception, so the CLI must never pass one through; reject it here as a usage error.
+            // DefaultProcessRunner rejects a zero or negative timeout with an unchecked exception, so
+            // validate it here as a usage error instead of ever passing one through.
             if (minutes <= 0) {
                 throw new UsageException("--timeout-minutes must be a positive integer, got " + minutes);
             }
             try {
                 return Duration.ofMinutes(minutes);
             } catch (ArithmeticException e) {
-                // Amendment (code review): Duration.ofMinutes overflows for absurdly large inputs; map that
-                // to a usage error instead of letting ArithmeticException escape main().
+                // Duration.ofMinutes overflows for absurdly large inputs; map that to a usage error instead
+                // of letting ArithmeticException escape main().
                 throw new UsageException("--timeout-minutes is too large, got '" + value + "'");
             }
         }
@@ -6183,12 +6411,14 @@ public final class Cli {
 
     private Cli() {}
 
-    // Amendment (code review): package-private and parameterized by lookup functions so the TMPDIR-vs-fallback
-    // behaviour is directly testable without touching real environment variables or system properties.
+    // Package-private and parameterized by lookup functions so the TMPDIR-vs-fallback behaviour is
+    // directly testable without touching real environment variables or system properties.
     static Path defaultScratchRoot(Function<String, String> getenv, Supplier<String> javaIoTmpdir) {
         String tmpdir = getenv.apply("TMPDIR");
         String base = (tmpdir != null && !tmpdir.isBlank()) ? tmpdir : javaIoTmpdir.get();
-        return Path.of(base, "gradle-tracer");
+        // ./trace changes directory before main() runs, so a relative TMPDIR must be resolved against
+        // the CWD at call time instead of staying relative.
+        return Path.of(base, "gradle-tracer").toAbsolutePath().normalize();
     }
 
     static int usage(PrintStream err, String problem) {
@@ -6204,7 +6434,7 @@ public final class Cli {
             System.exit(usage(System.err, e.getMessage()));
             return;
         }
-        System.err.println("trace: options accepted; the range walk arrives in the next task");
+        System.err.println("trace: options accepted; the range walk arrives in a later commit");
         System.exit(EXIT_TOOL_FAILURE);
     }
 }
@@ -6213,28 +6443,52 @@ public final class Cli {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 172 tests at this point in the sequence (154 going into this task, plus the 12
-`CliOptionsTest` cases the plan specifies, plus 6 more from the two code-review amendments below: 3 for
-`--timeout-minutes` rejecting zero/negative/overflow, 3 for `defaultScratchRoot`'s `TMPDIR`-set/unset/blank
-branches; the Task 6 `CliUsageTest` still passes).
+Expected: `BUILD SUCCESSFUL`; 201 tests at this point in the sequence (154 going into this task, plus the 12
+`CliOptionsTest` cases the plan originally specified, plus 35 more from two rounds of code review: 2 for
+`--timeout-minutes` rejecting zero/negative, 1 for overflow, 3 for `defaultScratchRoot`'s `TMPDIR`-set/unset/blank
+branches, 10 for the generic "needs a value" check across --from/--to/--at/--task/--tsv-out (blank and
+flag-shaped value for each), 5 for a missing value at the end of the arguments for --from/--to/--task/--tsv-out/
+--timeout-minutes (--at's own case already existed), 5 for the app-name pattern (blank, "-h", ".", "..",
+"../.."), 3 for --at rejecting --tsv/--tsv-out/--no-bazel, 1 for the absolute, normalized scratch root, and 5 for
+`parseMinutes` distinguishing "too large" (too many ASCII digits, with or without a leading "-") from "needs a
+whole number" (a non-ASCII digit, or a flag-shaped or blank value, since --timeout-minutes is exempt from the
+generic value check); the Task 6 `CliUsageTest` still passes).
 
 - [ ] **Step 5: Document and commit**
 
-Append to `docs/tracer.md`:
+Update `docs/tracer.md`: the intro paragraph now says "Today `Cli.main` parses and validates options. On a
+usage error it exits 1 with the usage text. Valid options currently exit 2, printing a not-implemented message,
+because no verdict is produced yet. The range walk, the `./trace` wrapper and exit codes 0 and 3 arrive in later
+commits."; the `UsageException`/`ProviderException` vocabulary row and the exit-codes line both note which codes
+are wired today versus by a later commit; and the `## Cli` section is:
 ```markdown
 ## Cli
-`trace <app> --from A --to B [--task T] [--no-bazel] [--offline] [--keep-worktrees] [--tsv | --tsv-out F] [--timeout-minutes N]`
-and `trace <app> --at REV [--task T]`. Worktrees live under one fixed scratch root, `$TMPDIR/gradle-tracer` (never
-per pid: see Task 13's scratch hygiene note — a fixed root is how the next run finds and sweeps a killed run's
-leftovers). On Linux the JVM does not read `$TMPDIR` into `java.io.tmpdir` (it is always `/tmp`), so
-`Cli.defaultScratchRoot` reads the `TMPDIR` environment variable directly and only falls back to
-`java.io.tmpdir` when it is unset or blank, keeping the documented path real. `--timeout-minutes` is validated
-before it ever reaches `DefaultProcessRunner`, which now rejects a non-positive timeout with an unchecked
-exception: zero, negative and overflowing values (`Duration.ofMinutes` throwing `ArithmeticException`) are all
-usage errors instead. The Bazel column is
-computed from `bazel-diff get-impacted-targets` between adjacent commits; if bazel-diff fails once, the rest of the
-column is `n/a` and a warning goes to stderr. A commit whose Gradle run fails is `BUILD-FAILED`; the next commit is
-compared against the last good key.
+`trace <app> --from A --to B [--task T] [--no-bazel] [--offline] [--keep-worktrees] [--tsv] [--tsv-out F] [--timeout-minutes N]`
+and `trace <app> --at REV [--task T] [--offline] [--keep-worktrees] [--timeout-minutes N]`.
+
+`<app>` must match `[A-Za-z0-9][A-Za-z0-9_-]*`; a blank, path-like (`.`, `..`, `../..`) or option-like (`-h`) name
+is a usage error naming the rejected value. Every value-taking option (`--from`, `--to`, `--at`, `--task`,
+`--tsv-out`, `--timeout-minutes`) rejects a value that is blank or starts with `-`, so a missing value can't
+silently swallow the next option: `--from --to y` fails naming `--from`, rather than failing later on `y` as an
+unknown option; a value missing at the end of the arguments fails the same way, naming the option. The one
+exception is `--timeout-minutes`: its values are validated as integers instead (see below). `--at` prints the
+key and its composition with no comparison, so it rejects `--tsv`, `--tsv-out` and `--no-bazel` alongside it,
+naming both flags in the error.
+
+`Cli.defaultScratchRoot` computes one fixed scratch root, `$TMPDIR/gradle-tracer`, that worktrees and bazel-diff
+hash files will live under once the range walk is wired (never per pid — a fixed root is how the next run finds
+and sweeps a killed run's leftovers). On Linux the JVM does not read `$TMPDIR` into `java.io.tmpdir` (it is
+always `/tmp`), so it reads the `TMPDIR` environment variable directly and only falls back to `java.io.tmpdir`
+when it is unset or blank, keeping the documented path real; either way, the result is resolved to an absolute,
+normalized path, since `./trace` changes directory before `main` runs and a relative `TMPDIR` would otherwise
+resolve against the wrong directory.
+
+`--timeout-minutes` values are validated as integers instead of the generic blank-or-dash check above. The
+value is checked against ASCII digits with an optional leading `-` before parsing: anything else, including a
+non-ASCII digit, is "needs a whole number"; a value that is all ASCII digits but too large to fit a `long`, or
+that overflows `Duration.ofMinutes`, is "too large"; and a value that parses but is zero or negative is "must
+be a positive integer". `DefaultProcessRunner` rejects a non-positive timeout with an unchecked exception, so
+the CLI validates it here as a usage error instead of ever passing one through.
 ```
 
 ```bash
@@ -6254,6 +6508,22 @@ reads $TMPDIR from the environment directly, since the JVM ignores it
 in java.io.tmpdir on Linux, falling back to java.io.tmpdir when unset
 or blank."
 ```
+
+A second code-review round on this commit found four more gaps, fixed in a follow-up commit: (1) every
+value-taking option silently swallowed the next flag as its own value when one was missing (`--from --to y`
+parsed `--to` as the value of `--from` and then failed on `y` as an unknown option) — a blank or flag-shaped
+value is now rejected by name, except for `--timeout-minutes`, which keeps its own more specific numeric
+message; (2) `<app>` was validated only against a loose `--` prefix check, so `.`, `..`, `../..`, `-h` and a
+blank name all reached the filesystem lookup — it must now match `[A-Za-z0-9][A-Za-z0-9_-]*`; (3) `--at` (spec:
+"print the key and its composition, no comparison") silently accepted `--tsv`, `--tsv-out` and `--no-bazel`,
+which make no sense without a comparison — each is now rejected by name alongside `--at`; (4)
+`defaultScratchRoot` could return a relative path for a relative `TMPDIR`, which `./trace`'s directory change
+would then resolve against the wrong CWD — it now returns an absolute, normalized path. A third round added
+missing-value tests for the remaining options (only `--at` had one before), tightened `docs/tracer.md` to
+describe the scratch root as something `defaultScratchRoot` computes rather than something already live, added
+the reason for the interim exit code to the intro paragraph, and rewrote every review-history code comment
+("Amendment (code review): ...", "Fix (code review round 2): ...") to state the reason for the code instead of
+the fact that review produced it.
 
 ---
 
@@ -6486,6 +6756,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /** Entry point: parses options, walks the range through worktrees, prints the verdicts. */
@@ -6494,15 +6765,19 @@ public final class Cli {
     public static final int EXIT_USAGE = 1;
     public static final int EXIT_TOOL_FAILURE = 2;
     public static final int EXIT_CHANGED = 3;
-    // Amendment (code review, carried from Task 12): on Linux the JVM ignores $TMPDIR (java.io.tmpdir is
-    // always /tmp), so the default scratch root reads the environment variable directly.
+    // The JVM ignores $TMPDIR on Linux (java.io.tmpdir is always /tmp), so the default scratch root
+    // reads the environment variable directly.
     /** One fixed scratch root, so the next run finds and removes whatever a killed run left behind. */
     static final Path DEFAULT_SCRATCH = defaultScratchRoot(System::getenv, () -> System.getProperty("java.io.tmpdir"));
 
+    // <app> is used as a directory name under app/; restrict it so a path-like or option-like value
+    // never reaches the filesystem lookup.
+    private static final Pattern APP_NAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_-]*");
+
     static final String USAGE = """
             usage: trace <app> --from <rev> --to <rev> [--task <name>] [--no-bazel] [--offline] [--keep-worktrees]
-                                                        [--tsv | --tsv-out <file>] [--timeout-minutes <n>]
-                   trace <app> --at <rev> [--task <name>]
+                                                        [--tsv] [--tsv-out <file>] [--timeout-minutes <n>]
+                   trace <app> --at <rev> [--task <name>] [--offline] [--keep-worktrees] [--timeout-minutes <n>]
 
               <app>            appA | appB | appC   (maps to :app:<app>:<task> and //app/<app>:<app>)
               --task           Gradle task whose cache key is compared; default compileJava, alternative fingerprint
@@ -6525,8 +6800,9 @@ public final class Cli {
                 throw new UsageException("missing <app>");
             }
             String app = args[0];
-            if (app.startsWith("--")) {
-                throw new UsageException("first argument must be the app name, got '" + app + "'");
+            if (!APP_NAME.matcher(app).matches()) {
+                throw new UsageException("'" + app + "' is not a valid app name: expected letters, digits, "
+                        + "'-' or '_', starting with a letter or digit");
             }
             String from = null, to = null, at = null, task = "compileJava";
             boolean bazel = true, offline = false, keep = false, tsv = false;
@@ -6544,6 +6820,13 @@ public final class Cli {
                             throw new UsageException(flag + " needs a value");
                         }
                         String value = args[++i];
+                        // A blank value, or one that looks like another flag, is almost always a missing
+                        // value swallowing the next option. Excluded for --timeout-minutes, whose own
+                        // numeric validation below gives a strictly more specific error for a negative or
+                        // zero value.
+                        if (!flag.equals("--timeout-minutes") && (value.isBlank() || value.startsWith("-"))) {
+                            throw new UsageException(flag + " needs a value, got '" + value + "'");
+                        }
                         switch (flag) {
                             case "--from" -> from = value;
                             case "--to" -> to = value;
@@ -6562,18 +6845,39 @@ public final class Cli {
             if (at == null && (from == null || to == null)) {
                 throw new UsageException("--from and --to are both required (or use --at)");
             }
+            // --at prints the key and its composition with no comparison, so the comparison-only flags
+            // are meaningless alongside it.
+            if (at != null && tsv) {
+                throw new UsageException("--at cannot be combined with --tsv");
+            }
+            if (at != null && tsvOut != null) {
+                throw new UsageException("--at cannot be combined with --tsv-out");
+            }
+            if (at != null && !bazel) {
+                throw new UsageException("--at cannot be combined with --no-bazel");
+            }
             return new Options(app, from, to, at, task, bazel, offline, keep, tsv, tsvOut, timeout);
         }
 
+        // ASCII digits only (optional leading '-'), checked before parsing, so a non-ASCII digit is
+        // "needs a whole number" and an all-digit value too long to fit a long is distinguished as
+        // "too large".
+        private static final Pattern TIMEOUT_VALUE = Pattern.compile("-?[0-9]+");
+
         private static Duration parseMinutes(String value) throws UsageException {
+            if (!TIMEOUT_VALUE.matcher(value).matches()) {
+                throw new UsageException("--timeout-minutes needs a whole number, got '" + value + "'");
+            }
             long minutes;
             try {
                 minutes = Long.parseLong(value);
             } catch (NumberFormatException e) {
-                throw new UsageException("--timeout-minutes needs a whole number, got '" + value + "'");
+                // A value with too many digits to fit a long overflows here, including a negative one
+                // (e.g. a minus sign followed by twenty 9s): "too large" fits either sign equally well.
+                throw new UsageException("--timeout-minutes is too large, got '" + value + "'");
             }
-            // Amendment (code review, carried from Task 12): DefaultProcessRunner rejects a zero or
-            // negative timeout with an unchecked exception, so the CLI must never pass one through.
+            // DefaultProcessRunner rejects a zero or negative timeout with an unchecked exception, so
+            // validate it here as a usage error instead of ever passing one through.
             if (minutes <= 0) {
                 throw new UsageException("--timeout-minutes must be a positive integer, got " + minutes);
             }
@@ -6607,12 +6911,13 @@ public final class Cli {
         this.impacts = impacts;
     }
 
-    // Amendment (code review, carried from Task 12): package-private and parameterized so the
-    // TMPDIR-vs-fallback behaviour is directly testable.
+    // Package-private and parameterized so the TMPDIR-vs-fallback behaviour is directly testable.
     static Path defaultScratchRoot(Function<String, String> getenv, Supplier<String> javaIoTmpdir) {
         String tmpdir = getenv.apply("TMPDIR");
         String base = (tmpdir != null && !tmpdir.isBlank()) ? tmpdir : javaIoTmpdir.get();
-        return Path.of(base, "gradle-tracer");
+        // ./trace changes directory before main() runs, so a relative TMPDIR must be resolved against
+        // the CWD at call time instead of staying relative.
+        return Path.of(base, "gradle-tracer").toAbsolutePath().normalize();
     }
 
     public static void main(String[] args) {
@@ -6759,8 +7064,8 @@ public final class Cli {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
-Expected: `BUILD SUCCESSFUL`; 183 tests at this point in the sequence (172 going into this task per Task 12's
-amended count, plus the 2 `RevisionRangeTest` cases and 9 `CliTest` cases this task adds). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
+Expected: `BUILD SUCCESSFUL`; 212 tests at this point in the sequence (201 going into this task per Task 12's
+thrice-amended count, plus the 2 `RevisionRangeTest` cases and 9 `CliTest` cases this task adds). Check the diff size: `git diff --stat` must stay under 400 hand-written lines.
 
 - [ ] **Step 6: Document and commit**
 
