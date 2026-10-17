@@ -1,21 +1,28 @@
 package io.joeyang.tracer.cli;
 
+import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
-/** Entry point. Options parsing lives here; the range walk arrives in the next task. */
+/** Entry point: parses options and walks the range through worktrees, printing the verdicts. {@code --at} is a placeholder until a later commit. */
 public final class Cli {
     public static final int EXIT_OK = 0;
     public static final int EXIT_USAGE = 1;
     public static final int EXIT_TOOL_FAILURE = 2;
     public static final int EXIT_CHANGED = 3;
-
-    // The JVM ignores $TMPDIR on Linux (java.io.tmpdir is always /tmp), so read it directly to keep the
-    // documented $TMPDIR/gradle-tracer behaviour true. Wired into main() in the next task.
+    // The JVM ignores $TMPDIR on Linux (java.io.tmpdir is always /tmp), so the default scratch root
+    // reads the environment variable directly.
+    /** One fixed scratch root, so the next run finds and removes whatever a killed run left behind. */
     static final Path DEFAULT_SCRATCH = defaultScratchRoot(System::getenv, () -> System.getProperty("java.io.tmpdir"));
 
     // <app> is used as a directory name under app/; restrict it so a path-like or option-like value
@@ -148,7 +155,19 @@ public final class Cli {
         }
     }
 
-    private Cli() {}
+    private final ProcessRunner runner;
+    private final Path repo;
+    private final Path scratch;
+    private final KeyProvider keys;
+    private final ImpactProvider impacts; // null when --no-bazel
+
+    Cli(ProcessRunner runner, Path repo, Path scratch, KeyProvider keys, ImpactProvider impacts) {
+        this.runner = runner;
+        this.repo = repo;
+        this.scratch = scratch;
+        this.keys = keys;
+        this.impacts = impacts;
+    }
 
     // Package-private and parameterized by lookup functions so the TMPDIR-vs-fallback behaviour is
     // directly testable without touching real environment variables or system properties.
@@ -161,20 +180,155 @@ public final class Cli {
         return Path.of(base, "gradle-tracer").toAbsolutePath().normalize();
     }
 
+    public static void main(String[] args) {
+        Options options;
+        try {
+            options = Options.parse(args);
+        } catch (UsageException e) {
+            System.exit(usage(System.err, e.getMessage()));
+            return;
+        }
+        ProcessRunner runner = new DefaultProcessRunner();
+        Path repo = Path.of("").toAbsolutePath();
+        KeyProvider keys = new GradleKeyProvider(runner, options.offline(), options.timeout());
+        ImpactProvider impacts = options.bazel() ? new BazelDiffProvider(runner, repo, options.offline(), options.timeout()) : null;
+        System.exit(new Cli(runner, repo, DEFAULT_SCRATCH, keys, impacts).run(options, System.out, System.err));
+    }
+
     static int usage(PrintStream err, String problem) {
         err.println("trace: " + problem);
         err.print(USAGE);
         return EXIT_USAGE;
     }
 
-    public static void main(String[] args) {
+    int run(Options o, PrintStream out, PrintStream err) {
         try {
-            Options.parse(args);
+            if (!Files.isDirectory(repo.resolve("app").resolve(o.app()))) {
+                throw new UsageException("unknown app '" + o.app() + "': expected a directory app/" + o.app());
+            }
+            if (o.at() != null) {
+                err.println("trace: --at arrives in a later commit");
+                return EXIT_TOOL_FAILURE;
+            }
+            checkTsvOutWritable(o);
+            return range(o, out, err);
         } catch (UsageException e) {
-            System.exit(usage(System.err, e.getMessage()));
+            return usage(err, e.getMessage());
+        } catch (ProviderException e) {
+            err.println("trace: " + e.getMessage());
+            return EXIT_TOOL_FAILURE;
+        }
+    }
+
+    /**
+     * Checked before any worktree is created or any git command beyond option parsing runs, so a bad
+     * {@code --tsv-out} path fails fast instead of after a whole range walk has already run.
+     */
+    private void checkTsvOutWritable(Options o) throws UsageException {
+        Path tsvOut = o.tsvOut();
+        if (tsvOut == null) {
             return;
         }
-        System.err.println("trace: options accepted; the range walk arrives in a later commit");
-        System.exit(EXIT_TOOL_FAILURE);
+        if (Files.isDirectory(tsvOut)) {
+            throw new UsageException("--tsv-out '" + tsvOut + "' is a directory");
+        }
+        Path parent = tsvOut.toAbsolutePath().getParent();
+        if (parent == null) {
+            parent = Path.of("").toAbsolutePath();
+        }
+        if (!Files.isDirectory(parent)) {
+            throw new UsageException("--tsv-out '" + tsvOut + "': parent directory " + parent + " does not exist");
+        }
+        if (!Files.isWritable(parent)) {
+            throw new UsageException("--tsv-out '" + tsvOut + "': parent directory " + parent + " is not writable");
+        }
+    }
+
+    private int range(Options o, PrintStream out, PrintStream err) throws UsageException, ProviderException {
+        List<Commit> commits = new RevisionRange(runner, repo).resolve(o.from(), o.to());
+        int swept = deleteScratchFiles();
+        if (swept > 0) {
+            err.println("trace: removed " + swept + " stale scratch file(s) under " + scratch);
+        }
+        List<Verdict> rows = new ArrayList<>();
+        try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
+            Optional<TaskKey> previousGood = Optional.empty();
+            Path previousHashes = null;
+            boolean bazelAlive = impacts != null;
+            for (Commit commit : commits) {
+                Path worktree = pool.checkout(commit);
+                Optional<TaskKey> key = Optional.empty();
+                Optional<String> error = Optional.empty();
+                try {
+                    key = Optional.of(keys.keyFor(worktree, o.taskPath()));
+                } catch (ProviderException e) {
+                    error = Optional.of(e.getMessage());
+                }
+                BazelStatus bazel = BazelStatus.NONE;
+                if (bazelAlive) {
+                    try {
+                        Path hashes = impacts.hashes(worktree, scratch.resolve("hashes-" + commit.shortSha() + ".json"));
+                        if (previousHashes != null) {
+                            Set<String> impacted = impacts.impactedTargets(previousHashes, hashes);
+                            bazel = impacted.contains(o.bazelTarget()) ? BazelStatus.IMPACTED : BazelStatus.CLEAN;
+                        }
+                        previousHashes = hashes;
+                    } catch (ProviderException e) {
+                        err.println("trace: bazel-diff unavailable: " + e.getMessage());
+                        bazelAlive = false;
+                        bazel = BazelStatus.NOT_AVAILABLE;
+                    }
+                } else if (impacts != null) {
+                    bazel = BazelStatus.NOT_AVAILABLE;
+                }
+                rows.add(KeyComparator.verdict(commit, previousGood, key, error, bazel));
+                if (key.isPresent()) {
+                    previousGood = key;
+                }
+                if (!o.keepWorktrees()) {
+                    pool.release(worktree);
+                }
+            }
+        }
+        if (!o.keepWorktrees()) {
+            deleteScratchFiles();
+        }
+        String tsv = TableRenderer.renderTsv(rows);
+        if (o.tsv()) {
+            out.print(tsv);
+        } else {
+            out.print(TableRenderer.render(o.taskPath(), impacts == null ? null : o.bazelTarget(), rows));
+        }
+        if (o.tsvOut() != null) {
+            try {
+                Files.writeString(o.tsvOut(), tsv);
+            } catch (IOException e) {
+                throw new ProviderException("cannot write " + o.tsvOut() + ": " + e.getMessage(), e);
+            }
+        }
+        if (rows.stream().anyMatch(v -> v.status() == Status.BUILD_FAILED)) {
+            return EXIT_TOOL_FAILURE;
+        }
+        return rows.stream().anyMatch(v -> v.status() == Status.CHANGED) ? EXIT_CHANGED : EXIT_OK;
+    }
+
+    /** Deletes bazel-diff hash and impacted-target files under the scratch root; returns how many went. */
+    private int deleteScratchFiles() {
+        if (!Files.isDirectory(scratch)) {
+            return 0;
+        }
+        int count = 0;
+        try (Stream<Path> entries = Files.list(scratch)) {
+            for (Path p : entries.toList()) {
+                String name = p.getFileName().toString();
+                if (Files.isRegularFile(p) && (name.startsWith("hashes-") || name.endsWith(".impacted.txt"))) {
+                    Files.deleteIfExists(p);
+                    count++;
+                }
+            }
+        } catch (IOException ignored) {
+            // best effort
+        }
+        return count;
     }
 }

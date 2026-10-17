@@ -58,6 +58,12 @@ public final class RevisionRange {
         return commits;
     }
 
+    /** A single revision as a Commit (for {@code --at}). */
+    public Commit resolveOne(String rev) throws UsageException, ProviderException {
+        String sha = revParse(rev);
+        return parse(run("git", "log", "-1", FORMAT, sha).stdout().strip());
+    }
+
     private String revParse(String rev) throws UsageException, ProviderException {
         ProcessRunner.Result r = run("git", "rev-parse", "--verify", "--quiet", rev + "^{commit}");
         // Under --quiet, real git exits 1 (with no stderr) for a revision it simply cannot resolve. Any other

@@ -1,8 +1,9 @@
 # tracer
 
-`tools/tracer` is a Java CLI. Today `Cli.main` parses and validates options. On a usage error it exits 1 with the
-usage text. Valid options currently exit 2, printing a not-implemented message, because no verdict is produced
-yet. The range walk, the `./trace` wrapper and exit codes 0 and 3 arrive in later commits.
+`tools/tracer` is a Java CLI. `Cli.main` parses options, then walks the `--from`/`--to` range through detached
+git worktrees, asking the Gradle and bazel-diff providers about each commit and printing a verdict table. On a
+usage error it exits 1 with the usage text. `--at` currently exits 2 with a placeholder message; it and the
+`./trace` wrapper arrive in later commits.
 
 ## Vocabulary (`io.joeyang.tracer.cli`)
 | type | meaning |
@@ -15,12 +16,11 @@ yet. The range walk, the `./trace` wrapper and exit codes 0 and 3 arrive in late
 | `BazelStatus` | `IMPACTED`, `CLEAN`, `NOT_AVAILABLE`, `NONE` — the informational column |
 | `Verdict` | one table row |
 | `KeyProvider`, `ImpactProvider` | the two oracles behind interfaces so tests can fake them |
-| `UsageException` → exit 1 (wired); `ProviderException` → exit 2, wired by a later commit | error classes |
+| `UsageException` → exit 1; `ProviderException` → exit 2 | error classes |
 
 ## Exit codes
-0 no change in range · 1 usage error (wired) · 2 a tool failed (some row is BUILD-FAILED) · 3 at least one
-CHANGED — 0, the "a tool failed" sense of 2, and 3 are wired by a later commit; `Cli.main` exits 2 today as an
-interim placeholder whenever the options are valid.
+0 no change in range · 1 usage error · 2 a tool failed (some row is BUILD-FAILED, or `--at`'s placeholder) · 3
+at least one CHANGED. 2 wins over 3 when a range has both a BUILD-FAILED row and a CHANGED row.
 
 ## Gradle oracle
 `GradleKeyProvider` runs `<worktree>/gradlew --console=plain --no-parallel --build-cache -Dorg.gradle.caching.debug=true <task>`
@@ -47,15 +47,14 @@ non-blank line with the following line when that one is indented (e.g. "Selectio
 match ..." for an unknown task, where the real cause is the indented continuation, not the header's own first line).
 Failing that, it falls back to the first non-blank stderr/stdout line. The task path is named in the message either way.
 A line inside the target task's own cache-debug block that CacheDebugLog cannot recognise is reported the same way, as a
-`ProviderException` naming the task and the offending line, instead of escaping uncaught. Computing *which* culprit
-changed between two commits' `TaskKey`s, and the `./trace` revision-range walk that drives this provider, arrive in
-later commits.
+`ProviderException` naming the task and the offending line, instead of escaping uncaught.
 
 ## Bazel oracle
 `BazelDiffProvider` — see `docs/bazel-build.md`. Failure modes: binary missing → the error names `tools/fetch-bazel-diff.sh`;
 non-zero exit → the real Bazel `ERROR:` line (not bazel-diff's own wrapper line); no output file → explicit error;
-a stray non-label line in `get-impacted-targets`' output → explicit error naming the line. Mapping these into the
-`BazelStatus` column (`NOT_AVAILABLE` rather than failing the whole row) arrives in a later commit.
+a stray non-label line in `get-impacted-targets`' output → explicit error naming the line. The `Cli` range walk maps
+any of these failures to `BazelStatus.NOT_AVAILABLE` for the rest of the range (rather than failing the whole row)
+and prints a warning to stderr once, the first time bazel-diff fails.
 
 ## Git layer
 - `RevisionRange.resolve(from, to)` → `[from, …from..to oldest first]`, following the first-parent line so adjacent rows are parent and child even across merges. `from` must be an ancestor of `to` on that first-parent line (each row's own first parent, from `%P`, must equal the previous row's sha); a side-branch commit pulled in by a merge is a `UsageException` naming both shas, not a silent mismatch. Unknown revision (`git rev-parse --verify --quiet` exit 1) or an empty range → `UsageException`; any other git failure (not runnable, exit 128, a malformed `git log` line) → `ProviderException`, naming the offending line where there is one.
@@ -93,15 +92,16 @@ is a usage error naming the rejected value. Every value-taking option (`--from`,
 `--tsv-out`) rejects a value that is blank or starts with `-`, so a missing value can't silently swallow the
 next option: `--from --to y` fails naming `--from`, rather than failing later on `y` as an unknown option; a
 value missing at the end of the arguments fails the same way, naming the option. The one exception is
-`--timeout-minutes`: its values are validated as integers instead (see below). `--at` prints the key and its
-composition with no comparison, so it rejects `--tsv`, `--tsv-out` and `--no-bazel` alongside it, naming both
-flags in the error.
+`--timeout-minutes`: its values are validated as integers instead (see below). `--at` is meant to print the key
+and its composition with no comparison, so it already rejects `--tsv`, `--tsv-out` and `--no-bazel` alongside it,
+naming both flags in the error; `--at` itself prints a placeholder message and exits 2 until a later commit wires
+it up.
 
 `Cli.defaultScratchRoot` computes one fixed scratch root, `$TMPDIR/gradle-tracer`, that worktrees and bazel-diff
-hash files will live under once the range walk is wired (never per pid — a fixed root is how the next run finds
-and sweeps a killed run's leftovers). On Linux the JVM does not read `$TMPDIR` into `java.io.tmpdir` (it is
-always `/tmp`), so it reads the `TMPDIR` environment variable directly and only falls back to `java.io.tmpdir`
-when it is unset or blank, keeping the documented path real; either way, the result is resolved to an absolute,
+hash files live under (never per pid — a fixed root is how the next run finds and sweeps a killed run's
+leftovers; see "Range walk" below). On Linux the JVM does not read `$TMPDIR` into `java.io.tmpdir` (it is always
+`/tmp`), so it reads the `TMPDIR` environment variable directly and only falls back to `java.io.tmpdir` when it
+is unset or blank, keeping the documented path real; either way, the result is resolved to an absolute,
 normalized path, since a child process such as `<worktree>/gradlew` runs inside the worktree, so a relative
 root would resolve differently there — it is resolved once against the JVM's working directory (the repo root
 after `./trace`'s `cd`) instead.
@@ -113,3 +113,18 @@ non-ASCII digit, is "needs a whole number"; a value that is all ASCII digits but
 a value that parses but is zero or negative is "must be a positive integer". `DefaultProcessRunner` rejects a
 non-positive timeout with an unchecked exception, so the CLI validates it here as a usage error instead of ever
 passing one through.
+
+## Range walk
+Worktrees and bazel-diff hash files live under one fixed root, `$TMPDIR/gradle-tracer/`. At start the tracer prunes git's
+worktree list, deletes stale `wt-*` directories and stale `hashes-*.json`/`*.impacted.txt` files left by a killed run, and
+reports how many it removed; at the end it removes what it created unless `--keep-worktrees`. If bazel-diff fails once, the
+rest of the Bazel column is `n/a` and a warning goes to stderr. A commit whose Gradle run fails is `BUILD-FAILED`; the next
+commit is compared against the last good key.
+
+Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed (some row is
+`BUILD-FAILED`), 3 at least one row is `CHANGED` — and 2 wins over 3 when both apply in the same range.
+
+Before any worktree is created or any git command beyond option parsing runs, `--tsv-out <file>` is checked: the
+file's parent directory (the current directory when the path has none) must exist, be a directory and be
+writable, and the file itself must not already be an existing directory. Any violation is a usage error naming
+the path, so a bad destination fails immediately rather than after a whole range walk has run.

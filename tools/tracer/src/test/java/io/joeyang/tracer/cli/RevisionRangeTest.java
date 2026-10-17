@@ -140,4 +140,21 @@ class RevisionRangeTest {
         UsageException e = assertThrows(UsageException.class, () -> new RevisionRange(git, repo).resolve("v1", "HEAD"));
         assertTrue(e.getMessage().contains(C), e.getMessage());
     }
+
+    @Test void resolveOneReturnsTheCommit() throws Exception {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git rev-parse --verify --quiet HEAD^{commit}", 0, B + "\n", "")
+                .on("git log -1 --format=%H%x1f%P%x1f%s " + B, 0, B + "\u001f\u001fcore: add shout\n", "");
+
+        assertEquals(new Commit(B, "core: add shout"), new RevisionRange(git, repo).resolveOne("HEAD"));
+    }
+
+    // Real git, under --quiet, exits 1 with no stderr for an unresolvable revision (see RevisionRangeTest's
+    // unknownRevisionIsAUsageError and revParseFailureOtherThanExitOneIsAProviderError from Task 9).
+    @Test void resolveOneRejectsUnknownRevision() {
+        FakeProcessRunner git = new FakeProcessRunner()
+                .on("git rev-parse --verify --quiet zzz^{commit}", 1, "", "");
+
+        assertThrows(UsageException.class, () -> new RevisionRange(git, repo).resolveOne("zzz"));
+    }
 }
