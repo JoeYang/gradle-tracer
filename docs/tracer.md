@@ -1,7 +1,7 @@
 # tracer
 
-`tools/tracer` is a Java CLI. Today it only parses its arguments enough to print usage
-(`Cli.main`); a `./trace` wrapper that builds it with `installDist` and runs the launcher,
+`tools/tracer` is a Java CLI. Today `Cli.main` ignores its arguments and exits with the usage
+text and a "not implemented yet" message; a `./trace` wrapper that builds it with `installDist` and runs the launcher,
 and the revision-range walk that produces real verdicts, arrive in later commits.
 
 ## Vocabulary (`io.joeyang.tracer.cli`)
