@@ -54,7 +54,7 @@ public final class Cli {
               --no-bazel       skip the bazel-diff column
               --offline        pass --offline to gradle; forbid repository downloads in bazel
               --keep-worktrees leave the checked-out worktrees and hash files in place for inspection
-              --tsv            machine-readable output only (sha, subject, key, bazel, verdict, culprits)
+              --tsv            machine-readable output only (sha, subject, key, verdict, culprits)
               --tsv-out <file> print the table and also write the TSV to <file>
               --timeout-minutes per external command, default 10
 
@@ -459,7 +459,7 @@ public final class Cli {
                     } else if (impacts != null) {
                         bazel = BazelStatus.NOT_AVAILABLE;
                     }
-                    rows.add(KeyComparator.verdict(commit, previousGood, key, error, bazel));
+                    rows.add(KeyComparator.verdict(commit, previousGood, key, error));
                     if (key.isPresent()) {
                         previousGood = key;
                     }
@@ -485,7 +485,7 @@ public final class Cli {
         if (o.tsv()) {
             out.print(tsv);
         } else {
-            out.print(TableRenderer.render(o.taskPath(), impacts == null ? null : o.bazelTarget(), rows));
+            out.print(TableRenderer.render(o.taskPath(), rows));
         }
         if (o.tsvOut() != null) {
             writeTsvAtomically(o.tsvOut(), tsv);

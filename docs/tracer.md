@@ -73,7 +73,7 @@ not something `parse` has to make sense of.
 - `--keep-worktrees` leaves everything — the checked-out directories and their `git worktree` registrations — in place when the run ends; no shutdown hook is even registered, so an interrupted run leaves them too. The *next* pool opened on that root deletes whatever is there in its startup sweep (git included, via sweep-then-prune) regardless of `--keep-worktrees`; a commit `checkout()` again within the same run tears down and recreates its worktree rather than reusing it in place.
 
 ## Comparison
-`KeyComparator.verdict(commit, previousGoodKey, currentKey, error, bazel)`: no current key → `BUILD-FAILED` (defaulting the
+`KeyComparator.verdict(commit, previousGoodKey, currentKey, error)`: no current key → `BUILD-FAILED` (defaulting the
 error message to "no cache key obtained" when none is given); no previous → `base`; equal keys → `clean`; otherwise `CHANGED`
 with culprits = file fingerprints that differ (compared by location-independent display name: `core.jar`,
 `appA/src/main/java/.../AppA.java`, `appA classes`, `appA resources` for a changed resource file, and `group:artifact` for
@@ -84,7 +84,7 @@ first so it is never hidden by the cap below. When none of the above differ desp
 "inputs changed (no fingerprint detail)". Capped at four named culprits plus a trailing `+N more`; exactly five print in
 full with no `+N more` marker, since the cap only triggers above five.
 
-`TableRenderer.render` prints the fixed-width table and a summary line; `renderTsv` prints `sha\tsubject\tkey\tbazel\tverdict\tculprits`
+`TableRenderer.render` prints the fixed-width table and a summary line; `renderTsv` prints `sha\tsubject\tkey\tverdict\tculprits`
 for scripts — for a `BUILD-FAILED` row, that last column is the error message, not the (empty) culprit list. Inside any
 field, each tab, CR or LF character becomes a single space (so a CRLF becomes two spaces) so none of them can shift a
 column. Table columns are padded and truncated by

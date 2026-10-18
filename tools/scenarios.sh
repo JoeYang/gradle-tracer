@@ -128,8 +128,6 @@ declare -A EXPECT=(
   [appB:compileJava]="- C - - - C"  [appB:fingerprint]="C C - - - C"
   [appC:compileJava]="- - - C - C"  [appC:fingerprint]="C - - C - C"
 )
-# Expected bazel-diff column for S1..S6 (checked on the compileJava pass only; bazel-diff hashes all transitive inputs regardless of task).
-declare -A EXPECT_BZ=( [appA]="C C C - C C" [appB]="C C - - C C" [appC]="C - - C - C" )
 
 check() {  # check LABEL EXPECTED ACTUAL
   if [[ "$2" == "$3" ]]; then printf 'OK   %-22s %s\n' "$1" "$3"; else printf 'FAIL %-22s expected [%s] got [%s]\n' "$1" "$2" "$3"; FAILURES=$((FAILURES + 1)); fi
@@ -143,12 +141,8 @@ for app in appA appB appC; do
     say "./trace $app --from ${BASE:0:7} --to ${TIP:0:7} --task $task"
     TSV="$WT/.trace-$app-$task.tsv"
     ./trace "$app" --from "$BASE" --to "$TIP" --task "$task" --tsv-out "$TSV" "${flags[@]}" || true
-    gradle_actual="$(awk -F'\t' 'NR>1 { printf "%s%s", (NR>2 ? " " : ""), ($5=="CHANGED" ? "C" : ($5=="clean" ? "-" : "?")) }' "$TSV")"
+    gradle_actual="$(awk -F'\t' 'NR>1 { printf "%s%s", (NR>2 ? " " : ""), ($4=="CHANGED" ? "C" : ($4=="clean" ? "-" : "?")) }' "$TSV")"
     check "$app $task" "${EXPECT[$app:$task]}" "$gradle_actual"
-    if [[ "$NO_BAZEL" != 1 && "$task" == compileJava ]]; then
-      bazel_actual="$(awk -F'\t' 'NR>1 { printf "%s%s", (NR>2 ? " " : ""), ($4=="impacted" ? "C" : ($4=="clean" ? "-" : "?")) }' "$TSV")"
-      check "$app bazel-diff" "${EXPECT_BZ[$app]}" "$bazel_actual"
-    fi
   done
 done
 

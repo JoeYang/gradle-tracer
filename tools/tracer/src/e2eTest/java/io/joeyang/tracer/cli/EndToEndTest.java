@@ -56,21 +56,21 @@ class EndToEndTest {
 
         TraceResult appA = trace(cli, "appA", "--task", "compileJava");
         assertEquals(Cli.EXIT_CHANGED, appA.code(), appA.text());
-        assertEquals("base", appA.rows()[0][4], appA.text());
-        assertEquals("CHANGED", appA.rows()[1][4], appA.text());
-        assertTrue(appA.rows()[1][5].contains("core classes"),
-                "compile classpath consumes project deps as class dirs: " + appA.rows()[1][5]);
+        assertEquals("base", appA.rows()[0][3], appA.text());
+        assertEquals("CHANGED", appA.rows()[1][3], appA.text());
+        assertTrue(appA.rows()[1][4].contains("core classes"),
+                "compile classpath consumes project deps as class dirs: " + appA.rows()[1][4]);
 
         TraceResult appC = trace(cli, "appC", "--task", "compileJava");
         assertEquals(Cli.EXIT_OK, appC.code(), appC.text());
-        assertEquals("base", appC.rows()[0][4], appC.text());
-        assertEquals("clean", appC.rows()[1][4], appC.text());
+        assertEquals("base", appC.rows()[0][3], appC.text());
+        assertEquals("clean", appC.rows()[1][3], appC.text());
 
         TraceResult appARuntime = trace(cli, "appA");
-        assertEquals("CHANGED", appARuntime.rows()[1][4], appARuntime.text());
-        assertTrue(appARuntime.rows()[1][5].contains("core.jar"),
+        assertEquals("CHANGED", appARuntime.rows()[1][3], appARuntime.text());
+        assertTrue(appARuntime.rows()[1][4].contains("core.jar"),
                 "the default task is fingerprint, whose runtime classpath consumes project deps as jars: "
-                        + appARuntime.rows()[1][5]);
+                        + appARuntime.rows()[1][4]);
     }
 
     private record TraceResult(int code, String[][] rows, String text) {}

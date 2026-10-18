@@ -101,14 +101,14 @@ class CliTest {
         assertEquals(Cli.EXIT_CHANGED, code, err());
         assertTrue(out().contains("bbbbbbb  core: add shout") && out().contains("CHANGED") && out().contains("core.jar"), out());
         assertTrue(out().contains("ccccccc  docs only") && out().contains("clean"), out());
-        assertTrue(out().contains("//app/appA:appA (bazel-diff)"), out());
+        assertFalse(out().contains("bazel-diff"), out());
         assertTrue(git.ran("git worktree remove --force"), "worktrees must be removed");
     }
 
     @Test void tsvGoesToStdoutWithoutTable() throws Exception {
         int code = run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv");
         assertEquals(Cli.EXIT_CHANGED, code, err());
-        assertTrue(out().startsWith(A + "\tbaseline\tk1\t-\tbase\t"), out());
+        assertTrue(out().startsWith(A + "\tbaseline\tk1\tbase\t"), out());
         assertEquals(3, out().split("\n").length);
     }
 
@@ -116,7 +116,7 @@ class CliTest {
         Path file = tmp.resolve("rows.tsv");
         run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", file.toString());
         assertTrue(out().contains("Tracing inputs of"), out());
-        assertTrue(Files.readString(file).contains(B + "\tcore: add shout\tk2\timpacted\tCHANGED\tcore.jar"));
+        assertTrue(Files.readString(file).contains(B + "\tcore: add shout\tk2\tCHANGED\tcore.jar"));
     }
 
     @Test void tsvOutKeepsAnExistingTargetsMode() throws Exception {
@@ -138,7 +138,7 @@ class CliTest {
         run(keys, impacts, "appA", "--from", "base", "--to", "tip", "--tsv-out", link.toString());
 
         assertTrue(Files.isSymbolicLink(link), "the symlink itself must still be a symlink, not replaced by a regular file");
-        assertTrue(Files.readString(real).contains(B + "\tcore: add shout\tk2\timpacted\tCHANGED\tcore.jar"),
+        assertTrue(Files.readString(real).contains(B + "\tcore: add shout\tk2\tCHANGED\tcore.jar"),
                 "the real target behind the symlink must hold the new content");
     }
 
@@ -166,8 +166,8 @@ class CliTest {
 
         assertEquals(Cli.EXIT_CHANGED, code);
         String[] rows = out().split("\n");
-        assertTrue(rows[1].contains("\tn/a\t"), rows[1]);
-        assertTrue(rows[2].contains("\tn/a\t"), "bazel-diff stays n/a for the rest of the range: " + rows[2]);
+        assertTrue(rows[1].contains("\tCHANGED\t"), rows[1]);
+        assertFalse(rows[2].contains("n/a"), "no bazel-diff status in the row: " + rows[2]);
         int warnings = err().split("bazel-diff unavailable", -1).length - 1;
         assertEquals(1, warnings, "the warning must print exactly once, not once per commit: " + err());
     }
