@@ -62,7 +62,7 @@ README.md, docs/gradle-build.md, docs/bazel-build.md, docs/tracer.md, docs/scena
 - Create: `README.md`, `docs/gradle-build.md`
 - Generated: `gradlew`, `gradlew.bat`, `gradle/wrapper/gradle-wrapper.jar`, `gradle/wrapper/gradle-wrapper.properties`
 
-- [ ] **Step 1: Bootstrap the wrapper without a local Gradle**
+- [x] **Step 1: Bootstrap the wrapper without a local Gradle**
 
 ```bash
 S=/tmp/claude-1000/-data-projects-gradle-tracer/00c76a19-5154-4562-a898-e991eb64d4c6/scratchpad
@@ -78,7 +78,7 @@ touch settings.gradle.kts   # `gradle wrapper` refuses to run without a settings
 ```
 Expected: `sha256sum` prints `OK`; `./gradlew --version` prints `Gradle 9.8.1` and the JVM line shows 25.
 
-- [ ] **Step 2: Root settings, properties, catalog**
+- [x] **Step 2: Root settings, properties, catalog**
 
 `settings.gradle.kts`:
 ```kotlin
@@ -119,7 +119,7 @@ commons-lang3 = { module = "org.apache.commons:commons-lang3", version.ref = "co
 gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
 ```
 
-- [ ] **Step 3: build-logic build files**
+- [x] **Step 3: build-logic build files**
 
 `build-logic/settings.gradle.kts`:
 ```kotlin
@@ -180,7 +180,7 @@ gradlePlugin {
 }
 ```
 
-- [ ] **Step 4: Write the TestKit helper and the failing functional tests**
+- [x] **Step 4: Write the TestKit helper and the failing functional tests**
 
 `build-logic/src/test/java/io/joeyang/tracer/buildlogic/GradleProject.java` (TestKit shares one build cache across every test method by default; three tests compile byte-identical sample code, so without a per-project cache the last one would see `FROM_CACHE` where it asserts `SUCCESS`):
 ```java
@@ -352,12 +352,12 @@ class ConventionPluginsFunctionalTest {
     }
 }
 ```
-- [ ] **Step 5: Run the tests to verify they fail**
+- [x] **Step 5: Run the tests to verify they fail**
 
 Run: `./gradlew -p build-logic test`
 Expected: FAIL — compilation of tests succeeds but each functional test fails with `Plugin [id: 'tracer.java-library'] was not found`.
 
-- [ ] **Step 6: Implement the three plugins**
+- [x] **Step 6: Implement the three plugins**
 
 `build-logic/src/main/java/io/joeyang/tracer/buildlogic/JavaBaseConventionPlugin.java`:
 ```java
@@ -456,17 +456,17 @@ public final class JavaApplicationConventionPlugin implements Plugin<Project> {
 }
 ```
 
-- [ ] **Step 7: Run the tests to verify they pass**
+- [x] **Step 7: Run the tests to verify they pass**
 
 Run: `./gradlew -p build-logic test`
 Expected: `BUILD SUCCESSFUL`, five tests passed. Then run `./gradlew -p build-logic test --rerun-tasks --warning-mode=all 2>&1 | grep -i deprecat` and expect no output (no deprecated API in use). If `failsClearlyWithoutTheVersionCatalog` fails because Gradle itself errors earlier with a different message, loosen the assertion to the text Gradle prints and record the exact text in `docs/gradle-build.md`.
 
-- [ ] **Step 8: Root build sanity check**
+- [x] **Step 8: Root build sanity check**
 
 Run: `./gradlew help`
 Expected: `BUILD SUCCESSFUL` (no modules yet).
 
-- [ ] **Step 9: README stub and docs/gradle-build.md**
+- [x] **Step 9: README stub and docs/gradle-build.md**
 
 `README.md`:
 ```markdown
@@ -511,7 +511,7 @@ Every module locks all configurations. Regenerate after a version change:
 `./gradlew -p build-logic test` runs the TestKit tests (they need network for JUnit).
 ```
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add settings.gradle.kts gradle.properties gradle gradlew gradlew.bat build-logic README.md docs/gradle-build.md
@@ -540,7 +540,7 @@ cache-key oracle relies on."
 
 The exact source lines matter: `tools/scenarios.sh` (Task 15) edits them by exact string match. Keep the marked lines verbatim.
 
-- [ ] **Step 1: Register the modules and fix the catalog version**
+- [x] **Step 1: Register the modules and fix the catalog version**
 
 Append to `settings.gradle.kts`:
 ```kotlin
@@ -550,7 +550,7 @@ In `gradle/libs.versions.toml` change `commons-lang3 = "3.14.0"` to `commons-lan
 
 In `README.md` replace the Build section's command line with `    ./gradlew build        # all modules, tests included` — true from this commit on.
 
-- [ ] **Step 2: Build files**
+- [x] **Step 2: Build files**
 
 `utils/build.gradle.kts`:
 ```kotlin
@@ -582,7 +582,7 @@ dependencies {
 }
 ```
 
-- [ ] **Step 3: Write the failing tests**
+- [x] **Step 3: Write the failing tests**
 
 `utils/src/test/java/io/joeyang/tracer/utils/FormatterTest.java`:
 ```java
@@ -690,12 +690,12 @@ class ServiceTest {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they fail**
+- [x] **Step 4: Run the tests to verify they fail**
 
 Run: `./gradlew :utils:test :core:test :lib:test`
 Expected: FAIL at `compileTestJava` with `cannot find symbol` for `Formatter`, `Greeter`, `Service`.
 
-- [ ] **Step 5: Implement the three classes**
+- [x] **Step 5: Implement the three classes**
 
 `utils/src/main/java/io/joeyang/tracer/utils/Formatter.java`:
 ```java
@@ -794,19 +794,19 @@ public final class Service {
 }
 ```
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [x] **Step 6: Run the tests to verify they pass**
 
 Run: `./gradlew :utils:test :core:test :lib:test`
 Expected: `BUILD SUCCESSFUL`, 24 tests.
 
-- [ ] **Step 7: Write the lockfiles**
+- [x] **Step 7: Write the lockfiles**
 
 Run: `./gradlew :utils:dependencies :core:dependencies :lib:dependencies --write-locks`
 Expected: `utils/gradle.lockfile`, `core/gradle.lockfile`, `lib/gradle.lockfile` and the root `settings-gradle.lockfile` created; `lib/gradle.lockfile` contains `org.apache.commons:commons-lang3:3.18.0=compileClasspath,runtimeClasspath,...`.
 
 Then: `./gradlew build` → `BUILD SUCCESSFUL`.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add settings.gradle.kts settings-gradle.lockfile gradle/libs.versions.toml README.md utils core lib
@@ -832,14 +832,14 @@ edge kind changes (or does not change) an app's compile inputs."
 - Test: `app/appA/src/test/java/io/joeyang/tracer/app/a/AppATest.java`, `app/appB/src/test/java/io/joeyang/tracer/app/b/AppBTest.java`, `app/appC/src/test/java/io/joeyang/tracer/app/c/AppCTest.java`
 - Generated: `app/app{A,B,C}/gradle.lockfile`
 
-- [ ] **Step 1: Register the modules**
+- [x] **Step 1: Register the modules**
 
 Append to `settings.gradle.kts`:
 ```kotlin
 include("app:appA", "app:appB", "app:appC")
 ```
 
-- [ ] **Step 2: Build files**
+- [x] **Step 2: Build files**
 
 `app/appA/build.gradle.kts`:
 ```kotlin
@@ -887,7 +887,7 @@ application {
 }
 ```
 
-- [ ] **Step 3: Write the failing tests**
+- [x] **Step 3: Write the failing tests**
 
 `app/appA/src/test/java/io/joeyang/tracer/app/a/AppATest.java`:
 ```java
@@ -1054,12 +1054,12 @@ class AppCTest {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they fail**
+- [x] **Step 4: Run the tests to verify they fail**
 
 Run: `./gradlew :app:appA:test :app:appB:test :app:appC:test`
 Expected: FAIL at `compileTestJava` with `cannot find symbol` for `AppA`, `AppB`, `AppC`.
 
-- [ ] **Step 5: Implement the three apps**
+- [x] **Step 5: Implement the three apps**
 
 `app/appA/src/main/java/io/joeyang/tracer/app/a/AppA.java`:
 ```java
@@ -1191,12 +1191,12 @@ public final class AppC {
 }
 ```
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [x] **Step 6: Run the tests to verify they pass**
 
 Run: `./gradlew :app:appA:test :app:appB:test :app:appC:test`
 Expected: `BUILD SUCCESSFUL`, 22 tests.
 
-- [ ] **Step 7: Lockfiles, full build, run one app**
+- [x] **Step 7: Lockfiles, full build, run one app**
 
 ```bash
 ./gradlew :app:appA:dependencies :app:appB:dependencies :app:appC:dependencies --write-locks
@@ -1205,7 +1205,7 @@ Expected: `BUILD SUCCESSFUL`, 22 tests.
 ```
 Expected: three new lockfiles; `BUILD SUCCESSFUL`; the last command prints `{"amount":"$2.50","label":"total   "}`.
 
-- [ ] **Step 8: Document the apps**
+- [x] **Step 8: Document the apps**
 
 In `docs/gradle-build.md`, add three rows to the Modules table:
 
@@ -1226,7 +1226,7 @@ its argument; a bad one prints `appX: <reason>` to stderr and exits with code 2.
 `./gradlew build` runs every module's tests (46 today).
 ```
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add settings.gradle.kts app docs/gradle-build.md
@@ -1251,7 +1251,7 @@ behaviour is unit-tested without capturing stdout."
 
 Verified on this machine (spike, 2026-10-16): Bazel 9.1.0 resolves rules_java ≥ 9.3 fine; rules_jvm_external 7.2 with `lock_file` + `bazel run @maven//:pin` works; without the `--tool_java_runtime_version` flag the build fails with `UnsupportedClassVersionError ... class file version 65.0 ... only recognizes up to 55.0` from rules_jvm_external's jar stamper, because the default tool runtime is Java 11. The flags below fix it.
 
-- [ ] **Step 1: Module, rc and macro files**
+- [x] **Step 1: Module, rc and macro files**
 
 `MODULE.bazel`:
 ```python
@@ -1355,7 +1355,7 @@ def junit5_test_suite(name, srcs, deps = [], runtime_deps = [], resources = [], 
     native.test_suite(name = name, tests = targets)
 ```
 
-- [ ] **Step 2: Per-module BUILD files**
+- [x] **Step 2: Per-module BUILD files**
 
 `utils/BUILD.bazel`:
 ```python
@@ -1441,7 +1441,7 @@ junit5_test_suite(
 
 `app/appC/BUILD.bazel`: same shape with `appC_lib`/`appC`, `main_class = "io.joeyang.tracer.app.c.AppC"`, `deps = ["//utils", "@maven//:com_google_code_gson_gson"]`.
 
-- [ ] **Step 3: Pin, build, test**
+- [x] **Step 3: Pin, build, test**
 
 ```bash
 [[ -f maven_install.json ]] || : > maven_install.json   # lock_file is a label: the file must exist before the first pin
@@ -1457,7 +1457,7 @@ Expected, in order: `Successfully pinned resolved artifacts for @maven, ...maven
 
 If Bazel prints a DEBUG message about `known_contributing_modules`, add `known_contributing_modules = ["protobuf"]` to `maven.install` as the message instructs and re-pin.
 
-- [ ] **Step 4: Docs**
+- [x] **Step 4: Docs**
 
 `docs/bazel-build.md`:
 ```markdown
@@ -1498,7 +1498,7 @@ The same `src/main/java` and `src/test/java` trees as Gradle. Outputs go to `baz
     bazel build //...   bazel test //...   bazel run //app/appA -- Ada
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .gitignore README.md MODULE.bazel MODULE.bazel.lock maven_install.json .bazelrc .bazelversion BUILD.bazel tools/BUILD.bazel tools/defs.bzl \
@@ -1525,7 +1525,7 @@ default tool runtime is Java 11."
 
 Background for the engineer: Gradle computes a *build cache key* for every cacheable task from its implementation hash plus the fingerprints of its inputs. `@Classpath` inputs are fingerprinted by content (jar entries hashed; paths, timestamps and the order of entries inside a jar ignored; the order of classpath entries is significant but deterministic). So a task whose only input is the main runtime classpath has a key that changes exactly when the runtime bytes change. The task's action is irrelevant; the key is the product.
 
-- [ ] **Step 1: Extend the TestKit helper**
+- [x] **Step 1: Extend the TestKit helper**
 
 Replace `build-logic/src/test/java/io/joeyang/tracer/buildlogic/GradleProject.java` with:
 ```java
@@ -1639,7 +1639,7 @@ final class GradleProject {
 ```
 Compared with Task 1 this adds the private non-writing constructor and `copyTo`; the per-project cache directory already exists. `copyTo` wraps the copied files without rewriting them and keeps the *same* cache directory.
 
-- [ ] **Step 2: Write the failing functional tests**
+- [x] **Step 2: Write the failing functional tests**
 
 `build-logic/src/test/java/io/joeyang/tracer/buildlogic/FingerprintTaskFunctionalTest.java`:
 ```java
@@ -1798,12 +1798,12 @@ class FingerprintTaskFunctionalTest {
 ```
 The `cacheDebugOutputNamesTheKey` pattern is the contract the tracer parses in Task 7; keep the two in sync.
 
-- [ ] **Step 3: Run the tests to verify they fail**
+- [x] **Step 3: Run the tests to verify they fail**
 
 Run: `./gradlew -p build-logic test --tests '*FingerprintTaskFunctionalTest*'`
 Expected: FAIL — every test reports `Task 'fingerprint' not found in root project 'sample'`.
 
-- [ ] **Step 4: Implement the task and register it**
+- [x] **Step 4: Implement the task and register it**
 
 `build-logic/src/main/java/io/joeyang/tracer/buildlogic/FingerprintTask.java`:
 ```java
@@ -1879,12 +1879,12 @@ with the new method:
 ```
 `sourceSets.main.runtimeClasspath` is the compiled output plus the `runtimeClasspath` configuration; Gradle infers the dependency on `compileJava`, `processResources` and every upstream `jar` from the file collection, so no explicit `dependsOn` is needed.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew -p build-logic test`
 Expected: `BUILD SUCCESSFUL`; 13 tests. If `cacheDebugOutputNamesTheKey` fails on the hash length, read the actual line from the output, fix the regex here and in Task 7's parser, and note the real format in `docs/tracer.md`.
 
-- [ ] **Step 6: Check it on the real modules**
+- [x] **Step 6: Check it on the real modules**
 
 ```bash
 ./gradlew :app:appA:fingerprint -Dorg.gradle.caching.debug=true --console=plain | grep -E "Build cache key for task ':app:appA:fingerprint'|Appending input file fingerprints"
@@ -1892,7 +1892,7 @@ Expected: `BUILD SUCCESSFUL`; 13 tests. If `cacheDebugOutputNamesTheKey` fails o
 ```
 Expected: first command prints one `Build cache key ...` line and one `Appending input file fingerprints for 'runtimeClasspath'` line; second prints `> Task :app:appA:fingerprint UP-TO-DATE`.
 
-- [ ] **Step 7: Document**
+- [x] **Step 7: Document**
 
 Append to `docs/gradle-build.md`:
 ```markdown
@@ -1915,7 +1915,7 @@ build-logic culprits rather than runtime-input changes.
 Read a key: `./gradlew :app:appA:fingerprint -Dorg.gradle.caching.debug=true --console=plain`.
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add build-logic docs/gradle-build.md
@@ -1943,7 +1943,7 @@ edits, no change on comment-only edits."
 
 This commit holds the vocabulary every later task uses. Read it fully before Tasks 7–12.
 
-- [ ] **Step 1: Register the module and write both build files**
+- [x] **Step 1: Register the module and write both build files**
 
 Append to `settings.gradle.kts`:
 ```kotlin
@@ -1987,7 +1987,7 @@ junit5_test_suite(
 )
 ```
 
-- [ ] **Step 2: Write the failing tests and the scripted fake runner**
+- [x] **Step 2: Write the failing tests and the scripted fake runner**
 
 `tools/tracer/src/test/java/io/joeyang/tracer/cli/FakeProcessRunner.java`:
 ```java
@@ -2293,12 +2293,12 @@ class CliUsageTest {
 }
 ```
 
-- [ ] **Step 3: Run the tests to verify they fail**
+- [x] **Step 3: Run the tests to verify they fail**
 
 Run: `./gradlew :tools:tracer:test`
 Expected: FAIL at `compileTestJava`, `cannot find symbol` for `Commit`, `TaskKey`, `ProcessRunner`, `Cli`.
 
-- [ ] **Step 4: Implement the types**
+- [x] **Step 4: Implement the types**
 
 `tools/tracer/src/main/java/io/joeyang/tracer/cli/ProcessRunner.java`:
 ```java
@@ -2627,12 +2627,12 @@ public final class Cli {
 }
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
 Expected: `BUILD SUCCESSFUL`, 26 tests.
 
-- [ ] **Step 6: Lockfile and docs**
+- [x] **Step 6: Lockfile and docs**
 
 ```bash
 ./gradlew :tools:tracer:dependencies --write-locks
@@ -2663,7 +2663,7 @@ and the revision-range walk that produces real verdicts, arrive in later commits
 0 no change in range · 1 usage error · 2 a tool failed (some row is BUILD-FAILED) · 3 at least one CHANGED
 ```
 
-- [ ] **Step 7: Commit, split in two**
+- [x] **Step 7: Commit, split in two**
 
 A single commit of every file below would exceed the repo's 400-line hard
 maximum (the full set is ~415 hand-written lines), so this step is two
@@ -2738,7 +2738,7 @@ Build cache key for task ':app:fingerprint' is b5a1bb8d226bf944a43ec45392201d50
 ```
 Entries inside `{...}` are `<abs path>=<'normalized path'|IGNORED> / <hash>` separated by `, `. Two facts that shape the design: on the **compile** classpath Gradle feeds project dependencies as class directories (one entry per `.class`), so the culprit for a core change under `compileJava` is `core classes`; on the **runtime** classpath they are jars (`core.jar`). The debug lines print at the default log level. With `--parallel` lines from different tasks interleave, so the provider passes `--no-parallel`.
 
-- [ ] **Step 1: Capture real fixtures**
+- [x] **Step 1: Capture real fixtures**
 
 ```bash
 mkdir -p tools/tracer/src/test/resources/cache-debug
@@ -2750,7 +2750,7 @@ grep -c "Build cache key for task" tools/tracer/src/test/resources/cache-debug/*
 ```
 Expected: both files contain several `Build cache key` lines (one per executed task) including `':app:appA:compileJava'` and `':app:appA:fingerprint'` respectively. Open them once and confirm the formats above; if a line differs, the parser's regexes below are the only place to change.
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 `tools/tracer/src/test/java/io/joeyang/tracer/cli/CacheDebugFixtures.java` (a helper, not a test: under Bazel each `*Test.java` is its own target, so shared text lives in the support library):
 ```java
@@ -3176,12 +3176,12 @@ class GradleKeyProviderTest {
 }
 ```
 
-- [ ] **Step 3: Run the tests to verify they fail**
+- [x] **Step 3: Run the tests to verify they fail**
 
 Run: `./gradlew :tools:tracer:test --tests '*CacheDebugLogTest*' --tests '*GradleKeyProviderTest*'`
 Expected: FAIL at compile, `cannot find symbol` for `CacheDebugLog`, `GradleKeyProvider`.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 `tools/tracer/src/main/java/io/joeyang/tracer/cli/CacheDebugLog.java`:
 ```java
@@ -3422,12 +3422,12 @@ public final class GradleKeyProvider implements KeyProvider {
 }
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
 Expected: `BUILD SUCCESSFUL`; 54 tests at this point in the sequence (26 from Task 6 plus 28 here — 17 from the original parser/provider tests plus 11 added by review fixes: 5 for `/ DIR`, `/ MISSING`, a quoted path, an unknown normalization token, and `rootSpec$1`'s real entry count; 1 for mapping an unrecognised cache-debug line to `ProviderException` instead of letting it escape uncaught; 1 for null constructor arguments; 2 for the "What went wrong" extraction, including its real Gradle 9.8.1 javac-error and continuation-line shapes; and 2 for a path containing `=` and folding "additional implementation" lines in). Then `bazel test //tools/tracer/...` must also pass — the fixtures are on the Bazel test classpath through the `resources` attribute.
 
-- [ ] **Step 6: Document and commit**
+- [x] **Step 6: Document and commit**
 
 This task's single commit would run to roughly 360 hand-written lines, well past the project's 200-line commit
 target, so it lands as two commits at the parser/provider seam instead of one:
@@ -3510,7 +3510,7 @@ Purely additive; the existing 4-arg `on(...)` is unchanged.
 
 Verified in the spike: bazel-diff is now a single static binary (Rust); `generate-hashes -w <ws> -b bazel --fineGrainedHashExternalRepos=@maven <out.json>` hashes each `@maven//...` target separately (51 of them in the spike; the bare spelling `maven` fails with `ERROR: invalid package name 'maven/'`); `get-impacted-targets -w <ws> --startingHashes a.json --finalHashes b.json -o out.txt` writes one label per line. Building it from the Bazel Central Registry module would compile Rust via rules_rust, so we download the pinned release binary instead. Each worktree gets its own Bazel output base; the provider runs `bazel clean --expunge` in the worktree afterwards so disk does not leak.
 
-- [ ] **Step 1: Fetch script and ignore rule**
+- [x] **Step 1: Fetch script and ignore rule**
 
 Append to `.gitignore`:
 ```
@@ -3554,7 +3554,7 @@ trap - EXIT
 Run: `chmod +x tools/fetch-bazel-diff.sh && tools/fetch-bazel-diff.sh`
 Expected: `bazel-diff 60.0.0`. (Only linux-amd64 is pinned; other platforms set `BAZEL_DIFF=/path/to/binary`.)
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 `tools/tracer/src/test/java/io/joeyang/tracer/cli/BazelDiffProviderTest.java`:
 ```java
@@ -3850,12 +3850,12 @@ class BazelDiffProviderTest {
 }
 ```
 
-- [ ] **Step 3: Run the tests to verify they fail**
+- [x] **Step 3: Run the tests to verify they fail**
 
 Run: `./gradlew :tools:tracer:test --tests '*BazelDiffProviderTest*'`
 Expected: FAIL at compile, `cannot find symbol: class BazelDiffProvider`.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 `tools/tracer/src/main/java/io/joeyang/tracer/cli/BazelDiffProvider.java`:
 ```java
@@ -4031,19 +4031,19 @@ public final class BazelDiffProvider implements ImpactProvider {
 }
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
 Expected: `BUILD SUCCESSFUL`; 63 tests at this point in the sequence (the Task 7 review fixes added 11, across two rounds). Also `bazel test //tools/tracer/...` passes.
 
-- [ ] **Step 6: Try it for real against the repo**
+- [x] **Step 6: Try it for real against the repo**
 
 ```bash
 tools/bin/bazel-diff generate-hashes -w "$PWD" -b bazel --fineGrainedHashExternalRepos=@maven /tmp/h.json && python3 -c "import json;d=json.load(open('/tmp/h.json'))['hashes'];print(len(d),'targets;', sum(1 for k in d if k.startswith('@maven//')),'maven')"
 ```
 Expected: around a hundred targets, of which several dozen `@maven//` ones, and `//app/appA:appA` among the keys (bazel-diff v60 writes `{"hashes": {...}, "metadata": {...}}`, hence `['hashes']`).
 
-- [ ] **Step 7: Docs and commit**
+- [x] **Step 7: Docs and commit**
 
 Append to `docs/bazel-build.md`:
 ```markdown
@@ -4118,7 +4118,7 @@ in the repo checkout, not both in the repo checkout as a later draft of this not
 - Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/{RevisionRangeTest,WorktreePoolTest}.java`
 - Modify: `docs/tracer.md`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 (`FakeProcessRunner` already exists from Task 6.)
 
@@ -4539,12 +4539,12 @@ class WorktreePoolTest {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `./gradlew :tools:tracer:test --tests '*RevisionRangeTest*' --tests '*WorktreePoolTest*'`
 Expected: FAIL at compile, `cannot find symbol` for `RevisionRange`, `WorktreePool`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `tools/tracer/src/main/java/io/joeyang/tracer/cli/RevisionRange.java`:
 ```java
@@ -4845,12 +4845,12 @@ public final class WorktreePool implements AutoCloseable {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
 Expected: `BUILD SUCCESSFUL`; 104 tests at this point in the sequence (bumped from 74 by the Task 8 review rounds' 14 added tests, plus 1 for the code-review amendment's `malformedLogLineIsAProviderErrorNamingTheLine`, 2 for the quality-review fix's `sideBranchStartIsRejected`/`rootCommitWithEmptyParentFieldIsRejectedNotCrashed`, 2 for the quality-review fix's `checkoutUnregistersBeforeDeletingAPreexistingDirectory`/`reopeningThePoolCanReuseACommitKeptByThePreviousRun`, 2 for the quality-review fix's `keepWorktreesRegistersNoShutdownHook`/`notKeepingWorktreesRegistersAShutdownHook`, 8 for the quality-review hardening fix's remaining git-error-mapping and worktree-bookkeeping tests, and 1 for the nit-closing `rangeLogFailureIsAProviderError`).
 
-- [ ] **Step 5: Document and commit**
+- [x] **Step 5: Document and commit**
 
 Append to `docs/tracer.md`:
 ```markdown
@@ -4897,7 +4897,7 @@ or JVM shutdown so Ctrl-C leaves nothing behind."
 - Test: `tools/tracer/src/test/java/io/joeyang/tracer/cli/{KeyComparatorTest,TableRendererTest}.java`
 - Modify: `docs/tracer.md`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tools/tracer/src/test/java/io/joeyang/tracer/cli/KeyComparatorTest.java`:
 ```java
@@ -5215,12 +5215,12 @@ class TableRendererTest {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `./gradlew :tools:tracer:test --tests '*KeyComparatorTest*' --tests '*TableRendererTest*'`
 Expected: FAIL at compile, `cannot find symbol` for `KeyComparator`, `TableRenderer`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `tools/tracer/src/main/java/io/joeyang/tracer/cli/KeyComparator.java`:
 ```java
@@ -5496,12 +5496,12 @@ public final class TableRenderer {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
 Expected: `BUILD SUCCESSFUL`; 134 tests at this point in the sequence (119 after the original Task 10 implementation, plus 15 more from the Task 10 quality-review fixes: worktree-root-anchored culprit names, TSV/surrogate-pair safety, the edge-case/exact-width tests, and the root-project-class-dir naming nit). Column-position assertions are sensitive: if `subjectIsTruncatedToThirtySixColumns` fails, check `pad` widths (commit column is 9 wide), not the test.
 
-- [ ] **Step 5: Document and commit**
+- [x] **Step 5: Document and commit**
 
 Append to `docs/tracer.md`:
 ```markdown
@@ -5552,7 +5552,7 @@ scenario script a stable, header-free format to assert against."
 
 These tests run real processes (`sh`, `sleep`, `pwd`); Linux is assumed.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tools/tracer/src/test/java/io/joeyang/tracer/cli/DefaultProcessRunnerTest.java` (as amended by the Task 11 quality-review fixes):
 ```java
@@ -5745,12 +5745,12 @@ entry of `info().arguments()` instead of a `contains` on the whole command line;
 within tens of milliseconds once collisions were ruled out, so the 10s window stayed only as headroom, not because
 the kill is actually slow.)
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `./gradlew :tools:tracer:test --tests '*DefaultProcessRunnerTest*'`
 Expected: FAIL at compile, `cannot find symbol: class DefaultProcessRunner`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `tools/tracer/src/main/java/io/joeyang/tracer/cli/DefaultProcessRunner.java` (as amended by the Task 11 quality-review fixes — see below for why):
 ```java
@@ -5921,7 +5921,7 @@ shares the host's process table), and `drain`'s catch widened from `IOException`
 completing nothing — `run()` would then wait out its whole timeout budget and misreport a plain timeout instead of
 the real failure. See those commits for the full rationale.)
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
 Expected (after all three Task 11 quality-review fix commits land): `BUILD SUCCESSFUL`; 154 tests at this point in
@@ -5932,7 +5932,7 @@ test; +2 from the third — the process-tree-kill test and the pre-interrupted-t
 assertion on the existing large-output test added no new test method); the timeout test finishes in well under a
 second.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tools/tracer
@@ -5954,7 +5954,7 @@ wedge the tracer."
 
 Split from the wiring (Task 13) to keep each commit under the 400-line limit.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tools/tracer/src/test/java/io/joeyang/tracer/cli/CliOptionsTest.java`:
 ```java
@@ -6253,12 +6253,12 @@ class CliOptionsTest {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `./gradlew :tools:tracer:test --tests '*CliOptionsTest*'`
 Expected: FAIL at compile, `cannot find symbol: class Options`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Replace `tools/tracer/src/main/java/io/joeyang/tracer/cli/Cli.java` with:
 ```java
@@ -6444,7 +6444,7 @@ public final class Cli {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `./gradlew :tools:tracer:test`
 Expected: `BUILD SUCCESSFUL`; 201 tests at this point in the sequence (154 going into this task, plus the 12
@@ -6458,7 +6458,7 @@ flag-shaped value for each), 5 for a missing value at the end of the arguments f
 whole number" (a non-ASCII digit, or a flag-shaped or blank value, since --timeout-minutes is exempt from the
 generic value check); the Task 6 `CliUsageTest` still passes).
 
-- [ ] **Step 5: Document and commit**
+- [x] **Step 5: Document and commit**
 
 Update `docs/tracer.md`: the intro paragraph now says "Today `Cli.main` parses and validates options. On a
 usage error it exits 1 with the usage text. Valid options currently exit 2, printing a not-implemented message,
@@ -10771,7 +10771,7 @@ Run `./gradlew :tools:tracer:test`: still 244 (docs/comments-only commit). Run `
 - Test: `tools/tracer/src/e2eTest/java/io/joeyang/tracer/cli/EndToEndTest.java`
 - Modify: `docs/tracer.md`, `README.md`
 
-- [ ] **Step 1: The wrapper script**
+- [x] **Step 1: The wrapper script**
 
 `trace`:
 ```bash
@@ -10791,7 +10791,7 @@ from making the following `cd` print its destination and break the `$(...)` capt
 Run: `chmod +x trace && ./trace appA --from HEAD~2 --to HEAD --no-bazel`
 Expected: a table with `base`, two more rows (likely `clean`, since recent commits touched tooling not inputs — unless Task 11's commit changed `tools/tracer` only, in which case appA is clean too), exit 0.
 
-- [ ] **Step 2: The e2e test suite**
+- [x] **Step 2: The e2e test suite**
 
 Append to `tools/tracer/build.gradle.kts` (plus `import java.time.Duration` at the top of the file):
 ```kotlin
@@ -10942,7 +10942,7 @@ Run:
 ```
 Expected: `BUILD SUCCESSFUL` after roughly one to three minutes (two commits × two apps × a Gradle run each). The culprit is `core classes` because Gradle feeds project dependencies to `compileJava` as class directories, not jars (the fingerprint task sees `core.jar`). If `lib classes` appears as well, that is correct — lib recompiled against the new core ABI — loosen only the contains check, never the verdict.
 
-- [ ] **Step 3: Docs and commit**
+- [x] **Step 3: Docs and commit**
 
 In `docs/tracer.md`, replace the intro paragraph's last two sentences ("On a usage error it exits 1 with the
 usage text. The `./trace` wrapper arrives in a later commit.") with:
@@ -11025,6 +11025,11 @@ EOF
 
 ### Task 15: Scenario script, docs/scenarios.md, README final
 
+> **Outcome (2026-10-18):** Bazel was removed from the repo after Task 14 (PR #1, `feature/remove-bazel`), so the
+> script landed Gradle-only: no `NO_BAZEL` switch, no bazel-diff column or `EXPECT_BZ` table. A full run on 2026-10-18
+> printed `OK` for all six app/task pairs plus `checkout-untouched`, then `all expectations held`, exit 0. The Bazel steps below
+> describe the plan as written, not the code.
+
 **Files:**
 - Create: `tools/scenarios.sh` (executable)
 - Create: `docs/scenarios.md`
@@ -11032,7 +11037,7 @@ EOF
 
 The script needs network (dependency bumps re-resolve; `bazel run @maven//:pin` re-pins). `NO_BAZEL=1` skips Bazel entirely. It leaves the user's checkout untouched: all edits happen in a temporary worktree on a temporary branch that is deleted at the end (`KEEP_BRANCH=1` keeps it).
 
-- [ ] **Step 1: Write the script**
+- [x] **Step 1: Write the script**
 
 `tools/scenarios.sh`:
 ```bash
@@ -11179,7 +11184,7 @@ if [[ "$FAILURES" -eq 0 ]]; then say "all expectations held"; else say "$FAILURE
 exit "$FAILURES"
 ```
 
-- [ ] **Step 2: Run it**
+- [x] **Step 2: Run it**
 
 ```bash
 chmod +x tools/scenarios.sh
@@ -11189,7 +11194,7 @@ Expected: six tables, then `OK` lines for every app/task pair (and three `OK ...
 
 If a cell disagrees with the expectation, do not edit `EXPECT` to match. Reproduce the single case by hand (`./trace <app> --from <base> --to <tip> --task <task>` and `./trace <app> --at <sha> --task <task>` on both sides), understand which fingerprint moved, and record the finding in `docs/scenarios.md`. Only then change the expectation, with the reason next to it.
 
-- [ ] **Step 3: docs/scenarios.md**
+- [x] **Step 3: docs/scenarios.md**
 
 `docs/scenarios.md`:
 ```markdown
@@ -11211,7 +11216,7 @@ If a cell disagrees with the expectation, do not edit `EXPECT` to match. Reprodu
 (Record here anything the run showed that differs from the table, with the fingerprint that moved.)
 ```
 
-- [ ] **Step 4: README final**
+- [x] **Step 4: README final**
 
 Append to `README.md`:
 ```markdown
@@ -11224,7 +11229,7 @@ Append to `README.md`:
 ```
 Check the README's design statements against the code once more (module graph, plugin ids, CLI flags) — they must match exactly.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tools/scenarios.sh docs/scenarios.md README.md
