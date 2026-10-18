@@ -1,7 +1,7 @@
 # tracer
 
 `tools/tracer` is a Java CLI. `Cli.main` parses options, then either walks the `--from`/`--to` range through
-detached git worktrees, asking the Gradle and bazel-diff providers about each commit and printing a verdict
+detached git worktrees, asking the Gradle provider about each commit and printing a verdict
 table, or — for `--at` — checks out that one revision and prints its Gradle key and the fingerprints it is
 composed from. On a usage error it exits 1 with the usage text. The `./trace` wrapper builds the launcher with
 `installDist` and execs it from the repository root; because it `cd`s there first, a relative `--tsv-out` path
@@ -18,7 +18,7 @@ to write elsewhere. If `installDist` itself fails, the wrapper reports it direct
 | `TaskKey` | a task's cache key plus per-input fingerprints (`property → file → hash`), value fingerprints and implementation hash |
 | `Status` | `BASE`, `CHANGED`, `CLEAN`, `BUILD_FAILED` — the Gradle verdict |
 | `Verdict` | one table row |
-| `KeyProvider`, `ImpactProvider` | the two oracles behind interfaces so tests can fake them |
+| `KeyProvider` | the Gradle oracle behind an interface so tests can fake it |
 | `UsageException` → exit 1; `ProviderException` → exit 2 | error classes |
 
 ## Exit codes
@@ -52,13 +52,6 @@ match ..." for an unknown task, where the real cause is the indented continuatio
 Failing that, it falls back to the first non-blank stderr/stdout line. The task path is named in the message either way.
 A line inside the target task's own cache-debug block that CacheDebugLog cannot recognise is reported the same way, as a
 `ProviderException` naming the task and the offending line, instead of escaping uncaught.
-
-## Bazel oracle
-`BazelDiffProvider` — see `docs/bazel-build.md`. Failure modes: binary missing → the error names `tools/fetch-bazel-diff.sh`;
-non-zero exit → the real Bazel `ERROR:` line (not bazel-diff's own wrapper line); no output file → explicit error;
-a stray non-label line in `get-impacted-targets`' output → explicit error naming the line. The `Cli` range walk maps
-any of these failures to `BazelStatus.NOT_AVAILABLE` for the rest of the range (rather than failing the whole row)
-and prints a warning to stderr once, the first time bazel-diff fails.
 
 ## Git layer
 - `RevisionRange.resolve(from, to)` → `[from, …from..to oldest first]`, following the first-parent line so adjacent rows are parent and child even across merges. `from` must be an ancestor of `to` on that first-parent line (each row's own first parent, from `%P`, must equal the previous row's sha); a side-branch commit pulled in by a merge is a `UsageException` naming both shas, not a silent mismatch. Unknown revision (`git rev-parse --verify --quiet` exit 1) or an empty range → `UsageException`; any other git failure (not runnable, exit 128, a malformed `git log` line) → `ProviderException`, naming the offending line where there is one. `RevisionRange.resolveOne(rev)` resolves and describes a single revision the same way, for `--at`, including the
@@ -186,8 +179,7 @@ already named alongside it ("`<path>`: Is a directory", or for some failures the
 which would otherwise print it twice (`"...lock: .../.lock: Is a directory"`) or show the wrong path (a failed
 write under `--tsv-out` used to show the temp file's path as the "reason", not the real target's). When
 `getReason()` itself is unavailable, this falls back to the exception's class name — the same fallback
-`BazelDiffProvider` already used, and what any other `IOException` here still falls back to when its message is
-missing or is just the path again.
+any other `IOException` here uses when its message is missing or is just the path again.
 
 ### The scratch root must be private
 `$TMPDIR/gradle-tracer` is a predictable, fixed path (spec §9), often under a shared `/tmp`: another local user
@@ -209,12 +201,10 @@ separate is-it-a-symlink check.
 ### Process timeouts and detached children
 On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it
 started, then the direct child itself. A freshly spawned Gradle daemon is still a child of that process tree (its
-parent is the `gradlew` client JVM `killTree` started), so it is killed along with everything else. Two kinds of
-process are never in scope to kill, for two different reasons: a Gradle daemon reused from an earlier invocation
-was already detached and reparented before this run even started it, so it was never this process tree's child to
-begin with; a Bazel server, which daemonizes as soon as it starts, detaches *during* this run, before `killTree`
-would ever need to act, so it is never a descendant of the client that launched it either. This is by design:
-those servers are meant to outlive the single invocation that happened to start or reuse them.
+parent is the `gradlew` client JVM `killTree` started), so it is killed along with everything else. A Gradle daemon
+reused from an earlier invocation is never in scope to kill: it was already detached and reparented before this
+run even started it, so it was never this process tree's child to begin with. This is by design: the daemon is
+meant to outlive the single invocation that happened to start or reuse it.
 
 ## Tests
 `./gradlew :tools:tracer:test` (fast, fakes) · `./gradlew :tools:tracer:e2eTest` (real git + Gradle on a fixture repo, minutes).
