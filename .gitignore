@@ -12,5 +12,5 @@ build/
 .DS_Store
 # Lavish review artifacts
 .lavish/
-# downloaded tools
+# bazel-diff download directory, kept from before the Gradle-only switch in case it's needed again
 tools/bin/

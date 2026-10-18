@@ -2,7 +2,9 @@
 
 A learning repo: a set of Java modules built by Gradle, plus a tracer that reports which
 commits changed an application's build inputs. The build is Gradle only on purpose, a deliberate exception to the author's Bazel-for-Java default.
-Design: `docs/superpowers/specs/2026-10-16-build-input-tracer-design.md`.
+Design: `docs/tracer.md` (the tracer) and `docs/gradle-build.md` (the build). The original Gradle+Bazel
+design, superseded when the repo went Gradle-only, is recorded for history at
+`docs/superpowers/specs/2026-10-16-build-input-tracer-design.md`.
 
 ## Layout
 

@@ -23,6 +23,7 @@
 | `app:appA` | `tracer.java-application` | `implementation(project(":lib"))` |
 | `app:appB` | `tracer.java-application` | `implementation(project(":core"))` |
 | `app:appC` | `tracer.java-application` | `implementation(project(":utils"))`, `implementation(libs.gson)` |
+| `tools:tracer` | `tracer.java-application` | none; the tracer CLI itself (plus an `e2eTest` suite, not run by `build`) |
 
 `core` depends on `utils` with `implementation` because `core.Greeter` calls `Formatter.pad` only
 inside a method body; `utils` never appears in a consumer's public API, so it stays off their
@@ -36,7 +37,8 @@ needs to be visible further up the graph. `appA` reaches `core` only through `li
 `appB` depends on `core` directly, and `appC` never touches `core` or `lib`. Each app validates
 its argument; a bad one prints `appX: <reason>` to stderr and exits with code 2.
 
-`./gradlew build` runs every module's tests (46 today).
+`./gradlew build` runs every module's tests, including `tools:tracer`'s (263 today: 46 across the
+six library/app modules, 217 in the tracer itself).
 
 ## Dependency locking
 Every module locks all configurations. Regenerate after a version change:
