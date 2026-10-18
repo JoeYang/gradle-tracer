@@ -17,7 +17,6 @@ to write elsewhere. If `installDist` itself fails, the wrapper reports it direct
 | `Commit` | sha + subject |
 | `TaskKey` | a task's cache key plus per-input fingerprints (`property → file → hash`), value fingerprints and implementation hash |
 | `Status` | `BASE`, `CHANGED`, `CLEAN`, `BUILD_FAILED` — the Gradle verdict |
-| `BazelStatus` | `IMPACTED`, `CLEAN`, `NOT_AVAILABLE`, `NONE` — the informational column |
 | `Verdict` | one table row |
 | `KeyProvider`, `ImpactProvider` | the two oracles behind interfaces so tests can fake them |
 | `UsageException` → exit 1; `ProviderException` → exit 2 | error classes |
