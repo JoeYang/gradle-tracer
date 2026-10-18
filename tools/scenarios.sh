@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Replays the teaching commits from docs/scenarios.md on a temporary branch (in a temporary worktree),
 # runs ./trace for every app in both flavours, prints the tables and asserts the expected verdicts.
-# Env: NO_BAZEL=1 skips the bazel-diff column; KEEP_BRANCH=1 keeps the demo branch.
+# Env: KEEP_BRANCH=1 keeps the demo branch.
 set -euo pipefail
 unset CDPATH
 
@@ -9,16 +9,14 @@ ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 cd "$ROOT"
 BRANCH="demo/scenarios-$(date +%Y%m%d-%H%M%S)"
 WT="$(mktemp -d "${TMPDIR:-/tmp}/gradle-tracer-scenarios.XXXXXX")"
-NO_BAZEL="${NO_BAZEL:-0}"
 TRACE_FLAGS=()
 PROJECTS=(utils core lib app:appA app:appB app:appC tools:tracer)
 FAILURES=0
 
-# Every lock artifact --write-locks / @maven//:pin can touch, for the two dependency-bump commits.
-LOCK_PATHS=(gradle/libs.versions.toml MODULE.bazel settings-gradle.lockfile
+# Every lock artifact --write-locks can touch, for the two dependency-bump commits.
+LOCK_PATHS=(gradle/libs.versions.toml settings-gradle.lockfile
   utils/gradle.lockfile core/gradle.lockfile lib/gradle.lockfile
   app/appA/gradle.lockfile app/appB/gradle.lockfile app/appC/gradle.lockfile tools/tracer/gradle.lockfile)
-[[ "$NO_BAZEL" == 1 ]] || LOCK_PATHS+=(maven_install.json)
 
 cleanup() {
   git -C "$ROOT" worktree remove --force "$WT" >/dev/null 2>&1 || true
@@ -54,7 +52,6 @@ relock() {
   local tasks=()
   for p in "${PROJECTS[@]}"; do tasks+=(":$p:dependencies"); done
   (cd "$WT" && ./gradlew -q "${tasks[@]}" --write-locks >/dev/null)
-  [[ "$NO_BAZEL" == 1 ]] || (cd "$WT" && REPIN=1 bazel run --ui_event_filters=-info,-stdout --noshow_progress @maven//:pin >/dev/null)
 }
 
 # commit MESSAGE PATH... — stages exactly the given paths and commits with an isolated git config.
@@ -98,13 +95,11 @@ commit "core: add Greeter.shout()" core/src/main/java/io/joeyang/tracer/core/Gre
 
 say "S3 lib: commons-lang3 3.18.0 -> 3.20.0 (relocking; needs network)"
 edit "$WT/gradle/libs.versions.toml" 'commons-lang3 = "3.18.0"' 'commons-lang3 = "3.20.0"'
-edit "$WT/MODULE.bazel" '"org.apache.commons:commons-lang3:3.18.0"' '"org.apache.commons:commons-lang3:3.20.0"'
 relock
 commit "deps: commons-lang3 3.18.0 -> 3.20.0" "${LOCK_PATHS[@]}" >/dev/null
 
 say "S4 appC: gson 2.10.1 -> 2.11.0 (relocking; needs network)"
 edit "$WT/gradle/libs.versions.toml" 'gson = "2.10.1"' 'gson = "2.11.0"'
-edit "$WT/MODULE.bazel" '"com.google.code.gson:gson:2.10.1"' '"com.google.code.gson:gson:2.11.0"'
 relock
 commit "deps: gson 2.10.1 -> 2.11.0" "${LOCK_PATHS[@]}" >/dev/null
 
@@ -112,14 +107,13 @@ say "S5 core: comment-only edit"
 edit "$WT/core/src/main/java/io/joeyang/tracer/core/Greeter.java" '    // Greets by name.' '    // Greets the given name.'
 commit "core: reword a comment" core/src/main/java/io/joeyang/tracer/core/Greeter.java >/dev/null
 
-say "S6 build logic: -Xlint:all in both builds"
+say "S6 build logic: -Xlint:all"
 edit "$WT/build-logic/src/main/java/io/joeyang/tracer/buildlogic/JavaBaseConventionPlugin.java" \
 '            task.getOptions().setEncoding("UTF-8");' \
 '            task.getOptions().setEncoding("UTF-8");
             task.getOptions().getCompilerArgs().add("-Xlint:all");'
-edit "$WT/tools/defs.bzl" 'JAVACOPTS = ["-Xlint:deprecation"]' 'JAVACOPTS = ["-Xlint:deprecation", "-Xlint:all"]'
-TIP="$(commit "build: enable -Xlint:all in both builds" \
-  build-logic/src/main/java/io/joeyang/tracer/buildlogic/JavaBaseConventionPlugin.java tools/defs.bzl)"
+TIP="$(commit "build: enable -Xlint:all" \
+  build-logic/src/main/java/io/joeyang/tracer/buildlogic/JavaBaseConventionPlugin.java)"
 
 # Expected gradle verdicts for S1..S6 (C = CHANGED, - = clean), per app and task.
 declare -A EXPECT=(
@@ -144,12 +138,6 @@ for app in appA appB appC; do
 done
 
 say "checkout untouched"
-if ! git -C "$ROOT" diff --exit-code -- MODULE.bazel.lock >/dev/null; then
-  printf 'FAIL %-22s %s\n' "checkout-untouched" "MODULE.bazel.lock differs from HEAD in $ROOT"
-  FAILURES=$((FAILURES + 1))
-else
-  printf 'OK   %-22s %s\n' "checkout-untouched" "MODULE.bazel.lock unchanged"
-fi
 UNEXPECTED="$(git -C "$ROOT" status --porcelain | grep -v '^?? MEMORY.md$' || true)"
 if [[ -n "$UNEXPECTED" ]]; then
   printf 'FAIL %-22s unexpected status in %s:\n%s\n' "checkout-untouched" "$ROOT" "$UNEXPECTED"
@@ -161,10 +149,10 @@ fi
 cat <<'LEGEND'
 
 Why the columns disagree (see docs/scenarios.md):
-  S1 body-only edit      compile: ABI unchanged, nothing recompiles · fingerprint/bazel: bytes/sources changed
-  S3 commons-lang3 bump  compile: implementation dep of lib, not on appA's compile classpath · fingerprint/bazel: changed
-  S5 comment-only edit   gradle: identical bytecode · bazel-diff: hashes sources, so "impacted"
-  S6 build logic         every Gradle task key includes the build-logic jar; every Bazel target hashes its javacopts
+  S1 body-only edit      compile: ABI unchanged, nothing recompiles · fingerprint: runtime bytes changed
+  S3 commons-lang3 bump  compile: implementation dep of lib, not on appA's compile classpath · fingerprint: changed
+  S5 comment-only edit   identical bytecode, so neither key changes
+  S6 build logic         every Gradle task key includes the build-logic jar
 LEGEND
 
 if [[ "$FAILURES" -eq 0 ]]; then say "all expectations held"; else say "$FAILURES expectation(s) failed"; fi

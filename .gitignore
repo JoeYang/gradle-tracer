@@ -2,8 +2,6 @@
 .gradle/
 build/
 !gradle/wrapper/gradle-wrapper.jar
-# Bazel
-/bazel-*
 # IDE
 .idea/
 *.iml
