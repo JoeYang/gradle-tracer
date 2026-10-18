@@ -16,7 +16,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-/** Real git, real Gradle, no Bazel: appA's compile key must change when core gains a public method; appC's must not. */
+/** Real git, real Gradle: appA's compile key must change when core gains a public method; appC's must not. */
 class EndToEndTest {
     static final List<String> COPY = List.of(".gitignore", "settings.gradle.kts", "gradle.properties", "gradle",
             "gradlew", "build-logic", "utils", "core", "lib", "app");
@@ -52,7 +52,7 @@ class EndToEndTest {
         git(runner, fixture, "-c", "user.email=e2e@example.com", "-c", "user.name=e2e", "commit", "-q", "-am", "core: add shout");
 
         KeyProvider keys = new GradleKeyProvider(runner, false, Duration.ofMinutes(10));
-        Cli cli = new Cli(runner, fixture, tmp.resolve("scratch"), keys, null);
+        Cli cli = new Cli(runner, fixture, tmp.resolve("scratch"), keys);
 
         TraceResult appA = trace(cli, "appA", "--task", "compileJava");
         assertEquals(Cli.EXIT_CHANGED, appA.code(), appA.text());
@@ -78,7 +78,7 @@ class EndToEndTest {
     private static TraceResult trace(Cli cli, String app, String... extra) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         ByteArrayOutputStream err = new ByteArrayOutputStream();
-        List<String> args = new ArrayList<>(List.of(app, "--from", "HEAD~1", "--to", "HEAD", "--no-bazel", "--tsv"));
+        List<String> args = new ArrayList<>(List.of(app, "--from", "HEAD~1", "--to", "HEAD", "--tsv"));
         args.addAll(List.of(extra));
         int code = cli.run(Cli.Options.parse(args.toArray(String[]::new)),
                 new PrintStream(out, true, StandardCharsets.UTF_8), new PrintStream(err, true, StandardCharsets.UTF_8));

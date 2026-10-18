@@ -11,7 +11,6 @@ BRANCH="demo/scenarios-$(date +%Y%m%d-%H%M%S)"
 WT="$(mktemp -d "${TMPDIR:-/tmp}/gradle-tracer-scenarios.XXXXXX")"
 NO_BAZEL="${NO_BAZEL:-0}"
 TRACE_FLAGS=()
-[[ "$NO_BAZEL" == 1 ]] && TRACE_FLAGS+=(--no-bazel)
 PROJECTS=(utils core lib app:appA app:appB app:appC tools:tracer)
 FAILURES=0
 
@@ -136,8 +135,6 @@ check() {  # check LABEL EXPECTED ACTUAL
 for app in appA appB appC; do
   for task in compileJava fingerprint; do
     flags=("${TRACE_FLAGS[@]}")
-    # bazel-diff does not depend on the Gradle task, so one Bazel pass per app (the compileJava run) is enough.
-    [[ "$task" == fingerprint ]] && flags+=(--no-bazel)
     say "./trace $app --from ${BASE:0:7} --to ${TIP:0:7} --task $task"
     TSV="$WT/.trace-$app-$task.tsv"
     ./trace "$app" --from "$BASE" --to "$TIP" --task "$task" --tsv-out "$TSV" "${flags[@]}" || true

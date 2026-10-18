@@ -21,8 +21,6 @@ class CliOptionsTest {
     @Test void defaultsForARange() throws Exception {
         Cli.Options o = parse("appA", "--from", "x", "--to", "y");
         assertEquals(":app:appA:fingerprint", o.taskPath());
-        assertEquals("//app/appA:appA", o.bazelTarget());
-        assertTrue(o.bazel());
         assertFalse(o.offline() || o.keepWorktrees() || o.tsv());
         assertNull(o.tsvOut());
         assertNull(o.at());
@@ -30,10 +28,9 @@ class CliOptionsTest {
     }
 
     @Test void parsesEveryFlag() throws Exception {
-        Cli.Options o = parse("appB", "--from", "x", "--to", "y", "--task", "compileJava", "--no-bazel", "--offline",
+        Cli.Options o = parse("appB", "--from", "x", "--to", "y", "--task", "compileJava", "--offline",
                 "--keep-worktrees", "--tsv-out", "rows.tsv", "--timeout-minutes", "3");
         assertEquals(":app:appB:compileJava", o.taskPath());
-        assertFalse(o.bazel());
         assertTrue(o.offline() && o.keepWorktrees());
         assertEquals(Path.of("rows.tsv"), o.tsvOut());
         assertEquals(3, o.timeout().toMinutes());
@@ -51,7 +48,7 @@ class CliOptionsTest {
     }
 
     @Test void repeatedBooleanFlagsAreHarmless() throws Exception {
-        assertFalse(parse("appA", "--from", "x", "--to", "y", "--no-bazel", "--no-bazel").bazel());
+        assertTrue(parse("appA", "--from", "x", "--to", "y", "--offline", "--offline").offline());
     }
 
     @Test void rejectsMissingApp() {
@@ -166,9 +163,15 @@ class CliOptionsTest {
     }
 
     @Test void usageMentionsEveryFlag() {
-        for (String flag : new String[] {"--from", "--to", "--at", "--task", "--no-bazel", "--offline", "--keep-worktrees", "--tsv", "--tsv-out", "--timeout-minutes"}) {
+        for (String flag : new String[] {"--from", "--to", "--at", "--task", "--offline", "--keep-worktrees", "--tsv", "--tsv-out", "--timeout-minutes"}) {
             assertTrue(Cli.USAGE.contains(flag), flag);
         }
+        assertFalse(Cli.USAGE.toLowerCase().contains("bazel"), Cli.USAGE);
+    }
+
+    @Test void noBazelIsAnUnknownOption() {
+        UsageException e = fails("appA", "--from", "x", "--to", "y", "--no-bazel");
+        assertTrue(e.getMessage().contains("unknown option '--no-bazel'"), e.getMessage());
     }
 
     // The JVM ignores $TMPDIR on Linux (java.io.tmpdir is always /tmp), so the default scratch root
@@ -279,8 +282,8 @@ class CliOptionsTest {
         assertTrue(e.getMessage().contains("../.."), e.getMessage());
     }
 
-    // --at (spec: "print the key and its composition, no comparison") makes --tsv, --tsv-out and
-    // --no-bazel meaningless; each is rejected rather than silently ignored.
+    // --at (spec: "print the key and its composition, no comparison") makes --tsv and --tsv-out
+    // meaningless; each is rejected rather than silently ignored.
     @Test void atRejectsTsv() {
         UsageException e = fails("appA", "--at", "z", "--tsv");
         assertTrue(e.getMessage().contains("--at") && e.getMessage().contains("--tsv"), e.getMessage());
@@ -289,10 +292,5 @@ class CliOptionsTest {
     @Test void atRejectsTsvOut() {
         UsageException e = fails("appA", "--at", "z", "--tsv-out", "rows.tsv");
         assertTrue(e.getMessage().contains("--at") && e.getMessage().contains("--tsv-out"), e.getMessage());
-    }
-
-    @Test void atRejectsNoBazel() {
-        UsageException e = fails("appA", "--at", "z", "--no-bazel");
-        assertTrue(e.getMessage().contains("--at") && e.getMessage().contains("--no-bazel"), e.getMessage());
     }
 }

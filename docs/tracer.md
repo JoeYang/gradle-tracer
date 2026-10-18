@@ -91,7 +91,7 @@ column. Table columns are padded and truncated by
 Unicode code point, not UTF-16 char, so a surrogate pair is never split.
 
 ## Cli
-`trace <app> --from A --to B [--task T] [--no-bazel] [--offline] [--keep-worktrees] [--tsv] [--tsv-out F] [--timeout-minutes N]`
+`trace <app> --from A --to B [--task T] [--offline] [--keep-worktrees] [--tsv] [--tsv-out F] [--timeout-minutes N]`
 and `trace <app> --at REV [--task T] [--offline] [--keep-worktrees] [--timeout-minutes N]`.
 `--task` defaults to `fingerprint` (runtime inputs: whether what the app runs with changed); `--task compileJava`
 compares compile inputs instead (whether the app would recompile). Both modes use the same default.
@@ -104,11 +104,11 @@ value missing at the end of the arguments fails the same way, naming the option.
 `--timeout-minutes`: its values are validated as integers instead (see below). `--at` checks out one revision
 into a worktree via `RevisionRange.resolveOne` and prints that task's key, its implementation hash, every value
 fingerprint, and every file fingerprint (grouped by property, named the same way `KeyComparator.displayName`
-names a culprit) — no comparison, so it rejects `--tsv`, `--tsv-out` and `--no-bazel` alongside it, naming both
+names a culprit) — no comparison, so it rejects `--tsv` and `--tsv-out` alongside it, naming both
 flags in the error.
 
-`Cli.defaultScratchRoot` computes one fixed scratch root, `$TMPDIR/gradle-tracer`, that worktrees and bazel-diff
-hash files live under (never per pid — a fixed root is how the next run finds and sweeps a killed run's
+`Cli.defaultScratchRoot` computes one fixed scratch root, `$TMPDIR/gradle-tracer`, that worktrees live under
+(never per pid — a fixed root is how the next run finds and sweeps a killed run's
 leftovers; see "Range walk" below). On Linux the JVM does not read `$TMPDIR` into `java.io.tmpdir` (it is always
 `/tmp`), so it reads the `TMPDIR` environment variable directly and only falls back to `java.io.tmpdir` when it
 is unset or blank, keeping the documented path real; either way, the result is resolved to an absolute,
@@ -125,18 +125,15 @@ non-positive timeout with an unchecked exception, so the CLI validates it here a
 passing one through.
 
 ## Range walk
-Worktrees and bazel-diff hash files live under one fixed root, `$TMPDIR/gradle-tracer/`. At start the tracer
-deletes stale scratch files left by a killed run — any file whose name starts with `hashes-` (any extension,
-not just `.json`) or ends with `.impacted.txt` — and reports how many; only then does `WorktreePool` delete
-stale `wt-*` directories and prune git's worktree list, in that order (hash files first, since they're Cli's own
-and cheap to check; worktree directories and git's own bookkeeping after). At the end — including when the
+Worktrees live under one fixed root, `$TMPDIR/gradle-tracer/`. At start the tracer deletes leftover scratch files from
+older runs — any file whose name starts with `hashes-` or ends with `.impacted.txt` — and reports how many; only then
+does `WorktreePool` delete stale `wt-*` directories and prune git's worktree list, in that order. At the end — including when the
 walk is aborted partway through — it removes what it created unless `--keep-worktrees`, which keeps the
-worktrees themselves (their `git worktree` registrations too) and every hash file this run wrote. What actually
+worktrees themselves (their `git worktree` registrations too). What actually
 aborts the walk: a checkout failure (`WorktreePool.checkout`, e.g. `git worktree add` failing), the thread being
 interrupted (checked at the top of every iteration and after a failed key lookup), or an unexpected runtime
 exception. A key-provider failure does *not* abort it — it becomes that commit's `BUILD-FAILED` row, and the
-next commit is compared against the last good key; nor does a bazel-diff failure — the rest of the Bazel column
-just degrades to `n/a`, with exactly one warning on stderr for the whole run, not one per remaining commit.
+next commit is compared against the last good key.
 
 Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed — any of: some row is
 `BUILD-FAILED`; a `git` failure outside revision resolution (e.g. a `git worktree add` that fails mid-walk); an
@@ -147,9 +144,8 @@ caught in `Cli.run` and reported as "internal error: `<class>`: `<message>`" rat
 stack trace; or the thread being interrupted mid-walk, reported as "interrupted" and aborting the range
 immediately instead of limping through every remaining commit with the interrupt flag still set. The flag is
 checked after a failed key lookup, at the top of every iteration, and once more after the loop (before
-rendering anything): an interrupted bazel-diff call degrades silently (as an ordinary bazel-diff failure,
-below) with the flag still set, and if that happens on the *last* commit there's no next iteration left to
-catch it in — only the final check does, aborting instead of rendering a table as if nothing had happened — 3
+rendering anything): a key lookup can return normally with the flag still set, and if that happens on the
+*last* commit there's no next iteration left to catch it in — only the final check does, aborting instead of rendering a table as if nothing had happened — 3
 at least one row is `CHANGED`. 2 wins over 3 when both apply in the same range.
 
 `Cli.run` does its work in a fixed order: the app name is checked against `app/<app>` first (a usage error here
@@ -179,7 +175,7 @@ already resolved — `Cli` creates the scratch root and takes an exclusive lock 
 `FileChannel.tryLock()`), held for the whole run and released when it ends. A second run on the same root while
 the first is still going fails fast as a usage error ("another trace is using `<scratch>`; wait for it or set
 `TMPDIR` to another directory") with no worktree work and no scratch sweep, rather than sweeping the first run's
-live `wt-*` worktrees and hash files out from under it. (Its own revision resolution still runs first, same as
+live `wt-*` worktrees out from under it. (Its own revision resolution still runs first, same as
 any other invocation — that's read-only git against the repo, not the scratch root, so it's harmless even when
 the lock is about to be refused.) `.lock` itself is never swept: `WorktreePool`'s sweep only touches `wt-*`
 directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/`*.impacted.txt` files. Lock contention gets
