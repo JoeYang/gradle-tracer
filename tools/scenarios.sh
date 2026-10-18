@@ -20,6 +20,7 @@ LOCK_PATHS=(gradle/libs.versions.toml settings-gradle.lockfile
 cleanup() {
   git -C "$ROOT" worktree remove --force "$WT" >/dev/null 2>&1 || true
   rm -rf "$WT"
+  git -C "$ROOT" worktree prune
   [[ "${KEEP_BRANCH:-0}" == 1 ]] || git -C "$ROOT" branch -D "$BRANCH" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -27,10 +28,12 @@ trap cleanup EXIT
 say() { printf '\n== %s\n' "$*"; }
 
 # Every git call that commits or checks out inside the demo worktree goes through this, so the
-# developer's global git config (gpgsign, hooks, excludesFile) can never break the run.
-# Mirrors EndToEndTest.java's GIT_ISOLATION (tools/tracer/src/e2eTest/java/io/joeyang/tracer/cli/EndToEndTest.java).
+# developer's global git config (identity, gpgsign, hooks, excludesFile, autocrlf) can never break
+# the run. Mirrors EndToEndTest.java's SAFE_GIT_CONFIG (tools/tracer/src/e2eTest/java/io/joeyang/tracer/cli/EndToEndTest.java):
+# a missing identity aborts the first commit, and autocrlf=true breaks the multi-line `edit` matches.
 gitw() {
-  git -C "$WT" -c commit.gpgsign=false -c core.hooksPath=/dev/null -c core.excludesFile=/dev/null "$@"
+  git -C "$WT" -c user.name=scenarios -c user.email=scenarios@example.invalid \
+    -c commit.gpgsign=false -c core.hooksPath=/dev/null -c core.excludesFile=/dev/null -c core.autocrlf=false "$@"
 }
 
 # edit FILE OLD NEW — exact replacement; fails loudly unless OLD occurs exactly once.
