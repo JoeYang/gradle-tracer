@@ -9,7 +9,6 @@ ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 cd "$ROOT"
 BRANCH="demo/scenarios-$(date +%Y%m%d-%H%M%S)"
 WT="$(mktemp -d "${TMPDIR:-/tmp}/gradle-tracer-scenarios.XXXXXX")"
-TRACE_FLAGS=()
 PROJECTS=(utils core lib app:appA app:appB app:appC tools:tracer)
 FAILURES=0
 
@@ -128,10 +127,9 @@ check() {  # check LABEL EXPECTED ACTUAL
 
 for app in appA appB appC; do
   for task in compileJava fingerprint; do
-    flags=("${TRACE_FLAGS[@]}")
     say "./trace $app --from ${BASE:0:7} --to ${TIP:0:7} --task $task"
     TSV="$WT/.trace-$app-$task.tsv"
-    ./trace "$app" --from "$BASE" --to "$TIP" --task "$task" --tsv-out "$TSV" "${flags[@]}" || true
+    ./trace "$app" --from "$BASE" --to "$TIP" --task "$task" --tsv-out "$TSV" || true
     gradle_actual="$(awk -F'\t' 'NR>1 { printf "%s%s", (NR>2 ? " " : ""), ($4=="CHANGED" ? "C" : ($4=="clean" ? "-" : "?")) }' "$TSV")"
     check "$app $task" "${EXPECT[$app:$task]}" "$gradle_actual"
   done
@@ -148,7 +146,7 @@ fi
 
 cat <<'LEGEND'
 
-Why the columns disagree (see docs/scenarios.md):
+What each scenario shows (see docs/scenarios.md):
   S1 body-only edit      compile: ABI unchanged, nothing recompiles · fingerprint: runtime bytes changed
   S3 commons-lang3 bump  compile: implementation dep of lib, not on appA's compile classpath · fingerprint: changed
   S5 comment-only edit   identical bytecode, so neither key changes

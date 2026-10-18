@@ -308,7 +308,7 @@ class CliTest {
             // The range is resolved (read-only git) before the lock is taken, so rev-parse/log calls do happen;
             // what must never happen while another run holds the lock is worktree work or a scratch sweep.
             assertFalse(git.ran("git worktree"), "no worktree work while the scratch root is locked");
-                assertFalse(err().contains("usage: trace"), "lock contention is not a command-line mistake; no usage text: " + err());
+            assertFalse(err().contains("usage: trace"), "lock contention is not a command-line mistake; no usage text: " + err());
         }
     }
 
@@ -521,7 +521,7 @@ class CliTest {
         try {
             int code = run(interruptOnLastCommit, "appA", "--from", "base", "--to", "tip");
 
-            // With no post-loop check, this would render the table and exit 3 (a CHANGED row) instead.
+            // With no post-loop check, this would render the table (rows base/clean/clean) and exit 0 instead.
             assertEquals(Cli.EXIT_TOOL_FAILURE, code, err());
             assertTrue(err().contains("interrupted"), err());
         } finally {

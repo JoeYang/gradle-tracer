@@ -45,7 +45,7 @@ public final class Cli {
 
     static final String USAGE = """
             usage: trace <app> --from <rev> --to <rev> [--task <name>] [--offline] [--keep-worktrees]
-                                                [--tsv] [--tsv-out <file>] [--timeout-minutes <n>]
+                                                       [--tsv] [--tsv-out <file>] [--timeout-minutes <n>]
                    trace <app> --at <rev> [--task <name>] [--offline] [--keep-worktrees] [--timeout-minutes <n>]
 
               <app>            appA | appB | appC   (maps to :app:<app>:<task>)
@@ -247,7 +247,7 @@ public final class Cli {
 
     /**
      * Locks the scratch root for the whole run, before any sweep or worktree work starts: two trace runs sharing
-     * a root would otherwise sweep each other's live {@code wt-*} worktrees and hash files out from under one
+     * a root would otherwise sweep each other's live {@code wt-*} worktrees out from under one
      * another. {@code tryLock()} returns null for a lock held by another process, and throws
      * {@link OverlappingFileLockException} for one held elsewhere in this same JVM; both mean the root is busy.
      */
