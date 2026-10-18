@@ -63,6 +63,8 @@ EOF
   gitw rev-parse HEAD
 }
 
+STATUS_BEFORE="$(git -C "$ROOT" status --porcelain)"
+
 say "creating $BRANCH in $WT"
 git -C "$ROOT" -c commit.gpgsign=false -c core.hooksPath=/dev/null -c core.excludesFile=/dev/null \
   worktree add -q -b "$BRANCH" "$WT" HEAD
@@ -136,12 +138,13 @@ for app in appA appB appC; do
 done
 
 say "checkout untouched"
-UNEXPECTED="$(git -C "$ROOT" status --porcelain | grep -v '^?? MEMORY.md$' || true)"
-if [[ -n "$UNEXPECTED" ]]; then
-  printf 'FAIL %-22s unexpected status in %s:\n%s\n' "checkout-untouched" "$ROOT" "$UNEXPECTED"
+STATUS_AFTER="$(git -C "$ROOT" status --porcelain)"
+if [[ "$STATUS_BEFORE" != "$STATUS_AFTER" ]]; then
+  printf 'FAIL %-22s %s changed status during the run:\n%s\n' "checkout-untouched" "$ROOT" \
+    "$(diff <(printf '%s\n' "$STATUS_BEFORE") <(printf '%s\n' "$STATUS_AFTER") || true)"
   FAILURES=$((FAILURES + 1))
 else
-  printf 'OK   %-22s %s\n' "checkout-untouched" "no unexpected status in $ROOT"
+  printf 'OK   %-22s %s\n' "checkout-untouched" "no status change in $ROOT"
 fi
 
 cat <<'LEGEND'
