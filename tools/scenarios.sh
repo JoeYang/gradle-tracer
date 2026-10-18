@@ -113,8 +113,9 @@ edit "$WT/build-logic/src/main/java/io/joeyang/tracer/buildlogic/JavaBaseConvent
 '            task.getOptions().setEncoding("UTF-8");' \
 '            task.getOptions().setEncoding("UTF-8");
             task.getOptions().getCompilerArgs().add("-Xlint:all");'
-TIP="$(commit "build: enable -Xlint:all" \
-  build-logic/src/main/java/io/joeyang/tracer/buildlogic/JavaBaseConventionPlugin.java)"
+commit "build: enable -Xlint:all" \
+  build-logic/src/main/java/io/joeyang/tracer/buildlogic/JavaBaseConventionPlugin.java >/dev/null
+TIP="$(gitw rev-parse HEAD)"
 
 # Expected gradle verdicts for S1..S6 (C = CHANGED, - = clean), per app and task.
 declare -A EXPECT=(
@@ -131,7 +132,13 @@ for app in appA appB appC; do
   for task in compileJava fingerprint; do
     say "./trace $app --from ${BASE:0:7} --to ${TIP:0:7} --task $task"
     TSV="$WT/.trace-$app-$task.tsv"
-    ./trace "$app" --from "$BASE" --to "$TIP" --task "$task" --tsv-out "$TSV" || true
+    rc=0
+    ./trace "$app" --from "$BASE" --to "$TIP" --task "$task" --tsv-out "$TSV" || rc=$?
+    if [[ ! -s "$TSV" ]]; then
+      printf 'FAIL %-22s trace exited %s without writing a TSV\n' "$app $task" "$rc"
+      FAILURES=$((FAILURES + 1))
+      continue
+    fi
     gradle_actual="$(awk -F'\t' 'NR>1 { printf "%s%s", (NR>2 ? " " : ""), ($4=="CHANGED" ? "C" : ($4=="clean" ? "-" : "?")) }' "$TSV")"
     check "$app $task" "${EXPECT[$app:$task]}" "$gradle_actual"
   done
