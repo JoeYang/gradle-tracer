@@ -31,8 +31,7 @@ public final class TableRenderer {
     public static String renderTsv(List<Verdict> rows) {
         return rows.stream().map(v -> String.join("\t",
                 v.commit().sha(), tsvSafe(v.commit().subject()), v.key().map(TaskKey::key).orElse(""),
-                v.status().label(),
-                tsvSafe(v.status() == Status.BUILD_FAILED ? v.error().orElse("") : String.join(", ", v.culprits()))))
+                v.status().label(), tsvSafe(culpritColumn(v))))
                 .collect(Collectors.joining("\n", "", "\n"));
     }
 
