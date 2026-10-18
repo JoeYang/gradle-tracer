@@ -36,7 +36,7 @@ Rules:
   caller can split the output on the first space.
 - "Dirty" means plain `git status --porcelain` (modified, staged, untracked; ignored files do not count). It honours
   the developer's own git config on purpose, so the verdict matches what `git status` shows them. No `-c` isolation.
-- Conventions as in `tools/fetch-bazel-diff.sh`: `set -euo pipefail`, `error:` prefix on stderr, exit 1 for a refusal,
+- Conventions as in `tools/fetch-bazel-diff.sh` (removed 2026-10-18; see tag `with-bazel`): `set -euo pipefail`, `error:` prefix on stderr, exit 1 for a refusal,
   exit 2 for a bad invocation. No `cd`; every git call uses `git -C "$repo"`.
 
 Wiring in `tools/scenarios.sh`, immediately after `cd "$ROOT"` and before `BRANCH=`/`mktemp`/`worktree add`, so that a

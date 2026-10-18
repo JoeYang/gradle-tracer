@@ -1,7 +1,8 @@
 # gradle-tracer
 
 A learning repo: a set of Java modules built by Gradle, plus a tracer that reports which
-commits changed an application's build inputs. Design: `docs/superpowers/specs/2026-10-16-build-input-tracer-design.md`.
+commits changed an application's build inputs. The build is Gradle only on purpose, a deliberate exception to the author's Bazel-for-Java default.
+Design: `docs/superpowers/specs/2026-10-16-build-input-tracer-design.md`.
 
 ## Layout
 

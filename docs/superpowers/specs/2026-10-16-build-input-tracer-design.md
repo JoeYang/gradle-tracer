@@ -1,5 +1,7 @@
 # Build-input tracer for a Gradle + Bazel multi-module project
 
+> Note 2026-10-18: Bazel was removed from this repo; the last Bazel state is tagged `with-bazel`. This document is kept as the historical record, so the Bazel parts below no longer apply. The default task is now `fingerprint` (since 89cb66b), not `compileJava`.
+
 Status: approved 2026-10-16 (all decisions D1–D8 "Go"), amended after the independent review the same day (see §14). Branch: `feature/level1-input-tracer`.
 
 ## 1. Goal
