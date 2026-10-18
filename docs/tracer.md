@@ -125,9 +125,8 @@ non-positive timeout with an unchecked exception, so the CLI validates it here a
 passing one through.
 
 ## Range walk
-Worktrees live under one fixed root, `$TMPDIR/gradle-tracer/`. At start the tracer deletes leftover scratch files from
-older runs — any file whose name starts with `hashes-` or ends with `.impacted.txt` — and reports how many; only then
-does `WorktreePool` delete stale `wt-*` directories and prune git's worktree list, in that order. At the end — including when the
+Worktrees live under one fixed root, `$TMPDIR/gradle-tracer/`. At start `WorktreePool` deletes stale `wt-*`
+directories left by a killed run and prunes git's worktree list, in that order. At the end — including when the
 walk is aborted partway through — it removes what it created unless `--keep-worktrees`, which keeps the
 worktrees themselves (their `git worktree` registrations too). What actually
 aborts the walk: a checkout failure (`WorktreePool.checkout`, e.g. `git worktree add` failing), the thread being
@@ -178,7 +177,7 @@ the first is still going fails fast as a usage error ("another trace is using `<
 live `wt-*` worktrees out from under it. (Its own revision resolution still runs first, same as
 any other invocation — that's read-only git against the repo, not the scratch root, so it's harmless even when
 the lock is about to be refused.) `.lock` itself is never swept: `WorktreePool`'s sweep only touches `wt-*`
-directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/`*.impacted.txt` files. Lock contention gets
+directories. Lock contention gets
 its own one-line message on stderr, not the full usage text — it isn't a command-line mistake — though the exit
 code still reads as a usage error (1). The held `FileLock` is released via try-with-resources rather than a
 manual `release()` in a `finally`, so if the locked work also fails, `release()`'s own `IOException` is

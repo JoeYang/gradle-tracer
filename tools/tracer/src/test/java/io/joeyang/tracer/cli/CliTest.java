@@ -434,14 +434,13 @@ class CliTest {
                 "the .lock path must appear exactly once, not duplicated by the exception's own message: " + err());
     }
 
-    @Test void lockFileSurvivesScratchSweep() throws Exception {
+    @Test void lockFileSurvivesARun() throws Exception {
         createPrivateScratch();
         Path lock = Files.createFile(scratch.resolve(".lock"));
-        Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
 
         run(keys, "appA", "--from", "base", "--to", "tip");
 
-        assertTrue(Files.exists(lock), ".lock must never be swept, by WorktreePool or Cli.deleteScratchFiles");
+        assertTrue(Files.exists(lock), ".lock must never be removed by a run");
     }
 
     @Test void unexpectedRuntimeExceptionIsReportedAsExit2() throws Exception {
@@ -528,15 +527,5 @@ class CliTest {
         } finally {
             Thread.interrupted();
         }
-    }
-
-    @Test void staleScratchFilesAreSwept() throws Exception {
-        createPrivateScratch();
-        Path stale = Files.writeString(scratch.resolve("hashes-stale.json"), "{}");
-
-        run(keys, "appA", "--from", "base", "--to", "tip", "--tsv");
-
-        assertFalse(Files.exists(stale), "a killed run's hash files are removed at start");
-        assertTrue(err().contains("removed 1 stale scratch file"), err());
     }
 }

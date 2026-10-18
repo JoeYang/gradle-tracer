@@ -25,7 +25,6 @@ import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 /** Entry point: parses options, walks the range through worktrees, and prints the verdicts (or, for {@code --at}, one commit's key). */
 public final class Cli {
@@ -395,51 +394,39 @@ public final class Cli {
     }
 
     private int range(Options o, PrintStream out, PrintStream err, List<Commit> commits) throws ProviderException {
-        int swept = deleteScratchFiles();
-        if (swept > 0) {
-            err.println("trace: removed " + swept + " stale scratch file(s) under " + scratch);
-        }
         List<Verdict> rows = new ArrayList<>();
-        try {
-            try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
-                Optional<TaskKey> previousGood = Optional.empty();
-                for (Commit commit : commits) {
-                    // Checked here too, not only after a failed key lookup: a lookup can return normally with
-                    // the interrupt flag set, so the flag can still be set going into the next commit even though
-                    // nothing in the previous iteration reported it as "interrupted". Catching it here, before
-                    // this commit's checkout or any of its provider calls, is what stops it reaching the next
-                    // checkout and failing there with a confusing unrelated error instead.
-                    if (Thread.currentThread().isInterrupted()) {
-                        throw new ProviderException("interrupted");
-                    }
-                    Path worktree = pool.checkout(commit);
-                    Optional<TaskKey> key = Optional.empty();
-                    Optional<String> error = Optional.empty();
-                    try {
-                        key = Optional.of(keys.keyFor(worktree, o.taskPath()));
-                    } catch (ProviderException e) {
-                        // An interrupted process call fails this one lookup but leaves the interrupt flag set, so
-                        // every later process call would fail the same way; limping on would just produce a wall
-                        // of BUILD-FAILED rows instead of the one honest signal that the run was asked to stop.
-                        if (Thread.currentThread().isInterrupted()) {
-                            throw new ProviderException("interrupted", e);
-                        }
-                        error = Optional.of(e.getMessage());
-                    }
-                    rows.add(KeyComparator.verdict(commit, previousGood, key, error));
-                    if (key.isPresent()) {
-                        previousGood = key;
-                    }
-                    if (!o.keepWorktrees()) {
-                        pool.release(worktree);
-                    }
+        try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
+            Optional<TaskKey> previousGood = Optional.empty();
+            for (Commit commit : commits) {
+                // Checked here too, not only after a failed key lookup: a lookup can return normally with
+                // the interrupt flag set, so the flag can still be set going into the next commit even though
+                // nothing in the previous iteration reported it as "interrupted". Catching it here, before
+                // this commit's checkout or any of its provider calls, is what stops it reaching the next
+                // checkout and failing there with a confusing unrelated error instead.
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new ProviderException("interrupted");
                 }
-            }
-        } finally {
-            // Runs whether the walk finished or a checkout/pool failure aborted it partway through: a killed
-            // walk must leave no more behind than a killed run would (docs/tracer.md's "Range walk" promise).
-            if (!o.keepWorktrees()) {
-                deleteScratchFiles();
+                Path worktree = pool.checkout(commit);
+                Optional<TaskKey> key = Optional.empty();
+                Optional<String> error = Optional.empty();
+                try {
+                    key = Optional.of(keys.keyFor(worktree, o.taskPath()));
+                } catch (ProviderException e) {
+                    // An interrupted process call fails this one lookup but leaves the interrupt flag set, so
+                    // every later process call would fail the same way; limping on would just produce a wall
+                    // of BUILD-FAILED rows instead of the one honest signal that the run was asked to stop.
+                    if (Thread.currentThread().isInterrupted()) {
+                        throw new ProviderException("interrupted", e);
+                    }
+                    error = Optional.of(e.getMessage());
+                }
+                rows.add(KeyComparator.verdict(commit, previousGood, key, error));
+                if (key.isPresent()) {
+                    previousGood = key;
+                }
+                if (!o.keepWorktrees()) {
+                    pool.release(worktree);
+                }
             }
         }
         // A lookup on the *last* commit can return with the interrupt flag set (the loop's own top-of-iteration
@@ -517,26 +504,6 @@ public final class Cli {
             }
             throw new ProviderException("cannot write " + target + ": " + ioReason(e, target), e);
         }
-    }
-
-    /** Deletes bazel-diff hash and impacted-target files left under the scratch root by older runs; returns how many went. */
-    private int deleteScratchFiles() {
-        if (!Files.isDirectory(scratch)) {
-            return 0;
-        }
-        int count = 0;
-        try (Stream<Path> entries = Files.list(scratch)) {
-            for (Path p : entries.toList()) {
-                String name = p.getFileName().toString();
-                if (Files.isRegularFile(p) && (name.startsWith("hashes-") || name.endsWith(".impacted.txt"))) {
-                    Files.deleteIfExists(p);
-                    count++;
-                }
-            }
-        } catch (IOException ignored) {
-            // best effort
-        }
-        return count;
     }
 
     private int at(Options o, PrintStream out, Commit commit) throws ProviderException {
