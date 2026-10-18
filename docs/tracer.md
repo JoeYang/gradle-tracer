@@ -93,6 +93,8 @@ Unicode code point, not UTF-16 char, so a surrogate pair is never split.
 ## Cli
 `trace <app> --from A --to B [--task T] [--no-bazel] [--offline] [--keep-worktrees] [--tsv] [--tsv-out F] [--timeout-minutes N]`
 and `trace <app> --at REV [--task T] [--offline] [--keep-worktrees] [--timeout-minutes N]`.
+`--task` defaults to `fingerprint` (runtime inputs: whether what the app runs with changed); `--task compileJava`
+compares compile inputs instead (whether the app would recompile). Both modes use the same default.
 
 `<app>` must match `[A-Za-z0-9][A-Za-z0-9_-]*`; a blank, path-like (`.`, `..`, `../..`) or option-like (`-h`) name
 is a usage error naming the rejected value. Every value-taking option (`--from`, `--to`, `--at`, `--task`,

@@ -20,7 +20,7 @@ class CliOptionsTest {
 
     @Test void defaultsForARange() throws Exception {
         Cli.Options o = parse("appA", "--from", "x", "--to", "y");
-        assertEquals(":app:appA:compileJava", o.taskPath());
+        assertEquals(":app:appA:fingerprint", o.taskPath());
         assertEquals("//app/appA:appA", o.bazelTarget());
         assertTrue(o.bazel());
         assertFalse(o.offline() || o.keepWorktrees() || o.tsv());
@@ -30,9 +30,9 @@ class CliOptionsTest {
     }
 
     @Test void parsesEveryFlag() throws Exception {
-        Cli.Options o = parse("appB", "--from", "x", "--to", "y", "--task", "fingerprint", "--no-bazel", "--offline",
+        Cli.Options o = parse("appB", "--from", "x", "--to", "y", "--task", "compileJava", "--no-bazel", "--offline",
                 "--keep-worktrees", "--tsv-out", "rows.tsv", "--timeout-minutes", "3");
-        assertEquals(":app:appB:fingerprint", o.taskPath());
+        assertEquals(":app:appB:compileJava", o.taskPath());
         assertFalse(o.bazel());
         assertTrue(o.offline() && o.keepWorktrees());
         assertEquals(Path.of("rows.tsv"), o.tsvOut());
@@ -43,6 +43,11 @@ class CliOptionsTest {
         Cli.Options o = parse("appC", "--at", "HEAD");
         assertEquals("HEAD", o.at());
         assertNull(o.from());
+        assertEquals(":app:appC:fingerprint", o.taskPath());
+    }
+
+    @Test void atModeStillTakesCompileJava() throws Exception {
+        assertEquals(":app:appC:compileJava", parse("appC", "--at", "HEAD", "--task", "compileJava").taskPath());
     }
 
     @Test void repeatedBooleanFlagsAreHarmless() throws Exception {

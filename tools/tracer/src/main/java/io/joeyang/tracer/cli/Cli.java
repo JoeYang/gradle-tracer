@@ -50,7 +50,7 @@ public final class Cli {
                    trace <app> --at <rev> [--task <name>] [--offline] [--keep-worktrees] [--timeout-minutes <n>]
 
               <app>            appA | appB | appC   (maps to :app:<app>:<task> and //app/<app>:<app>)
-              --task           Gradle task whose cache key is compared; default compileJava, alternative fingerprint
+              --task           Gradle task whose cache key is compared; default fingerprint, alternative compileJava
               --no-bazel       skip the bazel-diff column
               --offline        pass --offline to gradle; forbid repository downloads in bazel
               --keep-worktrees leave the checked-out worktrees and hash files in place for inspection
@@ -74,7 +74,7 @@ public final class Cli {
                 throw new UsageException("'" + app + "' is not a valid app name: expected letters, digits, "
                         + "'-' or '_', starting with a letter or digit");
             }
-            String from = null, to = null, at = null, task = "compileJava";
+            String from = null, to = null, at = null, task = "fingerprint";
             boolean bazel = true, offline = false, keep = false, tsv = false;
             Path tsvOut = null;
             Duration timeout = Duration.ofMinutes(10);

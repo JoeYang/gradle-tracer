@@ -15,9 +15,9 @@ See `docs/gradle-build.md` (Gradle side) and `docs/bazel-build.md` (Bazel side).
 
 ## Trace
 
-    ./trace appA --from <rev> --to <rev>                 # which commits changed appA's compile inputs
-    ./trace appA --from <rev> --to <rev> --task fingerprint   # … its runtime inputs (library bumps included)
-    ./trace appA --at HEAD                               # what the key is made of
+    ./trace appA --from <rev> --to <rev>                    # which commits changed appA's runtime inputs (library bumps included)
+    ./trace appA --from <rev> --to <rev> --task compileJava # … only its compile inputs (would appA recompile?)
+    ./trace appA --at HEAD                                  # what the key is made of
 
 See `docs/tracer.md` for the table format and exit codes.
 

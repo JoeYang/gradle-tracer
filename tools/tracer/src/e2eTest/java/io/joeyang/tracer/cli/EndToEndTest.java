@@ -54,25 +54,33 @@ class EndToEndTest {
         KeyProvider keys = new GradleKeyProvider(runner, false, Duration.ofMinutes(10));
         Cli cli = new Cli(runner, fixture, tmp.resolve("scratch"), keys, null);
 
-        TraceResult appA = trace(cli, "appA");
+        TraceResult appA = trace(cli, "appA", "--task", "compileJava");
         assertEquals(Cli.EXIT_CHANGED, appA.code(), appA.text());
         assertEquals("base", appA.rows()[0][4], appA.text());
         assertEquals("CHANGED", appA.rows()[1][4], appA.text());
         assertTrue(appA.rows()[1][5].contains("core classes"),
                 "compile classpath consumes project deps as class dirs: " + appA.rows()[1][5]);
 
-        TraceResult appC = trace(cli, "appC");
+        TraceResult appC = trace(cli, "appC", "--task", "compileJava");
         assertEquals(Cli.EXIT_OK, appC.code(), appC.text());
         assertEquals("base", appC.rows()[0][4], appC.text());
         assertEquals("clean", appC.rows()[1][4], appC.text());
+
+        TraceResult appARuntime = trace(cli, "appA");
+        assertEquals("CHANGED", appARuntime.rows()[1][4], appARuntime.text());
+        assertTrue(appARuntime.rows()[1][5].contains("core.jar"),
+                "the default task is fingerprint, whose runtime classpath consumes project deps as jars: "
+                        + appARuntime.rows()[1][5]);
     }
 
     private record TraceResult(int code, String[][] rows, String text) {}
 
-    private static TraceResult trace(Cli cli, String app) throws Exception {
+    private static TraceResult trace(Cli cli, String app, String... extra) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         ByteArrayOutputStream err = new ByteArrayOutputStream();
-        int code = cli.run(Cli.Options.parse(new String[] {app, "--from", "HEAD~1", "--to", "HEAD", "--no-bazel", "--tsv"}),
+        List<String> args = new ArrayList<>(List.of(app, "--from", "HEAD~1", "--to", "HEAD", "--no-bazel", "--tsv"));
+        args.addAll(List.of(extra));
+        int code = cli.run(Cli.Options.parse(args.toArray(String[]::new)),
                 new PrintStream(out, true, StandardCharsets.UTF_8), new PrintStream(err, true, StandardCharsets.UTF_8));
         String text = out.toString(StandardCharsets.UTF_8);
         assertTrue(code == Cli.EXIT_OK || code == Cli.EXIT_CHANGED, "exit " + code + "\n" + err + "\n" + text);

@@ -175,7 +175,7 @@ class CliTest {
     @Test void noBazelOmitsTheColumnSource() throws Exception {
         run(keys, null, "appA", "--from", "base", "--to", "tip", "--no-bazel");
         assertFalse(out().contains("bazel-diff)"), out());
-        assertTrue(out().contains("Tracing inputs of :app:appA:compileJava (gradle) over 2 commits"), out());
+        assertTrue(out().contains("Tracing inputs of :app:appA:fingerprint (gradle) over 2 commits"), out());
     }
 
     @Test void unknownAppIsAUsageError() throws Exception {
