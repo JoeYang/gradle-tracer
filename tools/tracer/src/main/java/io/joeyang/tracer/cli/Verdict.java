@@ -10,14 +10,9 @@ import java.util.Optional;
  * @param culprits human-readable names of inputs that changed (jar names, source paths, property names, "build logic")
  * @param error first error line when status is BUILD_FAILED
  */
-public record Verdict(Commit commit, Status status, Optional<TaskKey> key, BazelStatus bazel,
+public record Verdict(Commit commit, Status status, Optional<TaskKey> key,
                       List<String> culprits, Optional<String> error) {
     public Verdict {
         culprits = List.copyOf(culprits);
-    }
-
-    public boolean bazelDisagrees() {
-        return (status == Status.CHANGED && bazel == BazelStatus.CLEAN)
-                || (status == Status.CLEAN && bazel == BazelStatus.IMPACTED);
     }
 }

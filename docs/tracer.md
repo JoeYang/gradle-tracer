@@ -1,7 +1,7 @@
 # tracer
 
 `tools/tracer` is a Java CLI. `Cli.main` parses options, then either walks the `--from`/`--to` range through
-detached git worktrees, asking the Gradle and bazel-diff providers about each commit and printing a verdict
+detached git worktrees, asking the Gradle provider about each commit and printing a verdict
 table, or — for `--at` — checks out that one revision and prints its Gradle key and the fingerprints it is
 composed from. On a usage error it exits 1 with the usage text. The `./trace` wrapper builds the launcher with
 `installDist` and execs it from the repository root; because it `cd`s there first, a relative `--tsv-out` path
@@ -17,9 +17,8 @@ to write elsewhere. If `installDist` itself fails, the wrapper reports it direct
 | `Commit` | sha + subject |
 | `TaskKey` | a task's cache key plus per-input fingerprints (`property → file → hash`), value fingerprints and implementation hash |
 | `Status` | `BASE`, `CHANGED`, `CLEAN`, `BUILD_FAILED` — the Gradle verdict |
-| `BazelStatus` | `IMPACTED`, `CLEAN`, `NOT_AVAILABLE`, `NONE` — the informational column |
 | `Verdict` | one table row |
-| `KeyProvider`, `ImpactProvider` | the two oracles behind interfaces so tests can fake them |
+| `KeyProvider` | the Gradle oracle behind an interface so tests can fake it |
 | `UsageException` → exit 1; `ProviderException` → exit 2 | error classes |
 
 ## Exit codes
@@ -54,13 +53,6 @@ Failing that, it falls back to the first non-blank stderr/stdout line. The task 
 A line inside the target task's own cache-debug block that CacheDebugLog cannot recognise is reported the same way, as a
 `ProviderException` naming the task and the offending line, instead of escaping uncaught.
 
-## Bazel oracle
-`BazelDiffProvider` — see `docs/bazel-build.md`. Failure modes: binary missing → the error names `tools/fetch-bazel-diff.sh`;
-non-zero exit → the real Bazel `ERROR:` line (not bazel-diff's own wrapper line); no output file → explicit error;
-a stray non-label line in `get-impacted-targets`' output → explicit error naming the line. The `Cli` range walk maps
-any of these failures to `BazelStatus.NOT_AVAILABLE` for the rest of the range (rather than failing the whole row)
-and prints a warning to stderr once, the first time bazel-diff fails.
-
 ## Git layer
 - `RevisionRange.resolve(from, to)` → `[from, …from..to oldest first]`, following the first-parent line so adjacent rows are parent and child even across merges. `from` must be an ancestor of `to` on that first-parent line (each row's own first parent, from `%P`, must equal the previous row's sha); a side-branch commit pulled in by a merge is a `UsageException` naming both shas, not a silent mismatch. Unknown revision (`git rev-parse --verify --quiet` exit 1) or an empty range → `UsageException`; any other git failure (not runnable, exit 128, a malformed `git log` line) → `ProviderException`, naming the offending line where there is one. `RevisionRange.resolveOne(rev)` resolves and describes a single revision the same way, for `--at`, including the
 `git log` exit-code check: a non-zero exit there is a `ProviderException` naming git's own first stderr line,
@@ -73,7 +65,7 @@ not something `parse` has to make sense of.
 - `--keep-worktrees` leaves everything — the checked-out directories and their `git worktree` registrations — in place when the run ends; no shutdown hook is even registered, so an interrupted run leaves them too. The *next* pool opened on that root deletes whatever is there in its startup sweep (git included, via sweep-then-prune) regardless of `--keep-worktrees`; a commit `checkout()` again within the same run tears down and recreates its worktree rather than reusing it in place.
 
 ## Comparison
-`KeyComparator.verdict(commit, previousGoodKey, currentKey, error, bazel)`: no current key → `BUILD-FAILED` (defaulting the
+`KeyComparator.verdict(commit, previousGoodKey, currentKey, error)`: no current key → `BUILD-FAILED` (defaulting the
 error message to "no cache key obtained" when none is given); no previous → `base`; equal keys → `clean`; otherwise `CHANGED`
 with culprits = file fingerprints that differ (compared by location-independent display name: `core.jar`,
 `appA/src/main/java/.../AppA.java`, `appA classes`, `appA resources` for a changed resource file, and `group:artifact` for
@@ -84,14 +76,14 @@ first so it is never hidden by the cap below. When none of the above differ desp
 "inputs changed (no fingerprint detail)". Capped at four named culprits plus a trailing `+N more`; exactly five print in
 full with no `+N more` marker, since the cap only triggers above five.
 
-`TableRenderer.render` prints the fixed-width table and a summary line; `renderTsv` prints `sha\tsubject\tkey\tbazel\tverdict\tculprits`
+`TableRenderer.render` prints the fixed-width table and a summary line; `renderTsv` prints `sha\tsubject\tkey\tverdict\tculprits`
 for scripts — for a `BUILD-FAILED` row, that last column is the error message, not the (empty) culprit list. Inside any
 field, each tab, CR or LF character becomes a single space (so a CRLF becomes two spaces) so none of them can shift a
 column. Table columns are padded and truncated by
 Unicode code point, not UTF-16 char, so a surrogate pair is never split.
 
 ## Cli
-`trace <app> --from A --to B [--task T] [--no-bazel] [--offline] [--keep-worktrees] [--tsv] [--tsv-out F] [--timeout-minutes N]`
+`trace <app> --from A --to B [--task T] [--offline] [--keep-worktrees] [--tsv] [--tsv-out F] [--timeout-minutes N]`
 and `trace <app> --at REV [--task T] [--offline] [--keep-worktrees] [--timeout-minutes N]`.
 `--task` defaults to `fingerprint` (runtime inputs: whether what the app runs with changed); `--task compileJava`
 compares compile inputs instead (whether the app would recompile). Both modes use the same default.
@@ -104,11 +96,11 @@ value missing at the end of the arguments fails the same way, naming the option.
 `--timeout-minutes`: its values are validated as integers instead (see below). `--at` checks out one revision
 into a worktree via `RevisionRange.resolveOne` and prints that task's key, its implementation hash, every value
 fingerprint, and every file fingerprint (grouped by property, named the same way `KeyComparator.displayName`
-names a culprit) — no comparison, so it rejects `--tsv`, `--tsv-out` and `--no-bazel` alongside it, naming both
+names a culprit) — no comparison, so it rejects `--tsv` and `--tsv-out` alongside it, naming both
 flags in the error.
 
-`Cli.defaultScratchRoot` computes one fixed scratch root, `$TMPDIR/gradle-tracer`, that worktrees and bazel-diff
-hash files live under (never per pid — a fixed root is how the next run finds and sweeps a killed run's
+`Cli.defaultScratchRoot` computes one fixed scratch root, `$TMPDIR/gradle-tracer`, that worktrees live under
+(never per pid — a fixed root is how the next run finds and sweeps a killed run's
 leftovers; see "Range walk" below). On Linux the JVM does not read `$TMPDIR` into `java.io.tmpdir` (it is always
 `/tmp`), so it reads the `TMPDIR` environment variable directly and only falls back to `java.io.tmpdir` when it
 is unset or blank, keeping the documented path real; either way, the result is resolved to an absolute,
@@ -125,18 +117,14 @@ non-positive timeout with an unchecked exception, so the CLI validates it here a
 passing one through.
 
 ## Range walk
-Worktrees and bazel-diff hash files live under one fixed root, `$TMPDIR/gradle-tracer/`. At start the tracer
-deletes stale scratch files left by a killed run — any file whose name starts with `hashes-` (any extension,
-not just `.json`) or ends with `.impacted.txt` — and reports how many; only then does `WorktreePool` delete
-stale `wt-*` directories and prune git's worktree list, in that order (hash files first, since they're Cli's own
-and cheap to check; worktree directories and git's own bookkeeping after). At the end — including when the
+Worktrees live under one fixed root, `$TMPDIR/gradle-tracer/`. At start `WorktreePool` deletes stale `wt-*`
+directories left by a killed run and prunes git's worktree list, in that order. At the end — including when the
 walk is aborted partway through — it removes what it created unless `--keep-worktrees`, which keeps the
-worktrees themselves (their `git worktree` registrations too) and every hash file this run wrote. What actually
+worktrees themselves (their `git worktree` registrations too). What actually
 aborts the walk: a checkout failure (`WorktreePool.checkout`, e.g. `git worktree add` failing), the thread being
 interrupted (checked at the top of every iteration and after a failed key lookup), or an unexpected runtime
 exception. A key-provider failure does *not* abort it — it becomes that commit's `BUILD-FAILED` row, and the
-next commit is compared against the last good key; nor does a bazel-diff failure — the rest of the Bazel column
-just degrades to `n/a`, with exactly one warning on stderr for the whole run, not one per remaining commit.
+next commit is compared against the last good key.
 
 Exit codes are fully wired for the range walk: 0 no change, 1 usage error, 2 a tool failed — any of: some row is
 `BUILD-FAILED`; a `git` failure outside revision resolution (e.g. a `git worktree add` that fails mid-walk); an
@@ -147,9 +135,8 @@ caught in `Cli.run` and reported as "internal error: `<class>`: `<message>`" rat
 stack trace; or the thread being interrupted mid-walk, reported as "interrupted" and aborting the range
 immediately instead of limping through every remaining commit with the interrupt flag still set. The flag is
 checked after a failed key lookup, at the top of every iteration, and once more after the loop (before
-rendering anything): an interrupted bazel-diff call degrades silently (as an ordinary bazel-diff failure,
-below) with the flag still set, and if that happens on the *last* commit there's no next iteration left to
-catch it in — only the final check does, aborting instead of rendering a table as if nothing had happened — 3
+rendering anything): a key lookup can return normally with the flag still set, and if that happens on the
+*last* commit there's no next iteration left to catch it in — only the final check does, aborting instead of rendering a table as if nothing had happened — 3
 at least one row is `CHANGED`. 2 wins over 3 when both apply in the same range.
 
 `Cli.run` does its work in a fixed order: the app name is checked against `app/<app>` first (a usage error here
@@ -179,10 +166,10 @@ already resolved — `Cli` creates the scratch root and takes an exclusive lock 
 `FileChannel.tryLock()`), held for the whole run and released when it ends. A second run on the same root while
 the first is still going fails fast as a usage error ("another trace is using `<scratch>`; wait for it or set
 `TMPDIR` to another directory") with no worktree work and no scratch sweep, rather than sweeping the first run's
-live `wt-*` worktrees and hash files out from under it. (Its own revision resolution still runs first, same as
+live `wt-*` worktrees out from under it. (Its own revision resolution still runs first, same as
 any other invocation — that's read-only git against the repo, not the scratch root, so it's harmless even when
 the lock is about to be refused.) `.lock` itself is never swept: `WorktreePool`'s sweep only touches `wt-*`
-directories, and `Cli.deleteScratchFiles` only touches `hashes-*`/`*.impacted.txt` files. Lock contention gets
+directories. Lock contention gets
 its own one-line message on stderr, not the full usage text — it isn't a command-line mistake — though the exit
 code still reads as a usage error (1). The held `FileLock` is released via try-with-resources rather than a
 manual `release()` in a `finally`, so if the locked work also fails, `release()`'s own `IOException` is
@@ -192,8 +179,7 @@ already named alongside it ("`<path>`: Is a directory", or for some failures the
 which would otherwise print it twice (`"...lock: .../.lock: Is a directory"`) or show the wrong path (a failed
 write under `--tsv-out` used to show the temp file's path as the "reason", not the real target's). When
 `getReason()` itself is unavailable, this falls back to the exception's class name — the same fallback
-`BazelDiffProvider` already used, and what any other `IOException` here still falls back to when its message is
-missing or is just the path again.
+any other `IOException` here uses when its message is missing or is just the path again.
 
 ### The scratch root must be private
 `$TMPDIR/gradle-tracer` is a predictable, fixed path (spec §9), often under a shared `/tmp`: another local user
@@ -215,12 +201,10 @@ separate is-it-a-symlink check.
 ### Process timeouts and detached children
 On timeout, `DefaultProcessRunner.killTree` kills every process it can still see as a descendant of the one it
 started, then the direct child itself. A freshly spawned Gradle daemon is still a child of that process tree (its
-parent is the `gradlew` client JVM `killTree` started), so it is killed along with everything else. Two kinds of
-process are never in scope to kill, for two different reasons: a Gradle daemon reused from an earlier invocation
-was already detached and reparented before this run even started it, so it was never this process tree's child to
-begin with; a Bazel server, which daemonizes as soon as it starts, detaches *during* this run, before `killTree`
-would ever need to act, so it is never a descendant of the client that launched it either. This is by design:
-those servers are meant to outlive the single invocation that happened to start or reuse them.
+parent is the `gradlew` client JVM `killTree` started), so it is killed along with everything else. A Gradle daemon
+reused from an earlier invocation is never in scope to kill: it was already detached and reparented before this
+run even started it, so it was never this process tree's child to begin with. This is by design: the daemon is
+meant to outlive the single invocation that happened to start or reuse it.
 
 ## Tests
 `./gradlew :tools:tracer:test` (fast, fakes) · `./gradlew :tools:tracer:e2eTest` (real git + Gradle on a fixture repo, minutes).

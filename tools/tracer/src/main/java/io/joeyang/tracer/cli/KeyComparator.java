@@ -24,23 +24,22 @@ public final class KeyComparator {
      * @param error the failure reason when {@code current} is empty
      */
     public static Verdict verdict(Commit commit, Optional<TaskKey> previous, Optional<TaskKey> current,
-                                  Optional<String> error, BazelStatus bazel) {
+                                  Optional<String> error) {
         Objects.requireNonNull(commit, "commit must not be null");
         Objects.requireNonNull(previous, "previous must not be null");
         Objects.requireNonNull(current, "current must not be null");
         Objects.requireNonNull(error, "error must not be null");
-        Objects.requireNonNull(bazel, "bazel must not be null");
         if (current.isEmpty()) {
-            return new Verdict(commit, Status.BUILD_FAILED, Optional.empty(), bazel, List.of(),
+            return new Verdict(commit, Status.BUILD_FAILED, Optional.empty(), List.of(),
                     Optional.of(error.orElse("no cache key obtained")));
         }
         if (previous.isEmpty()) {
-            return new Verdict(commit, Status.BASE, current, bazel, List.of(), Optional.empty());
+            return new Verdict(commit, Status.BASE, current, List.of(), Optional.empty());
         }
         if (previous.get().key().equals(current.get().key())) {
-            return new Verdict(commit, Status.CLEAN, current, bazel, List.of(), Optional.empty());
+            return new Verdict(commit, Status.CLEAN, current, List.of(), Optional.empty());
         }
-        return new Verdict(commit, Status.CHANGED, current, bazel, culprits(previous.get(), current.get()), Optional.empty());
+        return new Verdict(commit, Status.CHANGED, current, culprits(previous.get(), current.get()), Optional.empty());
     }
 
     static List<String> culprits(TaskKey before, TaskKey after) {

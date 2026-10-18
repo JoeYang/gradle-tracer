@@ -150,7 +150,7 @@ class DefaultProcessRunnerTest {
 
     /**
      * A sleep duration (one decimal point, so it stays valid for {@code sleep}) that is unique to this JVM and this
-     * call, so it cannot collide with an unrelated process already on the (possibly shared, e.g. Bazel sandbox) host.
+     * call, so it cannot collide with an unrelated process already on the (possibly shared) host.
      */
     private static String uniqueMarker(String wholeSeconds) {
         return wholeSeconds + "." + ProcessHandle.current().pid() + System.nanoTime();

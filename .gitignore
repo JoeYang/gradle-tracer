@@ -2,7 +2,7 @@
 .gradle/
 build/
 !gradle/wrapper/gradle-wrapper.jar
-# Bazel
+# Leftover Bazel output symlinks in checkouts made before the Gradle-only switch
 /bazel-*
 # IDE
 .idea/

@@ -25,7 +25,6 @@ import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 /** Entry point: parses options, walks the range through worktrees, and prints the verdicts (or, for {@code --at}, one commit's key). */
 public final class Cli {
@@ -45,16 +44,15 @@ public final class Cli {
     private static final Pattern APP_NAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_-]*");
 
     static final String USAGE = """
-            usage: trace <app> --from <rev> --to <rev> [--task <name>] [--no-bazel] [--offline] [--keep-worktrees]
-                                                        [--tsv] [--tsv-out <file>] [--timeout-minutes <n>]
+            usage: trace <app> --from <rev> --to <rev> [--task <name>] [--offline] [--keep-worktrees]
+                                                       [--tsv] [--tsv-out <file>] [--timeout-minutes <n>]
                    trace <app> --at <rev> [--task <name>] [--offline] [--keep-worktrees] [--timeout-minutes <n>]
 
-              <app>            appA | appB | appC   (maps to :app:<app>:<task> and //app/<app>:<app>)
+              <app>            appA | appB | appC   (maps to :app:<app>:<task>)
               --task           Gradle task whose cache key is compared; default fingerprint, alternative compileJava
-              --no-bazel       skip the bazel-diff column
-              --offline        pass --offline to gradle; forbid repository downloads in bazel
-              --keep-worktrees leave the checked-out worktrees and hash files in place for inspection
-              --tsv            machine-readable output only (sha, subject, key, bazel, verdict, culprits)
+              --offline        pass --offline to gradle
+              --keep-worktrees leave the checked-out worktrees in place for inspection
+              --tsv            machine-readable output only (sha, subject, key, verdict, culprits)
               --tsv-out <file> print the table and also write the TSV to <file>
               --timeout-minutes per external command, default 10
 
@@ -62,7 +60,7 @@ public final class Cli {
             """;
 
     /** Parsed command line. */
-    record Options(String app, String from, String to, String at, String task, boolean bazel, boolean offline,
+    record Options(String app, String from, String to, String at, String task, boolean offline,
                    boolean keepWorktrees, boolean tsv, Path tsvOut, Duration timeout) {
 
         static Options parse(String[] args) throws UsageException {
@@ -75,13 +73,12 @@ public final class Cli {
                         + "'-' or '_', starting with a letter or digit");
             }
             String from = null, to = null, at = null, task = "fingerprint";
-            boolean bazel = true, offline = false, keep = false, tsv = false;
+            boolean offline = false, keep = false, tsv = false;
             Path tsvOut = null;
             Duration timeout = Duration.ofMinutes(10);
             for (int i = 1; i < args.length; i++) {
                 String flag = args[i];
                 switch (flag) {
-                    case "--no-bazel" -> bazel = false;
                     case "--offline" -> offline = true;
                     case "--keep-worktrees" -> keep = true;
                     case "--tsv" -> tsv = true;
@@ -124,10 +121,7 @@ public final class Cli {
             if (at != null && tsvOut != null) {
                 throw new UsageException("--at cannot be combined with --tsv-out");
             }
-            if (at != null && !bazel) {
-                throw new UsageException("--at cannot be combined with --no-bazel");
-            }
-            return new Options(app, from, to, at, task, bazel, offline, keep, tsv, tsvOut, timeout);
+            return new Options(app, from, to, at, task, offline, keep, tsv, tsvOut, timeout);
         }
 
         // ASCII digits only (with an optional leading '-'), checked before parsing, so a non-ASCII digit
@@ -164,31 +158,25 @@ public final class Cli {
         String taskPath() {
             return ":app:" + app + ":" + task;
         }
-
-        String bazelTarget() {
-            return "//app/" + app + ":" + app;
-        }
     }
 
     private final ProcessRunner runner;
     private final Path repo;
     private final Path scratch;
     private final KeyProvider keys;
-    private final ImpactProvider impacts; // null when --no-bazel
     private final LongSupplier currentUid;
 
-    Cli(ProcessRunner runner, Path repo, Path scratch, KeyProvider keys, ImpactProvider impacts) {
-        this(runner, repo, scratch, keys, impacts, () -> new UnixSystem().getUid());
+    Cli(ProcessRunner runner, Path repo, Path scratch, KeyProvider keys) {
+        this(runner, repo, scratch, keys, () -> new UnixSystem().getUid());
     }
 
     // Package-private seam: lets tests simulate an ownership mismatch on the scratch root (checkScratchRootIsPrivate)
     // without needing root to chown a file to someone else.
-    Cli(ProcessRunner runner, Path repo, Path scratch, KeyProvider keys, ImpactProvider impacts, LongSupplier currentUid) {
+    Cli(ProcessRunner runner, Path repo, Path scratch, KeyProvider keys, LongSupplier currentUid) {
         this.runner = runner;
         this.repo = repo;
         this.scratch = scratch;
         this.keys = keys;
-        this.impacts = impacts;
         this.currentUid = currentUid;
     }
 
@@ -214,8 +202,7 @@ public final class Cli {
         ProcessRunner runner = new DefaultProcessRunner();
         Path repo = Path.of("").toAbsolutePath();
         KeyProvider keys = new GradleKeyProvider(runner, options.offline(), options.timeout());
-        ImpactProvider impacts = options.bazel() ? new BazelDiffProvider(runner, repo, options.offline(), options.timeout()) : null;
-        System.exit(new Cli(runner, repo, DEFAULT_SCRATCH, keys, impacts).run(options, System.out, System.err));
+        System.exit(new Cli(runner, repo, DEFAULT_SCRATCH, keys).run(options, System.out, System.err));
     }
 
     static int usage(PrintStream err, String problem) {
@@ -260,7 +247,7 @@ public final class Cli {
 
     /**
      * Locks the scratch root for the whole run, before any sweep or worktree work starts: two trace runs sharing
-     * a root would otherwise sweep each other's live {@code wt-*} worktrees and hash files out from under one
+     * a root would otherwise sweep each other's live {@code wt-*} worktrees out from under one
      * another. {@code tryLock()} returns null for a lock held by another process, and throws
      * {@link OverlappingFileLockException} for one held elsewhere in this same JVM; both mean the root is busy.
      */
@@ -352,8 +339,7 @@ public final class Cli {
     /**
      * {@code e.getMessage()}, falling back to the exception's simple class name when the message is missing or is
      * just the path again (some {@link IOException} subtypes report nothing more useful than that), so the
-     * reported reason is never empty or redundant with the path already named alongside it. Mirrors
-     * {@code BazelDiffProvider}'s identical fallback for the same class of message.
+     * reported reason is never empty or redundant with the path already named alongside it.
      */
     private static String ioReason(IOException e, Path path) {
         // FileSystemException's own getMessage() typically repeats the path we're already naming ("<path>: Is a
@@ -408,76 +394,44 @@ public final class Cli {
     }
 
     private int range(Options o, PrintStream out, PrintStream err, List<Commit> commits) throws ProviderException {
-        int swept = deleteScratchFiles();
-        if (swept > 0) {
-            err.println("trace: removed " + swept + " stale scratch file(s) under " + scratch);
-        }
         List<Verdict> rows = new ArrayList<>();
-        try {
-            try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
-                Optional<TaskKey> previousGood = Optional.empty();
-                Path previousHashes = null;
-                boolean bazelAlive = impacts != null;
-                for (Commit commit : commits) {
-                    // Checked here too, not only after a failed key lookup: an interrupted bazel-diff call
-                    // degrades silently (as an ordinary bazel-diff failure, below), so the flag can still be set
-                    // going into the next commit even though nothing in the previous iteration reported it as
-                    // "interrupted". Catching it here, before this commit's checkout or any of its provider
-                    // calls, is what stops it reaching the next checkout and failing there with a confusing
-                    // unrelated error instead.
+        try (WorktreePool pool = new WorktreePool(runner, repo, scratch, o.keepWorktrees())) {
+            Optional<TaskKey> previousGood = Optional.empty();
+            for (Commit commit : commits) {
+                // Checked here too, not only after a failed key lookup: a lookup can return normally with
+                // the interrupt flag set, so the flag can still be set going into the next commit even though
+                // nothing in the previous iteration reported it as "interrupted". Catching it here, before
+                // this commit's checkout or any of its provider calls, is what stops it reaching the next
+                // checkout and failing there with a confusing unrelated error instead.
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new ProviderException("interrupted");
+                }
+                Path worktree = pool.checkout(commit);
+                Optional<TaskKey> key = Optional.empty();
+                Optional<String> error = Optional.empty();
+                try {
+                    key = Optional.of(keys.keyFor(worktree, o.taskPath()));
+                } catch (ProviderException e) {
+                    // An interrupted process call fails this one lookup but leaves the interrupt flag set, so
+                    // every later process call would fail the same way; limping on would just produce a wall
+                    // of BUILD-FAILED rows instead of the one honest signal that the run was asked to stop.
                     if (Thread.currentThread().isInterrupted()) {
-                        throw new ProviderException("interrupted");
+                        throw new ProviderException("interrupted", e);
                     }
-                    Path worktree = pool.checkout(commit);
-                    Optional<TaskKey> key = Optional.empty();
-                    Optional<String> error = Optional.empty();
-                    try {
-                        key = Optional.of(keys.keyFor(worktree, o.taskPath()));
-                    } catch (ProviderException e) {
-                        // An interrupted process call fails this one lookup but leaves the interrupt flag set, so
-                        // every later process call would fail the same way; limping on would just produce a wall
-                        // of BUILD-FAILED rows instead of the one honest signal that the run was asked to stop.
-                        if (Thread.currentThread().isInterrupted()) {
-                            throw new ProviderException("interrupted", e);
-                        }
-                        error = Optional.of(e.getMessage());
-                    }
-                    BazelStatus bazel = BazelStatus.NONE;
-                    if (bazelAlive) {
-                        try {
-                            Path hashes = impacts.hashes(worktree, scratch.resolve("hashes-" + commit.shortSha() + ".json"));
-                            if (previousHashes != null) {
-                                Set<String> impacted = impacts.impactedTargets(previousHashes, hashes);
-                                bazel = impacted.contains(o.bazelTarget()) ? BazelStatus.IMPACTED : BazelStatus.CLEAN;
-                            }
-                            previousHashes = hashes;
-                        } catch (ProviderException e) {
-                            err.println("trace: bazel-diff unavailable: " + e.getMessage());
-                            bazelAlive = false;
-                            bazel = BazelStatus.NOT_AVAILABLE;
-                        }
-                    } else if (impacts != null) {
-                        bazel = BazelStatus.NOT_AVAILABLE;
-                    }
-                    rows.add(KeyComparator.verdict(commit, previousGood, key, error, bazel));
-                    if (key.isPresent()) {
-                        previousGood = key;
-                    }
-                    if (!o.keepWorktrees()) {
-                        pool.release(worktree);
-                    }
+                    error = Optional.of(e.getMessage());
+                }
+                rows.add(KeyComparator.verdict(commit, previousGood, key, error));
+                if (key.isPresent()) {
+                    previousGood = key;
+                }
+                if (!o.keepWorktrees()) {
+                    pool.release(worktree);
                 }
             }
-        } finally {
-            // Runs whether the walk finished or a checkout/pool failure aborted it partway through: a killed
-            // walk must leave no more behind than a killed run would (docs/tracer.md's "Range walk" promise).
-            if (!o.keepWorktrees()) {
-                deleteScratchFiles();
-            }
         }
-        // An interrupt during the *last* commit's bazel-diff call degrades silently like any other (the loop's
-        // own top-of-iteration check never gets a next iteration to catch it in), so it would otherwise survive
-        // only as that warning and let the walk finish normally. Catch it here too, before rendering anything.
+        // A lookup on the *last* commit can return with the interrupt flag set (the loop's own top-of-iteration
+        // check never gets a next iteration to catch it in), so it would otherwise let the walk finish normally.
+        // Catch it here too, before rendering anything.
         if (Thread.currentThread().isInterrupted()) {
             throw new ProviderException("interrupted");
         }
@@ -485,7 +439,7 @@ public final class Cli {
         if (o.tsv()) {
             out.print(tsv);
         } else {
-            out.print(TableRenderer.render(o.taskPath(), impacts == null ? null : o.bazelTarget(), rows));
+            out.print(TableRenderer.render(o.taskPath(), rows));
         }
         if (o.tsvOut() != null) {
             writeTsvAtomically(o.tsvOut(), tsv);
@@ -550,26 +504,6 @@ public final class Cli {
             }
             throw new ProviderException("cannot write " + target + ": " + ioReason(e, target), e);
         }
-    }
-
-    /** Deletes bazel-diff hash and impacted-target files under the scratch root; returns how many went. */
-    private int deleteScratchFiles() {
-        if (!Files.isDirectory(scratch)) {
-            return 0;
-        }
-        int count = 0;
-        try (Stream<Path> entries = Files.list(scratch)) {
-            for (Path p : entries.toList()) {
-                String name = p.getFileName().toString();
-                if (Files.isRegularFile(p) && (name.startsWith("hashes-") || name.endsWith(".impacted.txt"))) {
-                    Files.deleteIfExists(p);
-                    count++;
-                }
-            }
-        } catch (IOException ignored) {
-            // best effort
-        }
-        return count;
     }
 
     private int at(Options o, PrintStream out, Commit commit) throws ProviderException {

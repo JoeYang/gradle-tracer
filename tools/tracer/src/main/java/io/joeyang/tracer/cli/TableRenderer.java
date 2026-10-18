@@ -9,22 +9,17 @@ public final class TableRenderer {
 
     private TableRenderer() {}
 
-    /** @param bazelTarget null when the bazel column was disabled */
-    public static String render(String taskPath, String bazelTarget, List<Verdict> rows) {
+    public static String render(String taskPath, List<Verdict> rows) {
         StringBuilder sb = new StringBuilder();
         int commits = Math.max(0, rows.size() - 1);
         sb.append("Tracing inputs of ").append(taskPath).append(" (gradle)");
-        if (bazelTarget != null) {
-            sb.append(" and ").append(bazelTarget).append(" (bazel-diff)");
-        }
         sb.append(" over ").append(commits).append(commits == 1 ? " commit" : " commits").append("\n\n");
         sb.append(pad("commit", 9)).append(pad("subject", SUBJECT_WIDTH + 1)).append(pad("gradle key", 12))
-                .append(pad("bazel-diff", 12)).append(pad("verdict", 14)).append("culprit\n");
+                .append(pad("verdict", 14)).append("culprit\n");
         for (Verdict v : rows) {
             String row = pad(v.commit().shortSha(), 9)
                     + pad(truncate(v.commit().subject(), SUBJECT_WIDTH), SUBJECT_WIDTH + 1)
                     + pad(v.key().map(TaskKey::shortKey).orElse("-"), 12)
-                    + pad(v.bazel().label(), 12)
                     + pad(v.status().label(), 14)
                     + culpritColumn(v);
             sb.append(row.stripTrailing()).append("\n");
@@ -36,7 +31,7 @@ public final class TableRenderer {
     public static String renderTsv(List<Verdict> rows) {
         return rows.stream().map(v -> String.join("\t",
                 v.commit().sha(), tsvSafe(v.commit().subject()), v.key().map(TaskKey::key).orElse(""),
-                v.bazel().label(), v.status().label(),
+                v.status().label(),
                 tsvSafe(v.status() == Status.BUILD_FAILED ? v.error().orElse("") : String.join(", ", v.culprits()))))
                 .collect(Collectors.joining("\n", "", "\n"));
     }
@@ -50,11 +45,7 @@ public final class TableRenderer {
         if (v.status() == Status.BUILD_FAILED) {
             return v.error().orElse("");
         }
-        String culprits = String.join(", ", v.culprits());
-        if (v.bazelDisagrees()) {
-            return culprits.isEmpty() ? "bazel≠gradle" : culprits + " (bazel≠gradle)";
-        }
-        return culprits;
+        return String.join(", ", v.culprits());
     }
 
     private static String summary(String taskPath, List<Verdict> rows) {
