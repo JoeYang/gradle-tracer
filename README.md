@@ -28,3 +28,7 @@ See `docs/tracer.md` for the table format and exit codes.
     tools/scenarios.sh # replays six teaching commits and checks every verdict (20–40 min, needs network)
 
 `docs/scenarios.md` explains each row.
+
+## Recreate it elsewhere
+
+`docs/recreate-tracer.md` holds a single prompt that rebuilds this repo and the tracer from scratch.
